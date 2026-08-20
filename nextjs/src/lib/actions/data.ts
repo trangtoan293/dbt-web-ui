@@ -4,7 +4,7 @@ import { db } from '@/lib/db'
 import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
 import { revalidatePath } from 'next/cache'
-import type { Prisma } from '@prisma/client'
+import type { Prisma, RunCommand } from '@prisma/client'
 
 // --- Projects ---
 
@@ -298,6 +298,136 @@ export async function getAllRunsAcrossProjects() {
     },
   })
   return runs.map(serializeRun)
+}
+
+export type RunLogDashboardQuery = {
+  projectId?: string
+  status?: string
+  command?: RunCommand
+  search?: string
+  from?: Date
+  to?: Date
+  page: number
+  pageSize: number
+}
+
+export async function getRunLogDashboard(input: RunLogDashboardQuery) {
+  const userId = await getCurrentUserId()
+  const projects = await db.dbtProject.findMany({
+    where: { createdBy: userId, deletedAt: null },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  })
+  const projectIds = projects.map((project) => project.id)
+  const page = Math.max(1, input.page)
+  const pageSize = Math.min(100, Math.max(10, input.pageSize))
+
+  if (projectIds.length === 0) {
+    return {
+      items: [],
+      pagination: { page, pageSize, total: 0, totalPages: 0 },
+      summary: { total: 0, success: 0, error: 0, cancelled: 0, running: 0, pending: 0, averageDurationMs: null },
+      facets: { projects },
+    }
+  }
+
+  if (input.projectId && !projectIds.includes(input.projectId)) {
+    throw new Error('Not found or not authorized')
+  }
+
+  const search = input.search?.trim()
+  const matchingProjectIds = search
+    ? projects
+        .filter((project) => project.name.toLowerCase().includes(search.toLowerCase()))
+        .map((project) => project.id)
+    : []
+  const dateFilter = input.from || input.to
+    ? { gte: input.from, lte: input.to }
+    : undefined
+  const summaryWhere: Prisma.DbtRunWhereInput = {
+    projectId: input.projectId || { in: projectIds },
+    command: input.command,
+    createdAt: dateFilter,
+    ...(search
+      ? {
+          OR: [
+            { selector: { contains: search, mode: 'insensitive' as const } },
+            { errorMessage: { contains: search, mode: 'insensitive' as const } },
+            { logs: { contains: search, mode: 'insensitive' as const } },
+            ...(matchingProjectIds.length > 0 ? [{ projectId: { in: matchingProjectIds } }] : []),
+            ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(search) ? [{ id: search }] : []),
+          ],
+        }
+      : {}),
+  }
+  const filteredWhere: Prisma.DbtRunWhereInput = {
+    ...summaryWhere,
+    status: input.status,
+  }
+
+  const [runs, total, statusGroups, durationAggregate] = await Promise.all([
+    db.dbtRun.findMany({
+      where: filteredWhere,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: {
+        id: true,
+        projectId: true,
+        command: true,
+        selector: true,
+        status: true,
+        startedAt: true,
+        completedAt: true,
+        durationMs: true,
+        modelsTotal: true,
+        modelsSuccess: true,
+        modelsError: true,
+        errorMessage: true,
+        gitCommit: true,
+        createdAt: true,
+        project: { select: { id: true, name: true } },
+        _count: { select: { artifacts: true } },
+      },
+    }),
+    db.dbtRun.count({ where: filteredWhere }),
+    db.dbtRun.groupBy({
+      by: ['status'],
+      where: summaryWhere,
+      _count: { _all: true },
+    }),
+    db.dbtRun.aggregate({
+      where: { ...summaryWhere, durationMs: { not: null } },
+      _avg: { durationMs: true },
+    }),
+  ])
+
+  const counts = Object.fromEntries(
+    statusGroups.map((group) => [group.status, group._count._all]),
+  )
+  const summaryTotal = statusGroups.reduce((totalRuns, group) => totalRuns + group._count._all, 0)
+
+  return {
+    items: runs.map(serializeRun),
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+    },
+    summary: {
+      total: summaryTotal,
+      success: counts.success || 0,
+      error: counts.error || 0,
+      cancelled: counts.cancelled || 0,
+      running: counts.running || 0,
+      pending: counts.pending || 0,
+      averageDurationMs: durationAggregate._avg.durationMs == null
+        ? null
+        : Number(durationAggregate._avg.durationMs),
+    },
+    facets: { projects },
+  }
 }
 
 export async function getRunById(runId: string) {

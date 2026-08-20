@@ -24,6 +24,7 @@
     "lint": "eslint .",
     "test:setup": "bash scripts/setup-test-db.sh",
     "test": "vitest run",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
