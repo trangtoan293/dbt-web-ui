@@ -7,7 +7,7 @@
 # Stage 1: Dependencies
 # Install all dependencies (including devDependencies for build)
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 
 # Install dependencies required for native modules
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # Stage 2: Builder
 # Build the Next.js application
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /app
 
 # Copy dependencies from deps stage
@@ -55,7 +55,7 @@ RUN npm run build
 # Stage 3: Runner (Production)
 # Minimal image to run the production build
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /app
 
 # Runtime does not need npm/yarn/corepack. Remove their dependency trees so
