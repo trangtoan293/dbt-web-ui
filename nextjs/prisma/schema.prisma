@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  oidcSub     String   @unique @map("oidc_sub")
+  email       String   @unique
+  name        String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  dremioSources           DremioSource[]
+  dbtProjects             DbtProject[]
+  connections             Connection[]
+  gitCredentials          GitCredential[]
+  dbtEnvironmentVariables DbtEnvironmentVariable[]
+
+  @@map("users")
+}
+
+model DremioSource {
+  id               String   @id @default(uuid()) @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+  name             String   @db.Text
+  host             String   @db.Text
+  port             Int
+  username         String   @db.Text
+  tokenEncrypted   String   @map("token_encrypted") @db.Text
+  catalog          String   @db.Text @default("")
+  arrowFlightPort  Int      @map("arrow_flight_port") @default(32010)
+  createdBy        String   @map("created_by") @db.Uuid
+  user             User     @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  dbtProjects      DbtProject[] @relation("DremioSourceProjects")
+
+  @@unique([name, createdBy])
+  @@map("dremio_sources")
+}
+
+model DbtProject {
+  id                     String    @id @default(uuid()) @db.Uuid
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+  name                   String    @db.Text
+  description            String?   @db.Text
+  gitUrl                 String?   @map("git_url") @db.Text
+  gitBranch              String?   @map("git_branch") @db.Text @default("main")
+  gitProjectSubdirectory String?   @map("git_project_subdirectory") @db.Text @default("")
+  stagingDir             String?   @map("staging_dir") @db.Text
+  martsDir               String?   @map("marts_dir") @db.Text
+  syncStatus             String?   @map("sync_status") @db.Text @default("not_synced")
+  dremioSourceId         String?   @map("dremio_source_id") @db.Uuid
+  connectionId           String?   @map("connection_id") @db.Uuid
+  deletedAt              DateTime? @map("deleted_at") @db.Timestamptz()
+  createdBy              String    @map("created_by") @db.Uuid
+  user                   User      @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  dremioSource           DremioSource? @relation("DremioSourceProjects", fields: [dremioSourceId], references: [id], onDelete: SetNull)
+  connection             Connection?   @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  runs                   DbtRun[]
+  gitCredentials         GitCredential[]
+  environmentVariables   DbtEnvironmentVariable[]
+
+  @@map("dbt_projects")
+}
+
+model GitCredential {
+  id             String     @id @default(uuid()) @db.Uuid
+  projectId      String     @map("project_id") @db.Uuid
+  owner          String     @db.Uuid
+  remoteUrl      String     @map("remote_url") @db.Text
+  username       String     @db.Text
+  tokenEncrypted String     @map("token_encrypted") @db.Text
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz()
+  project        DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user           User       @relation(fields: [owner], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, owner, remoteUrl])
+  @@index([owner, projectId])
+  @@map("git_credentials")
+}
+
+model DbtEnvironmentVariable {
+  id             String     @id @default(uuid()) @db.Uuid
+  projectId      String     @map("project_id") @db.Uuid
+  owner          String     @db.Uuid
+  name           String     @db.Text
+  valueEncrypted String     @map("value_encrypted") @db.Text
+  type           String     @default("text") @db.Text
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz()
+  project        DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user           User       @relation(fields: [owner], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, owner, name])
+  @@index([owner, projectId])
+  @@map("dbt_environment_variables")
+}
+
+enum RunCommand {
+  run
+  test
+  build
+  compile
+  docs
+  deps
+  clean
+  seed
+  snapshot
+
+  @@map("run_command")
+}
+
+model DbtRun {
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     String    @map("project_id") @db.Uuid
+  command       RunCommand @default(run)
+  selector      String?   @db.Text
+  status        String    @default("pending") @db.Text
+  startedAt     DateTime? @map("started_at") @db.Timestamptz()
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz()
+  durationMs    BigInt?   @map("duration_ms")
+  modelsTotal   Int?      @map("models_total") @default(0)
+  modelsSuccess Int?      @map("models_success") @default(0)
+  modelsError   Int?      @map("models_error") @default(0)
+  logs          String?   @db.Text
+  errorMessage  String?   @map("error_message") @db.Text
+  results       Json?     @db.JsonB
+  gitCommit     String?   @map("git_commit") @db.VarChar(40)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  project       DbtProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  artifacts     DbtRunArtifact[]
+
+  @@index([projectId, createdAt])
+  @@map("dbt_runs")
+}
+
+model DbtRunArtifact {
+  id            String   @id @default(uuid()) @db.Uuid
+  runId         String   @map("run_id") @db.Uuid
+  uniqueId      String   @map("unique_id") @db.Text
+  status        String   @db.Text
+  executionTime Float?   @map("execution_time")
+  compiledCode  String?  @map("compiled_code") @db.Text
+  error         String?  @db.Text
+  timing        Json?    @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  run           DbtRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@map("dbt_run_artifacts")
+}
+
+enum ConnectionType {
+  postgresql
+  duckdb
+  dremio
+  oracle
+  spark
+
+  @@map("connection_type")
+}
+
+model Connection {
+  id                String         @id @default(uuid()) @db.Uuid
+  name              String         @db.Text
+  connectionType    ConnectionType @map("connection_type")
+  host              String         @db.Text
+  port              Int
+  database          String         @db.Text
+  username          String         @db.Text
+  passwordEncrypted String?        @map("password_encrypted") @db.Text
+  sslMode           String?        @map("ssl_mode") @db.Text @default("prefer")
+  extraConfig       Json?          @map("extra_config") @db.JsonB
+  isActive          Boolean        @default(true) @map("is_active")
+  createdBy         String         @map("created_by") @db.Uuid
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime       @updatedAt @map("updated_at") @db.Timestamptz()
+  user              User           @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  projects          DbtProject[]
+
+  @@map("connections")
+}

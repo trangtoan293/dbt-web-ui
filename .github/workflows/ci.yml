@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nextjs
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dbtcraft_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dbtcraft_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: nextjs/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+      - name: Lint
+        run: npm run lint
+      - name: Type check / build
+        run: npm run build
+      - name: Test
+        run: npm test
+        env:
+          AUTH_SECRET: ci-secret-not-used
+          OIDC_CLIENT_ID: ci
+          OIDC_CLIENT_SECRET: ci-secret
+          OIDC_ISSUER: https://example.com/realms/ci
+
+  backend:
+    name: Backend (dbt-runner)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt-runner
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.11.13'
+          enable-cache: true
+          cache-dependency-glob: dbt-runner/uv.lock
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra test
+      - name: Test
+        run: uv run --frozen --extra test python -m pytest -q
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci_test
+          OIDC_ISSUER: https://example.com/realms/ci
+          OIDC_AUDIENCE: dbt-craft
+
+  docker-compose:
+    name: Compose config validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file syntax
+        run: docker compose config --quiet
+        env:
+          POSTGRES_PASSWORD: ci-placeholder
+          APP_ENCRYPTION_KEY: ci-placeholder
+          AUTH_SECRET: ci-placeholder
+
+  compose-smoke:
+    name: Clean compose migration and health smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AUTH_DISABLED: "true"
+      POSTGRES_PASSWORD: ci-postgres-password
+      APP_ENCRYPTION_KEY: ci-app-encryption-key-at-least-32
+      AUTH_SECRET: ci-cookie-secret-at-least-32-characters
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and start a clean stack
+        run: docker compose up --detach --build --wait
+      - name: Wait for the stack to answer
+        run: |
+          for attempt in $(seq 1 30); do
+            # The proxy call matters: hitting only /health leaves the
+            # frontend -> dbt-runner path untested, and that path breaks
+            # whenever the internal backend address is wrong.
+            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null &&
+               curl --fail --silent http://127.0.0.1:3000/login >/dev/null &&
+               curl --fail --silent http://127.0.0.1:3000/api/dbt-runner/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          curl --include --silent http://127.0.0.1:3000/api/dbt-runner/health || true
+          exit 1
+
+      - name: Smoke test the running stack
+        run: ./scripts/smoke.sh
+
+      - name: Smoke test dbt init, compile, and run
+        run: ./scripts/smoke-dbt.sh
+      - name: Capture logs after failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop stack
+        if: always()
+        run: docker compose down --volumes

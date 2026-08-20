@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    if: vars.PUBLIC_RELEASE_APPROVED == 'true'
+    environment: public-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - component: frontend
+            context: nextjs
+          - component: dbt-runner
+            context: dbt-runner
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.component }}
+          tags: type=semver,pattern={{version}}
+      - id: image
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          provenance: true
+          sbom: true
+      - name: Block vulnerable release images
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository }}-${{ matrix.component }}@${{ steps.image.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          docker run --rm
+          --env TRIVY_USERNAME
+          --env TRIVY_PASSWORD
+          aquasec/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e
+          image --exit-code 1
+          --severity HIGH,CRITICAL
+          "$IMAGE_REF"
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}-${{ matrix.component }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+  github-release:
+    if: vars.PUBLIC_RELEASE_APPROVED == 'true'
+    needs:
+      - images
+    environment: public-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes

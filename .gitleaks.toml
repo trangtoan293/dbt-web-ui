@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Historical unit-test-only signing key literal"
+regexTarget = "secret"
+regexes = [
+  '''^test-signing-key-that-is-at-least-32-bytes$''',
+]

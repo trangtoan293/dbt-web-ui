@@ -1,0 +1,7 @@
+__pycache__
+.venv
+venv/
+
+# mypy
+.mypy_cache/
+mypy_errors*.txt

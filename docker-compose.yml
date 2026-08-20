@@ -1,0 +1,148 @@
+name: dbt-craft
+
+# Ports are bound to loopback. Put a TLS reverse proxy in front for anything
+# network-accessible, and see docker-compose.production.yml.
+
+x-auth-env: &auth-env
+  AUTH_DISABLED: ${AUTH_DISABLED:-false}
+  OIDC_ISSUER: ${OIDC_ISSUER:-}
+  OIDC_AUDIENCE: ${OIDC_AUDIENCE:-dbt-craft}
+
+x-shared-env: &shared-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-dbtcraft}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbtcraft}
+  STORAGE_DIR: /data/storage
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dbt-craft-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dbtcraft}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-dbtcraft}
+    # Published for host-side development (prisma migrate, psql). Loopback only.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dbtcraft}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [dbt-craft-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: dbt-craft-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    # Published for host-side development only. Loopback only.
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks: [dbt-craft-network]
+
+  # One-shot Prisma migration runner. Uses the frontend Dockerfile's "builder"
+  # stage, which has the prisma CLI, the schema, and node_modules. Applies
+  # migrations before the app starts and exits 0.
+  db-migrate:
+    build:
+      context: ./nextjs
+      dockerfile: Dockerfile
+      target: builder
+    command: npx prisma migrate deploy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dbtcraft}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbtcraft}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [dbt-craft-network]
+
+  dbt-runner:
+    build:
+      context: ./dbt-runner
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DBT_SPARK: ${INSTALL_DBT_SPARK:-false}
+    container_name: dbt-craft-runner
+    restart: unless-stopped
+    environment:
+      <<: [*shared-env, *auth-env]
+      WORKSPACE_DIR: /tmp/dbt-projects
+      REDIS_URL: redis://redis:6379/0
+      MAX_CONCURRENT_DBT_RUNS: ${MAX_CONCURRENT_DBT_RUNS:-10}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://127.0.0.1:3000"]}
+      DBT_RUNNER_UVICORN_WORKERS: ${DBT_RUNNER_UVICORN_WORKERS:-1}
+      # dbt installs packages into the project dir by default. Projects authored
+      # for Airflow may point packages-install-path at an absolute Airflow path
+      # that does not exist here, so pin it to a project-relative dir.
+      DBT_PACKAGES_INSTALL_PATH: ${DBT_PACKAGES_INSTALL_PATH:-dbt_packages}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - dbt-projects:/tmp/dbt-projects
+      - storage-data:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks: [dbt-craft-network]
+
+  frontend:
+    build:
+      context: ./nextjs
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* are inlined into the client bundle at build time, so
+        # they must be build args, not runtime env.
+        NEXT_PUBLIC_PRODUCT_NAME: ${NEXT_PUBLIC_PRODUCT_NAME:-dbt-craft}
+    container_name: dbt-craft-frontend
+    restart: unless-stopped
+    environment:
+      <<: [*shared-env, *auth-env]
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-SSO}
+      AUTH_SECRET: ${AUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      AUTH_TRUST_HOST: "true"
+      # Internal address of the backend. The browser never uses it — it calls
+      # the /api/dbt-runner proxy, which forwards here over the compose network.
+      DBT_RUNNER_URL: http://dbt-runner:8080
+      NEXT_PUBLIC_PRODUCT_NAME: ${NEXT_PUBLIC_PRODUCT_NAME:-dbt-craft}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      dbt-runner:
+        condition: service_healthy
+    volumes:
+      - storage-data:/data/storage
+    networks: [dbt-craft-network]
+
+volumes:
+  dbt-projects:
+  redis-data:
+  postgres-data:
+  storage-data:
+
+networks:
+  dbt-craft-network:
+    driver: bridge
