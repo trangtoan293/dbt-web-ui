@@ -15,6 +15,11 @@ class DbtCommand(BaseModel):
         ..., description="dbt command (run, test, build, compile, etc.)"
     )
     selector: Optional[str] = Field(None, description="Model selector (--select)")
+    target: Optional[str] = Field(
+        None,
+        description="profiles.yml output to run against (--target). "
+        "Null uses the project's default target.",
+    )
     flags: Optional[List[str]] = Field(None, description="Additional command flags")
     environment_variables: Optional[Dict[str, str]] = Field(
         None, description="Environment variables to expose to dbt for this run"
@@ -67,6 +72,9 @@ class QueryRequest(BaseModel):
     project_id: str = Field(..., description="Project identifier")
     sql: str = Field(..., description="A single read-only SELECT statement")
     limit: int = Field(100, ge=1, le=1000, description="Max rows to return")
+    target: Optional[str] = Field(
+        None, description="profiles.yml output to query (--target)"
+    )
     environment_variables: Optional[Dict[str, str]] = Field(
         None, description="Environment variables to expose to dbt for this query"
     )
@@ -145,3 +153,12 @@ class DbtIntellisenseResponse(BaseModel):
     sources: List[DbtIntellisenseSource] = Field(default_factory=list)
     macros: List[DbtIntellisenseMacro] = Field(default_factory=list)
     docs: List[DbtIntellisenseDoc] = Field(default_factory=list)
+
+
+class FormatSqlRequest(BaseModel):
+    """Request to pretty-print a dbt model's SQL."""
+
+    sql: str = Field(..., description="SQL, possibly containing Jinja")
+    dialect: Optional[str] = Field(
+        None, description="sqlglot dialect. Defaults to the generic reader."
+    )

@@ -10,6 +10,7 @@ import { Input } from "@/components-v2/ui/input"
 import ProjectList from "@/components-v2/develop/ProjectList"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import { DeleteProjectDialog } from "@/components-v2/develop/transforms/DeleteProjectDialog"
+import PageHeader from "@/components-v2/layout/PageHeader"
 
 interface DbtProject {
   id: string
@@ -94,18 +95,11 @@ export default function DevelopPage() {
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Develop</h1>
-          <p className="text-sm text-gray-500 mt-1">Manage your dbt projects and models</p>
-        </div>
-        <Link href="/develop/new">
-          <Button>
-            <Plus className="h-4 w-4" />
-            New Project
-          </Button>
-        </Link>
-      </div>
+      <PageHeader
+        title="Develop"
+        description="Manage your dbt projects and models"
+        actions={<Button asChild><Link href="/develop/new"><Plus /> New Project</Link></Button>}
+      />
 
       {projects.length > 0 && (
         <div className="relative max-w-sm">
@@ -125,12 +119,7 @@ export default function DevelopPage() {
           title="No projects yet"
           description="Create your first dbt project to get started."
           action={
-            <Link href="/develop/new">
-              <Button>
-                <Plus className="h-4 w-4" />
-                Create Project
-              </Button>
-            </Link>
+            <Button asChild><Link href="/develop/new"><Plus /> Create Project</Link></Button>
           }
         />
       ) : (

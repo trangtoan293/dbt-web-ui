@@ -2,68 +2,79 @@
 
 import React from "react"
 import { usePathname } from "next/navigation"
-import {
-  Home, Code2, History, Compass, Database, Settings,
-  ChevronLeft, ChevronRight, X,
-} from "lucide-react"
+import { CalendarClock, ChevronLeft, ChevronRight, Code2, Compass, Database, Home, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import SidebarItem from "./SidebarItem"
 import BrandMark from "@/components-v2/shared/BrandMark"
+import { APP_NAVIGATION, isNavigationItemActive } from "./navigation"
 
 interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
   onMobileClose: () => void
   mobileOpen: boolean
+  interactive: boolean
 }
 
-const navigation = [
-  { name: "Home", href: "/", icon: Home },
-  { name: "Develop", href: "/develop", icon: Code2 },
-  { name: "History", href: "/runs", icon: History },
-  { name: "Explore", href: "/explore", icon: Compass },
-  { name: "Connections", href: "/connections", icon: Database },
-  { name: "Settings", href: "/settings", icon: Settings },
-]
+const navigationIcons = {
+  "/": Home,
+  "/develop": Code2,
+  "/orchestrate": CalendarClock,
+  "/explore": Compass,
+  "/data": Database,
+} as const
 
-export default function Sidebar({ collapsed, onToggle, onMobileClose, mobileOpen }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, onMobileClose, mobileOpen, interactive }: SidebarProps) {
   const pathname = usePathname()
-  const isActive = (href: string) =>
-    pathname === href || (href !== "/" && pathname.startsWith(href + "/"))
 
   return (
     <>
       {mobileOpen && (
-        <div className="fixed inset-0 bg-gray-600/50 z-20 lg:hidden" onClick={onMobileClose} />
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-20 cursor-default bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
+          onClick={onMobileClose}
+        />
       )}
 
       <aside
+        aria-label="Primary navigation"
+        aria-hidden={!interactive}
+        inert={interactive ? undefined : true}
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex flex-col bg-white border-r border-gray-200 transition-all duration-200",
-          collapsed ? "w-16" : "w-60",
+          "fixed inset-y-0 left-0 z-30 flex w-[min(18rem,calc(100vw-3rem))] flex-col border-r border-slate-200/80 bg-white/95 shadow-xl shadow-slate-950/5 backdrop-blur transition-all duration-200 lg:shadow-none",
+          collapsed ? "lg:w-16" : "lg:w-64",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
       >
-        <div className="flex h-14 items-center justify-between px-4 border-b border-gray-200">
-          {!collapsed && (
-            <BrandMark />
+        <div className="flex h-16 items-center justify-between border-b border-slate-100 px-4">
+          <BrandMark className="lg:hidden" />
+          {collapsed ? (
+            <BrandMark compact className="mx-auto hidden lg:inline-flex" />
+          ) : (
+            <BrandMark className="hidden lg:inline-flex" />
           )}
-          {collapsed && (
-            <BrandMark compact className="mx-auto" />
-          )}
-          <button onClick={onMobileClose} className="lg:hidden text-gray-400 hover:text-gray-600">
+          <button
+            type="button"
+            aria-label="Close navigation"
+            onClick={onMobileClose}
+            className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4] lg:hidden"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-4">
-          {navigation.map((item) => (
+        <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2.5 py-4">
+          {!collapsed && <p className="mb-2 hidden px-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400 lg:block">Workspace</p>}
+          <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400 lg:hidden">Workspace</p>
+          {APP_NAVIGATION.map((item) => (
             <SidebarItem
               key={item.href}
               href={item.href}
-              icon={item.icon}
+              icon={navigationIcons[item.href]}
               label={item.name}
-              isActive={isActive(item.href)}
+              isActive={isNavigationItemActive(pathname, item.href)}
               collapsed={collapsed}
             />
           ))}
@@ -71,8 +82,11 @@ export default function Sidebar({ collapsed, onToggle, onMobileClose, mobileOpen
 
         <div className="shrink-0 border-t border-gray-200 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2">
           <button
+            type="button"
             onClick={onToggle}
-            className="flex w-full items-center justify-center rounded-md px-2 py-2 text-sm text-gray-500 hover:bg-gray-100"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-pressed={collapsed}
+            className="hidden w-full items-center justify-center rounded-lg px-2 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4] lg:flex"
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             {collapsed ? (

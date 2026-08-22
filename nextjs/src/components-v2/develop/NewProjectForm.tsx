@@ -254,7 +254,7 @@ export default function NewProjectForm() {
               </select>
               {connections.length === 0 && (
                 <p className="mt-1 text-xs text-gray-500">
-                  No connections configured. <Link href="/connections" className="text-[#0078D4] hover:underline">Add one</Link>
+                  No connections configured. <Link href="/data" className="text-[#0078D4] hover:underline">Add one</Link>
                 </p>
               )}
             </Field>

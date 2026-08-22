@@ -11,9 +11,8 @@ import { gitApi } from '@/lib/api';
 import { buildGitShowHeadCommand } from '@/lib/git/diffPath';
 import { Loader2, GitCompare, X, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react';
 
-// Dynamically import Monaco DiffEditor to prevent SSR issues
 const MonacoDiffEditor = dynamic(
-    () => import('@monaco-editor/react').then((mod) => mod.DiffEditor),
+    () => import('@/lib/monaco-loader').then(({ loadMonacoDiffEditor }) => loadMonacoDiffEditor()),
     { ssr: false }
 );
 

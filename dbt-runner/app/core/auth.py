@@ -213,3 +213,23 @@ async def resolve_user_id(
             return str(row["id"])
 
     raise HTTPException(status_code=404, detail="User not found")
+
+
+async def verify_project_ownership(
+    session: AsyncSession, project_id: str, user_id: str
+) -> None:
+    """Raise 404 if the project does not exist or is not owned by user_id.
+
+    404 rather than 403 on purpose: a 403 confirms the project exists, which
+    tells one user about another user's projects.
+    """
+    result = await session.execute(
+        text(
+            "SELECT id FROM dbt_projects "
+            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
+            "AND deleted_at IS NULL"
+        ),
+        {"pid": project_id, "uid": user_id},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Project not found")

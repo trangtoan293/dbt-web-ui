@@ -37,6 +37,9 @@ interface EditorTabsProps {
     onNewDraft?: () => void;
     onRunParse?: () => void;
     onOpenDefinition?: (path: string) => void;
+    /** Format the active SQL file. Owned by the workspace: it tries the
+     *  server-side formatter first and falls back to the local one. */
+    onFormatSql?: () => void;
     onFormatContent: (formatted: string) => void;
     getLanguage: (path: string) => string;
     isSaving?: boolean;  // Show saving indicator when true
@@ -67,6 +70,7 @@ export default function EditorTabs({
     onNewDraft,
     onRunParse,
     onOpenDefinition,
+    onFormatSql,
     onFormatContent,
     getLanguage,
     isSaving: _isSaving = false,
@@ -201,10 +205,12 @@ export default function EditorTabs({
                                     <div className="w-px h-4 bg-[#E6E6E6]" />
                                     <button
                                         onClick={() => {
-                                            if (selectedFile) {
-                                                const formatted = formatFile(selectedFile, fileContent);
-                                                onFormatContent(formatted);
+                                            if (!selectedFile) return;
+                                            if (onFormatSql) {
+                                                onFormatSql();
+                                                return;
                                             }
+                                            onFormatContent(formatFile(selectedFile, fileContent));
                                         }}
                                         className="p-1.5 hover:bg-[#E6E6E6] rounded flex items-center gap-1 text-sm text-[#616161] transition-colors"
                                         title="Format SQL (Shift+Alt+F)"
@@ -296,6 +302,7 @@ export default function EditorTabs({
                                 onRun={onRun}
                                 onNewFile={onNewDraft}
                                 onCloseFile={onCloseCurrentTab}
+                                onFormat={onFormatSql}
                                 dbtIntellisense={dbtIntellisense}
                                 onOpenDefinition={onOpenDefinition}
                             />

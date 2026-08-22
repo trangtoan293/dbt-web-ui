@@ -13,6 +13,39 @@ x-shared-env: &shared-env
   STORAGE_DIR: /data/storage
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
 
+# Ingest / DuckLake lakehouse. The catalog defaults to the application database
+# under a per-project metadata schema; point LAKE_CATALOG_URL at its own database
+# to keep it separate. Data files live on the shared storage volume.
+x-ingest-env: &ingest-env
+  LAKE_CATALOG_URL: ${LAKE_CATALOG_URL:-}
+  LAKE_DATA_DIR: ${LAKE_DATA_DIR:-/data/storage/lake}
+  # 0 keeps ingested rows out of the catalog database. Raising it puts data
+  # inside Postgres and blocks the metadata-only path to Iceberg.
+  LAKE_INLINE_ROW_LIMIT: ${LAKE_INLINE_ROW_LIMIT:-0}
+  # On-premise warehouses usually sit on a private network, so this must be
+  # turned on for them. The deployment's own Postgres and Redis stay blocked.
+  INGEST_ALLOW_PRIVATE_HOSTS: ${INGEST_ALLOW_PRIVATE_HOSTS:-false}
+  INGEST_SUBPROCESS_TIMEOUT: ${INGEST_SUBPROCESS_TIMEOUT:-3600}
+  INGEST_RUN_LOG_MAX_CHARS: ${INGEST_RUN_LOG_MAX_CHARS:-262144}
+
+# Scheduler: cron for dbt runs, plus the housekeeping nothing else owns.
+# Leadership is a Redis key, so this is safe with several runner workers or
+# replicas - exactly one of them fires each schedule.
+x-scheduler-env: &scheduler-env
+  SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+  SCHEDULER_TICK_SECONDS: ${SCHEDULER_TICK_SECONDS:-30}
+  # A schedule due longer ago than this is skipped rather than run, so a long
+  # outage does not fire the whole backlog at once.
+  SCHEDULER_MISFIRE_GRACE_SECONDS: ${SCHEDULER_MISFIRE_GRACE_SECONDS:-3600}
+  WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-10}
+  # Run rows carry full log text, so history is the fastest growing table here.
+  # 0 keeps everything, forever.
+  RUN_HISTORY_RETENTION_DAYS: ${RUN_HISTORY_RETENTION_DAYS:-90}
+  MAINTENANCE_INTERVAL_HOURS: ${MAINTENANCE_INTERVAL_HOURS:-24}
+  # DuckLake keeps every snapshot and dbt leaves __dbt_backup tables behind;
+  # without expiry the storage volume only grows. 0 disables lake maintenance.
+  LAKE_SNAPSHOT_RETENTION_DAYS: ${LAKE_SNAPSHOT_RETENTION_DAYS:-7}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -68,6 +101,34 @@ services:
     restart: "no"
     networks: [dbt-craft-network]
 
+  # Dummy source database for trying out ingest. Not part of the application:
+  # it only starts with `--profile demo`, so a normal `docker compose up -d`
+  # never brings it up.
+  #
+  #   docker compose --profile demo up -d demo-source
+  #
+  # Then add a PostgreSQL connection in the UI with host `demo-source`, port
+  # 5432, database `crm`, user `ingest_reader`, password `demo_reader_pw`.
+  # Reaching it needs INGEST_ALLOW_PRIVATE_HOSTS=true, because a container
+  # address is a private one.
+  demo-source:
+    image: postgres:16-alpine
+    container_name: dbt-craft-demo-source
+    profiles: ["demo"]
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo_owner_pw
+      POSTGRES_DB: crm
+    volumes:
+      - ./demo/postgres-seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+      - demo-source-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d crm"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [dbt-craft-network]
+
   dbt-runner:
     build:
       context: ./dbt-runner
@@ -77,7 +138,7 @@ services:
     container_name: dbt-craft-runner
     restart: unless-stopped
     environment:
-      <<: [*shared-env, *auth-env]
+      <<: [*shared-env, *auth-env, *ingest-env, *scheduler-env]
       WORKSPACE_DIR: /tmp/dbt-projects
       REDIS_URL: redis://redis:6379/0
       MAX_CONCURRENT_DBT_RUNS: ${MAX_CONCURRENT_DBT_RUNS:-10}
@@ -142,6 +203,8 @@ volumes:
   redis-data:
   postgres-data:
   storage-data:
+  # Only used by the `demo` profile.
+  demo-source-data:
 
 networks:
   dbt-craft-network:

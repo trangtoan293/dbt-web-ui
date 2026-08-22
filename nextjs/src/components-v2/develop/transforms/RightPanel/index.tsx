@@ -6,7 +6,7 @@
  */
 
 import React, { useState } from 'react';
-import { Play, CheckCircle, RefreshCw, Database, Save, Terminal, BookOpen, Package, Sprout, FileText, Plug, Trash2 } from 'lucide-react';
+import { Play, CheckCircle, RefreshCw, Database, Save, Terminal, BookOpen, Package, Sprout, FileText, Plug, Trash2, Clock } from 'lucide-react';
 import DbtIcon from '@/components-v2/icons/assets/DbtIcon';
 import type { Connection } from '@/components-v2/develop/types';
 
@@ -22,8 +22,9 @@ interface RightPanelProps {
     onOpenDocs: () => void;
     onSaveFile: () => void;
     onToggleTerminal: () => void;
-    onOpenConnectionModal: () => void;
-    onDeleteProject?: () => void;
+    /** Opens Project settings; every project-scoped control routes here. */
+    onOpenSettings: () => void;
+    onOpenDangerZone?: () => void;
     deleteProjectLabel?: string;
 }
 
@@ -39,8 +40,8 @@ export default function RightPanel({
     onOpenDocs,
     onSaveFile,
     onToggleTerminal,
-    onOpenConnectionModal,
-    onDeleteProject,
+    onOpenSettings,
+    onOpenDangerZone,
     deleteProjectLabel = 'Delete Project',
 }: RightPanelProps) {
     const [dbtMenuOpen, setDbtMenuOpen] = useState(false);
@@ -145,6 +146,13 @@ export default function RightPanel({
                                         <span>Debug Connection</span>
                                     </button>
                                     <button
+                                        onClick={() => { onRunDbt('source freshness'); setDbtMenuOpen(false); }}
+                                        className="w-full px-3 py-2 text-sm text-left hover:bg-[#F3F2F1] flex items-center gap-2"
+                                    >
+                                        <Clock className="h-4 w-4 text-[#8A8886]" />
+                                        <span>Source Freshness</span>
+                                    </button>
+                                    <button
                                         onClick={() => { onRunDbt('deps'); setDbtMenuOpen(false); }}
                                         className="w-full px-3 py-2 text-sm text-left hover:bg-[#F3F2F1] flex items-center gap-2"
                                     >
@@ -166,11 +174,11 @@ export default function RightPanel({
                                         <FileText className="h-4 w-4 text-[#0078D4]" />
                                         <span>{docsLoading ? 'Generating...' : 'Generate Docs'}</span>
                                     </button>
-                                    {onDeleteProject && (
+                                    {onOpenDangerZone && (
                                         <>
                                             <div className="my-1 border-t border-[#E6E6E6]" />
                                             <button
-                                                onClick={() => { onDeleteProject(); setDbtMenuOpen(false); }}
+                                                onClick={() => { onOpenDangerZone(); setDbtMenuOpen(false); }}
                                                 className="w-full px-3 py-2 text-sm text-left hover:bg-red-50 text-red-600 flex items-center gap-2"
                                             >
                                                 <Trash2 className="h-4 w-4" />
@@ -215,11 +223,11 @@ export default function RightPanel({
                 <Terminal className="h-5 w-5 text-[#242424]" />
             </button>
 
-            {/* Connection Selector Button */}
+            {/* Project settings - opens on the connection */}
             <button
-                onClick={onOpenConnectionModal}
+                onClick={onOpenSettings}
                 className={`p-2 hover:bg-[#F3F2F1] rounded transition-colors ${projectConnectionId ? 'bg-[#E6E6E6]' : ''}`}
-                title={`Connection: ${connections.find(c => c.id === projectConnectionId)?.name || 'Not configured'}`}
+                title={`Project settings — connection: ${connections.find(c => c.id === projectConnectionId)?.name || 'Not configured'}`}
             >
                 <Database className="h-5 w-5 text-[#038387]" />
             </button>

@@ -20,11 +20,12 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id
+from app.core.auth import require_user, resolve_user_id, verify_project_ownership
 from app.core.db import async_session, get_session
 from app.core.file_lock import AsyncFileLock
 from app.core.global_semaphore import global_run_semaphore
 from app.core.redis_client import get_redis
+from app.exceptions import DbtOperationError
 from app.services.command import CommandService
 from app.services.dbt_service import DbtService
 from app.services.file_watcher import file_watcher_manager
@@ -251,19 +252,8 @@ class _SseRunPersistence:
                     logger.exception("Failed to persist dbt run artifacts: %s", exc)
 
 
-async def _verify_project_ownership(
-    session: AsyncSession, project_id: str, user_id: str
-) -> None:
-    result = await session.execute(
-        text(
-            "SELECT id FROM dbt_projects "
-            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
-            "AND deleted_at IS NULL"
-        ),
-        {"pid": project_id, "uid": user_id},
-    )
-    if not result.first():
-        raise HTTPException(status_code=404, detail="Project not found")
+# Shared with every other router - see app/core/auth.py
+_verify_project_ownership = verify_project_ownership
 
 
 async def _verify_run_ownership(
@@ -406,6 +396,10 @@ async def dbt_sse(
             project_id,
             _elapsed_ms(phase_start),
         )
+    except DbtOperationError as regen_err:
+        # A configured connection that cannot be rendered must not fall back to
+        # the profiles.yml on disk - that would run dbt against another warehouse.
+        raise HTTPException(status_code=400, detail=regen_err.message)
     except Exception as regen_err:
         logger.warning(f"[dbt_sse] profiles regen failed: {regen_err}")
 

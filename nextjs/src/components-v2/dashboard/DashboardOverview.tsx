@@ -3,12 +3,9 @@
 import React, { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
-  Activity,
   ArrowRight,
-  BarChart3,
   CheckCircle2,
   Circle,
-  Clock3,
   Code2,
   Database,
   GitBranch,
@@ -20,7 +17,6 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-  TriangleAlert,
 } from "lucide-react"
 import { getConnections, getProjects } from "@/lib/api-client"
 import { useGlobal } from "@/lib/context/GlobalContext"
@@ -28,15 +24,9 @@ import { Button } from "@/components-v2/ui/button"
 import { Card, CardContent } from "@/components-v2/ui/card"
 
 interface LatestProjectRun {
-  id: string
-  status: string
   command: string
   selector: string | null
   modelsTotal: number | null
-  modelsSuccess: number | null
-  modelsError: number | null
-  createdAt: string
-  completedAt: string | null
 }
 
 interface DbtProject {
@@ -47,15 +37,6 @@ interface DbtProject {
   sync_status: string | null
   created_at: string | null
   updated_at: string | null
-  connection_id: string | null
-  dremio_source_id: string | null
-  connection?: {
-    name?: string | null
-    connectionType?: string | null
-  } | null
-  dremioSource?: {
-    name?: string | null
-  } | null
   _count?: {
     runs: number
   }
@@ -98,31 +79,6 @@ function getProjectModelCount(project: DbtProject) {
   return isFullRun ? latestRun.modelsTotal || 0 : 0
 }
 
-function getConnectionLabel(project: DbtProject) {
-  if (project.connection) {
-    return {
-      title: project.connection.name || "Configured",
-      detail: project.connection.connectionType || "Connection",
-    }
-  }
-  if (project.dremioSource) {
-    return {
-      title: project.dremioSource.name || "Dremio source",
-      detail: "Dremio source",
-    }
-  }
-  if (project.connection_id || project.dremio_source_id) {
-    return {
-      title: "Configured",
-      detail: "Connection linked",
-    }
-  }
-  return {
-    title: "Not configured",
-    detail: "No connection",
-  }
-}
-
 export default function DashboardOverview() {
   const { user } = useGlobal()
   const [projects, setProjects] = useState<DbtProject[]>([])
@@ -160,12 +116,8 @@ export default function DashboardOverview() {
   )
   const readyProjects = projects.filter((project) => project.sync_status === "synced").length
   const issueProjects = projects.filter((project) => project.sync_status === "error").length
-  const pendingProjects = projects.length - readyProjects - issueProjects
   const totalModels = projects.reduce((total, project) => total + getProjectModelCount(project), 0)
   const totalRuns = projects.reduce((total, project) => total + (project._count?.runs || 0), 0)
-  const connectedProjects = projects.filter((project) => project.connection_id || project.dremio_source_id).length
-  const branches = new Set(projects.map((project) => project.git_branch || "main")).size
-  const connectionCoverage = projects.length ? Math.round((connectedProjects / projects.length) * 100) : 0
   const healthyRate = projects.length ? Math.round((readyProjects / projects.length) * 100) : 0
   const firstName = user?.name?.split(" ")[0] || user?.email?.split("@")[0] || "there"
 
@@ -178,80 +130,47 @@ export default function DashboardOverview() {
           <p className="mt-1 text-sm text-gray-500">Monitor your dbt workspace and continue developing models.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/develop">
-            <Button variant="outline"><Code2 /> Open IDE</Button>
-          </Link>
-          <Link href="/develop/new">
-            <Button><Plus /> New Project</Button>
-          </Link>
+          <Button variant="outline" asChild><Link href="/develop"><Code2 /> Open IDE</Link></Button>
+          <Button asChild><Link href="/develop/new"><Plus /> New Project</Link></Button>
         </div>
       </header>
 
-      <section className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <MetricCard icon={Layers3} label="Projects" value={projects.length} note={`${readyProjects} ready`} tone="blue" />
-          <MetricCard icon={PlayCircle} label="Runs" value={totalRuns} note="Persisted dbt runs" tone="purple" />
-          <MetricCard icon={Database} label="Models" value={totalModels} note="Cataloged or full-run count" tone="teal" />
-          <MetricCard icon={ShieldCheck} label="Ready" value={`${healthyRate}%`} note={issueProjects ? `${issueProjects} with errors` : "No sync errors"} tone="green" />
-        </div>
-        <WorkspaceSnapshot
-          connectedProjects={connectedProjects}
-          totalProjects={projects.length}
-          connectionCoverage={connectionCoverage}
-          branches={branches}
-          pendingProjects={pendingProjects}
-          issueProjects={issueProjects}
-        />
-      </section>
+      {loading ? (
+        <DashboardSkeleton />
+      ) : projects.length === 0 ? (
+        <GettingStarted connectionCount={connections.length} />
+      ) : (
+        <>
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <MetricCard icon={Layers3} label="Projects" value={projects.length} note={`${readyProjects} ready`} tone="blue" />
+            <MetricCard icon={PlayCircle} label="Runs" value={totalRuns} note="Persisted dbt runs" tone="purple" />
+            <MetricCard icon={Database} label="Models" value={totalModels} note="Cataloged or full-run count" tone="teal" />
+            <MetricCard icon={ShieldCheck} label="Ready" value={`${healthyRate}%`} note={issueProjects ? `${issueProjects} with errors` : "No sync errors"} tone="green" />
+          </section>
 
-      <section className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.85fr)]">
-        <Card className="overflow-hidden">
-          <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-            <div>
-              <h2 className="font-semibold text-gray-950">Your projects</h2>
-              <p className="mt-0.5 text-xs text-gray-500">Jump back into your most recently updated dbt projects.</p>
+          <section className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.85fr)]">
+            <Card className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+                <div>
+                  <h2 className="font-semibold text-gray-950">Your projects</h2>
+                  <p className="mt-0.5 text-xs text-gray-500">Jump back into your most recently updated dbt projects.</p>
+                </div>
+                <Link href="/develop" className="flex items-center gap-1 text-sm font-medium text-[#0078D4] hover:underline">
+                  View all <ArrowRight className="h-4 w-4" />
+                </Link>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {recentProjects.map((project) => <ProjectRow key={project.id} project={project} />)}
+              </div>
+            </Card>
+
+            <div className="space-y-5">
+              <SetupChecklist projects={projects.length} connections={connections.length} runs={totalRuns} />
+              <QuickActions />
             </div>
-            <Link href="/develop" className="flex items-center gap-1 text-sm font-medium text-[#0078D4] hover:underline">
-              View all <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
-          {loading ? (
-            <ProjectSkeleton />
-          ) : recentProjects.length ? (
-            <div className="divide-y divide-gray-100">
-              {recentProjects.map((project) => <ProjectRow key={project.id} project={project} />)}
-            </div>
-          ) : (
-            <EmptyProjects />
-          )}
-        </Card>
-
-        <div className="space-y-5">
-          <QuickActions />
-          <SetupChecklist projects={projects.length} connections={connections.length} />
-        </div>
-      </section>
-
-      <ProjectPortfolio projects={projects} />
-
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
-        <RecentActivity projects={recentProjects} />
-
-        <Card className="overflow-hidden border-[#D8E8F5] bg-gradient-to-br from-[#F3F9FD] to-white">
-          <CardContent className="p-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#0078D4] text-white shadow-sm">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <h2 className="mt-4 font-semibold text-gray-950">Develop with confidence</h2>
-            <p className="mt-2 text-sm leading-6 text-gray-600">
-              Open a project to edit models, preview results, inspect lineage, and run dbt commands from one workspace.
-            </p>
-            <Link href="/develop" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-[#0078D4] hover:underline">
-              Go to Develop <ArrowRight className="h-4 w-4" />
-            </Link>
-          </CardContent>
-        </Card>
-      </section>
+          </section>
+        </>
+      )}
     </div>
   )
 }
@@ -264,7 +183,7 @@ function MetricCard({ icon: Icon, label, value, note, tone }: { icon: React.Elem
     purple: "bg-violet-50 text-violet-600",
   }
   return (
-    <Card className="min-h-32">
+    <Card className="min-h-32 transition-[border-color,box-shadow] hover:border-slate-300 hover:shadow-md">
       <CardContent className="flex min-h-32 flex-col justify-between p-5">
         <div className="flex items-center justify-between gap-3">
           <p className="min-w-0 truncate text-sm font-semibold leading-5 text-gray-600">{label}</p>
@@ -275,52 +194,6 @@ function MetricCard({ icon: Icon, label, value, note, tone }: { icon: React.Elem
         <div className="space-y-1.5">
           <p className="text-3xl font-semibold leading-9 text-gray-950">{value}</p>
           <p className="truncate text-sm leading-5 text-gray-500">{note}</p>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function WorkspaceSnapshot({
-  connectedProjects,
-  totalProjects,
-  connectionCoverage,
-  branches,
-  pendingProjects,
-  issueProjects,
-}: {
-  connectedProjects: number
-  totalProjects: number
-  connectionCoverage: number
-  branches: number
-  pendingProjects: number
-  issueProjects: number
-}) {
-  const items = [
-    { icon: Server, label: "Connection coverage", value: `${connectedProjects}/${totalProjects}`, note: `${connectionCoverage}% configured` },
-    { icon: GitBranch, label: "Active branches", value: branches, note: "Unique branches" },
-    { icon: Clock3, label: "Pending sync", value: pendingProjects, note: "Not ready yet" },
-    { icon: TriangleAlert, label: "Needs attention", value: issueProjects, note: "Sync errors" },
-  ]
-
-  return (
-    <Card>
-      <CardContent className="p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold leading-6 text-gray-950">Workspace snapshot</h2>
-          <Activity className="h-4 w-4 text-gray-400" />
-        </div>
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-          {items.map(({ icon: Icon, label, value, note }) => (
-            <div key={label} className="min-h-24 rounded-lg border border-gray-100 bg-gray-50/70 p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold leading-5 text-gray-500">
-                <Icon className="h-4 w-4 shrink-0" />
-                <span className="truncate">{label}</span>
-              </div>
-              <p className="mt-2 text-xl font-semibold leading-7 text-gray-950">{value}</p>
-              <p className="mt-0.5 truncate text-sm leading-5 text-gray-500">{note}</p>
-            </div>
-          ))}
         </div>
       </CardContent>
     </Card>
@@ -346,79 +219,11 @@ function ProjectRow({ project }: { project: DbtProject }) {
   )
 }
 
-function ProjectPortfolio({ projects }: { projects: DbtProject[] }) {
-  return (
-    <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-        <div>
-          <h2 className="font-semibold text-gray-950">Project portfolio</h2>
-          <p className="mt-0.5 text-xs text-gray-500">Active projects, catalog status, and recorded workspace metadata.</p>
-        </div>
-        <BarChart3 className="h-5 w-5 text-gray-400" />
-      </div>
-      {projects.length ? (
-        <div className="p-3">
-          <div className="overflow-x-auto rounded-lg border border-gray-100">
-            <table className="w-full min-w-[860px] text-left text-sm">
-              <thead className="border-b border-gray-100 bg-gray-50/80 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                <tr>
-                  <th className="px-4 py-2.5">Project</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Branch</th>
-                  <th className="px-4 py-3">Connection</th>
-                  <th className="px-4 py-3">Models</th>
-                  <th className="px-4 py-3">Runs</th>
-                  <th className="px-4 py-3">Updated</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {projects.map((project) => {
-                  const status = getStatus(project.sync_status)
-                  const connection = getConnectionLabel(project)
-                  const modelCount = getProjectModelCount(project)
-                  const runCount = project._count?.runs || 0
-                  return (
-                    <tr key={project.id} className="hover:bg-gray-50/80">
-                      <td className="px-4 py-3">
-                        <Link href={`/develop/${project.id}`} className="font-medium text-gray-950 hover:text-[#0078D4] hover:underline">{project.name}</Link>
-                        <p className="mt-0.5 max-w-[240px] truncate text-xs text-gray-500">{project.description || "dbt transformation project"}</p>
-                      </td>
-                      <td className="px-4 py-3"><StatusBadge status={status} /></td>
-                      <td className="px-4 py-3 text-xs font-medium text-gray-600">{project.git_branch || "main"}</td>
-                      <td className="px-4 py-3">
-                        <p className="text-xs font-medium text-gray-700">{connection.title}</p>
-                        <p className="mt-0.5 text-xs text-gray-400">{connection.detail}</p>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-gray-700">{modelCount}</p>
-                        <p className="mt-0.5 text-xs text-gray-400">{modelCount ? "Cataloged" : "Not cataloged"}</p>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-gray-700">{runCount}</p>
-                        <p className="mt-0.5 text-xs text-gray-400">{runCount ? "Recorded" : "No records"}</p>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">{formatRelativeDate(project.updated_at || project.created_at)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : <p className="px-5 py-8 text-center text-sm text-gray-500">Project metrics will appear after you create a project.</p>}
-    </Card>
-  )
-}
-
-function StatusBadge({ status }: { status: { label: string; className: string; dot: string } }) {
-  return <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${status.className}`}><span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />{status.label}</span>
-}
-
 function QuickActions() {
   const actions = [
     { href: "/develop/new", icon: Plus, title: "Create project", note: "Initialize or clone a repository" },
-    { href: "/connections", icon: Server, title: "Manage connections", note: "Configure your query engines" },
-    { href: "/runs", icon: Rocket, title: "Review history", note: "Inspect run history and jobs" },
+    { href: "/data", icon: Server, title: "Manage connections", note: "Configure your query engines" },
+    { href: "/orchestrate", icon: Rocket, title: "Review history", note: "Inspect run history and jobs" },
     { href: "/settings", icon: Settings2, title: "Workspace settings", note: "Manage your preferences" },
   ]
   return (
@@ -445,45 +250,11 @@ function QuickActions() {
   )
 }
 
-function RecentActivity({ projects }: { projects: DbtProject[] }) {
-  return (
-    <Card>
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-        <div>
-          <h2 className="font-semibold text-gray-950">Recent activity</h2>
-          <p className="mt-0.5 text-xs text-gray-500">Latest workspace updates from your projects.</p>
-        </div>
-        <Activity className="h-5 w-5 text-gray-400" />
-      </div>
-      <CardContent className="p-3">
-        {projects.length ? (
-          <div className="space-y-2">
-            {projects.slice(0, 4).map((project, index) => (
-              <div key={project.id} className="flex items-center gap-3 rounded-lg border border-gray-100 px-3 py-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50">
-                  <GitBranch className="h-3.5 w-3.5 text-[#0078D4]" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-gray-700"><span className="font-medium text-gray-950">{project.name}</span> workspace updated</p>
-                  <p className="mt-0.5 truncate text-xs text-gray-500">{project.git_branch || "main"} branch · {formatRelativeDate(project.updated_at || project.created_at)}</p>
-                </div>
-                {index === 0 && <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-[#0078D4]">Latest</span>}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="py-8 text-center text-sm text-gray-500">Project activity will appear here.</p>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function SetupChecklist({ projects, connections }: { projects: number; connections: number }) {
+function SetupChecklist({ projects, connections, runs }: { projects: number; connections: number; runs: number }) {
   const items = [
     { done: connections > 0, text: "Configure a data connection" },
     { done: projects > 0, text: "Create or import a dbt project" },
-    { done: false, text: "Run and validate your first model" },
+    { done: runs > 0, text: "Run and validate your first model" },
   ]
   const completed = items.filter((item) => item.done).length
   return (
@@ -511,13 +282,87 @@ function ProjectSkeleton() {
   return <div className="space-y-px">{[1, 2, 3, 4].map((item) => <div key={item} className="h-[68px] animate-pulse bg-gray-50" />)}</div>
 }
 
-function EmptyProjects() {
+function DashboardSkeleton(): React.ReactElement {
   return (
-    <div className="flex flex-col items-center px-5 py-12 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-50"><Database className="h-6 w-6 text-[#0078D4]" /></div>
-      <h3 className="mt-3 font-semibold text-gray-950">Create your first dbt project</h3>
-      <p className="mt-1 max-w-sm text-sm text-gray-500">Initialize a new workspace or clone an existing Git repository to start developing models.</p>
-      <Link href="/develop/new" className="mt-4"><Button size="sm"><Plus /> New Project</Button></Link>
+    <div className="space-y-5" aria-label="Loading workspace overview">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[1, 2, 3, 4].map((item) => <div key={item} className="h-32 animate-pulse rounded-xl border border-slate-200 bg-white/70" />)}
+      </div>
+      <Card className="overflow-hidden"><ProjectSkeleton /></Card>
+    </div>
+  )
+}
+
+function GettingStarted({ connectionCount }: { connectionCount: number }): React.ReactElement {
+  const steps = [
+    {
+      icon: Server,
+      title: "Connect your warehouse",
+      description: connectionCount > 0 ? `${connectionCount} connection${connectionCount === 1 ? "" : "s"} ready to use.` : "Add PostgreSQL, DuckDB, Dremio, Oracle, or Spark.",
+      href: "/data",
+      action: connectionCount > 0 ? "Review connections" : "Add connection",
+      done: connectionCount > 0,
+    },
+    {
+      icon: Code2,
+      title: "Create or import a project",
+      description: "Start fresh or clone an existing dbt repository.",
+      href: "/develop/new",
+      action: "Create project",
+      done: false,
+    },
+    {
+      icon: PlayCircle,
+      title: "Build your first model",
+      description: "Develop, preview, and run models with live logs.",
+      href: "/develop",
+      action: "Open Develop",
+      done: false,
+    },
+  ]
+
+  return (
+    <div className="space-y-5">
+      <Card className="overflow-hidden border-blue-200/70">
+        <CardContent className="relative overflow-hidden bg-gradient-to-br from-[#F3F9FD] via-white to-[#F1FBFA] p-6 sm:p-8">
+          <div aria-hidden="true" className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-sky-200/30 blur-3xl" />
+          <div className="relative max-w-2xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/80 px-3 py-1 text-xs font-semibold text-[#0078D4] shadow-sm">
+              <Sparkles className="h-3.5 w-3.5" /> Start here
+            </div>
+            <h2 className="mt-4 text-2xl font-semibold tracking-tight text-gray-950 sm:text-3xl">Build your first dbt workspace</h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-gray-600 sm:text-base">
+              Connect your data platform, bring in a project, and run a model—all from one browser workspace.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              <Button asChild><Link href="/develop/new"><Plus /> Create Project</Link></Button>
+              <Button variant="outline" asChild><Link href="/data"><Server /> Manage Connections</Link></Button>
+            </div>
+          </div>
+        </CardContent>
+
+        <div className="grid divide-y divide-slate-100 bg-white md:grid-cols-3 md:divide-x md:divide-y-0">
+          {steps.map(({ icon: Icon, title, description, href, action, done }, index) => (
+            <Link key={title} href={href} className="group p-5 transition-colors hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0078D4]">
+              <div className="flex items-center justify-between">
+                <div className="grid h-10 w-10 place-items-center rounded-xl bg-slate-100 text-slate-600 transition-colors group-hover:bg-blue-50 group-hover:text-[#0078D4]">
+                  <Icon className="h-5 w-5" />
+                </div>
+                {done ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600"><CheckCircle2 className="h-4 w-4" /> Ready</span>
+                ) : (
+                  <span className="text-xs font-semibold text-slate-400">Step {index + 1}</span>
+                )}
+              </div>
+              <h3 className="mt-4 text-sm font-semibold text-gray-950">{title}</h3>
+              <p className="mt-1 min-h-10 text-sm leading-5 text-gray-500">{description}</p>
+              <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-[#0078D4]">{action}<ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" /></span>
+            </Link>
+          ))}
+        </div>
+      </Card>
+
+      <QuickActions />
     </div>
   )
 }

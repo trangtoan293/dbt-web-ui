@@ -116,11 +116,11 @@ class PostgreSQLAdapter(BaseAdapter):
             raise RuntimeError("Database pool not initialized. Call connect() first.")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT table_name 
+                SELECT table_name
                 FROM information_schema.views
                 WHERE table_schema = $1
                 ORDER BY table_name
-            """)
+            """, schema)
             return [row['table_name'] for row in rows]
     
     async def _get_columns(self, schema: str, table: str) -> List[Column]:

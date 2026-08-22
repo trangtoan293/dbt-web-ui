@@ -26,6 +26,7 @@ from app.config import settings
 from app.core.file_lock import AsyncFileLock
 from app.core.global_semaphore import global_run_semaphore
 from app.core.crypto import decrypt_secret_or_plaintext
+from app.exceptions import DbtOperationError
 from app.lineage import get_full_lineage
 from app.models.dbt import (
     CompileRequest,
@@ -40,6 +41,7 @@ from app.models.docs import DocsGenerateRequest, DocsServeRequest
 from app.services.command import CommandService
 from app.services.dbt_worker import DbtWarmWorkerError, DbtWarmWorkerPool, warm_worker_pool
 from app.services.project import ProjectService
+from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
 
@@ -47,22 +49,59 @@ ALLOWED_ENV_VAR_NAME_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 DBT_PROFILE_SECRET_ENV = "DBT_ENV_SECRET_DBT_CRAFT_CREDENTIAL"
 DBT_PROFILE_SECRET_PLACEHOLDER = "{{ env_var('DBT_ENV_SECRET_DBT_CRAFT_CREDENTIAL') }}"
 
+# The project's own connection is always this target, so a project that never
+# defines another one renders exactly the profile it did before targets existed.
+DEFAULT_TARGET_NAME = "dev"
+# Target names become profiles.yml output keys, dbt --target values and env var
+# suffixes, so the shape is checked once here rather than escaped three times.
+TARGET_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,29}$")
 
-def _load_connection_adapter_factory():
+
+def _load_adapters_module():
     """Load local connection adapters even when workers start with a narrow sys.path.
 
     A process can launch with a cwd/sys.path that omits the dbt-runner repo root,
     so a bare `from adapters import ...` would fail there.
     """
     try:
-        return importlib.import_module("adapters").get_adapter
+        return importlib.import_module("adapters")
     except ModuleNotFoundError as exc:
         if exc.name != "adapters":
             raise
         repo_root = Path(__file__).resolve().parents[2]
         if str(repo_root) not in sys.path:
             sys.path.insert(0, str(repo_root))
-        return importlib.import_module("adapters").get_adapter
+        return importlib.import_module("adapters")
+
+
+def _load_connection_adapter_factory():
+    return _load_adapters_module().get_adapter
+
+
+def _duckdb_default_db_file() -> str:
+    _load_adapters_module()  # fixes sys.path when needed
+    return importlib.import_module("adapters.duckdb").DEFAULT_DB_FILE
+
+
+def _fix_in_memory_duckdb_profile(project_path: Path) -> None:
+    """Repoint an existing in-memory DuckDB profile at a project-local file.
+
+    Projects created before this fix have `path: ':memory:'` on disk. Because
+    every dbt command runs in its own process, such a profile drops every model
+    at the end of the run, and the next run fails with
+    "Catalog Error: Table with name <upstream model> does not exist".
+    """
+    profiles_file = project_path / "profiles.yml"
+    try:
+        content = profiles_file.read_text()
+    except OSError:
+        return
+    if ":memory:" not in content:
+        return
+    profiles_file.write_text(content.replace(":memory:", _duckdb_default_db_file()))
+    logger.info("Repointed in-memory DuckDB profile at %s", profiles_file)
+
+
 SPARK_EXTRA_CONFIG_KEYS = {
     "method",
     "threads",
@@ -82,18 +121,6 @@ SPARK_EXTRA_CONFIG_KEYS = {
     "query_timeout",
     "poll_interval",
     "query_retries",
-}
-
-# Which encrypted-secret key each SQLAlchemy warehouse adapter expects.
-# None = no injected secret (bigquery uses a keyfile path / ADC).
-WAREHOUSE_SECRET_KEY: Dict[str, Optional[str]] = {
-    "snowflake": "password",
-    "redshift": "password",
-    "trino": "password",
-    "sqlserver": "password",
-    "mysql": "password",
-    "athena": "aws_secret_access_key",
-    "bigquery": None,
 }
 
 
@@ -122,14 +149,14 @@ def build_adapter_config_from_connection_row(
             "user": conn_row["username"],
             "password": secret_value,
             "dbname": conn_row["database"],
-            "schema": "public",
+            "schema": extra_cfg.get("schema") or "public",
             "threads": 4,
         }, needs_secret
 
     if conn_type == "duckdb":
         return conn_type, {
-            "path": conn_row["database"] or ":memory:",
-            "schema": "main",
+            "path": conn_row["database"] or "",
+            "schema": extra_cfg.get("schema") or "main",
             "threads": 4,
         }, needs_secret
 
@@ -180,20 +207,9 @@ def build_adapter_config_from_connection_row(
             needs_secret = True
         return conn_type, adapter_config, needs_secret
 
-    # SQLAlchemy warehouse adapters (snowflake/bigquery/redshift/trino/athena/
-    # sqlserver/mysql). The frontend stores adapter-exact keys in extra_config,
-    # so the mapping is just: spread extra_config + inject the encrypted secret
-    # into the right key. ponytail: assumes key/password auth for athena/trino;
-    # add a profile/ADC path here if keyless auth is needed.
-    if conn_type in WAREHOUSE_SECRET_KEY:
-        cfg = dict(extra_cfg)
-        cfg.setdefault("threads", 4)
-        secret_key = WAREHOUSE_SECRET_KEY[conn_type]
-        if secret_key:
-            cfg[secret_key] = secret_value
-            needs_secret = True
-        return conn_type, cfg, needs_secret
-
+    # Adding a warehouse means: an adapter in adapters/__init__.py, its dbt
+    # plugin in pyproject.toml, and the type in CONNECTION_TYPES on the
+    # frontend. A mapping here alone only produces failed runs.
     raise ValueError(f"Unsupported connection_type: {conn_type}")
 
 
@@ -345,14 +361,125 @@ class DbtService:
         return len(stale_runs)
 
     @staticmethod
+    def target_secret_env(target: str) -> str:
+        """Name of the env var carrying one target's credential.
+
+        Every output needs its own: with two targets sharing
+        DBT_ENV_SECRET_DBT_CRAFT_CREDENTIAL, whichever profile is rendered last
+        wins and the other target authenticates against its warehouse with the
+        wrong password. The default target keeps the original name, so a
+        single-target project's profile is byte-identical to before.
+        """
+        if target == DEFAULT_TARGET_NAME:
+            return DBT_PROFILE_SECRET_ENV
+        suffix = "".join(char if char.isalnum() else "_" for char in target).upper()
+        return f"{DBT_PROFILE_SECRET_ENV}__{suffix}"
+
+    @staticmethod
+    async def _load_project_targets(
+        session: AsyncSession, project_id: str
+    ) -> List[Dict[str, Any]]:
+        """Extra named targets for this project, beyond the default one.
+
+        Absent table means a deployment that has not applied the targets
+        migration yet; asking to_regclass first keeps a dbt run working there
+        instead of aborting the transaction on a missing relation.
+        """
+        exists = await session.execute(
+            text("SELECT to_regclass('project_targets') IS NOT NULL")
+        )
+        if not exists.scalar():
+            return []
+        result = await session.execute(
+            text(
+                "SELECT name, connection_id FROM project_targets "
+                "WHERE project_id = CAST(:pid AS uuid) ORDER BY name"
+            ),
+            {"pid": project_id},
+        )
+        return [
+            {"name": row["name"], "connection_id": str(row["connection_id"])}
+            for row in result.mappings().all()
+            if TARGET_NAME_RE.match(str(row["name"] or ""))
+        ]
+
+    @staticmethod
+    async def _build_target_config(
+        session: AsyncSession,
+        *,
+        connection_id: Optional[str],
+        dremio_source_id: Optional[str],
+        secret_env: str,
+    ) -> tuple[str, Dict[str, Any], Dict[str, str]]:
+        """Adapter config for one profiles.yml output, plus the env it needs."""
+        placeholder = f"{{{{ env_var('{secret_env}') }}}}"
+        dbt_env: Dict[str, str] = {}
+
+        if connection_id:
+            result = await session.execute(
+                text(
+                    "SELECT connection_type, host, port, database, username, "
+                    "password_encrypted, extra_config "
+                    "FROM connections WHERE id = CAST(:cid AS uuid)"
+                ),
+                {"cid": str(connection_id)},
+            )
+            row = result.mappings().first()
+            if not row:
+                raise DbtOperationError(
+                    "profile setup",
+                    f"connection {connection_id} attached to this project no longer "
+                    "exists - attach an existing connection in the UI",
+                )
+            conn_type, adapter_config, needs_secret = (
+                build_adapter_config_from_connection_row(dict(row), placeholder)
+            )
+            secret_column = "password_encrypted"
+        else:
+            result = await session.execute(
+                text(
+                    "SELECT host, port, username, token_encrypted, catalog "
+                    "FROM dremio_sources WHERE id = CAST(:sid AS uuid)"
+                ),
+                {"sid": str(dremio_source_id)},
+            )
+            row = result.mappings().first()
+            if not row:
+                raise DbtOperationError(
+                    "profile setup",
+                    f"Dremio source {dremio_source_id} attached to this project no "
+                    "longer exists - attach an existing connection in the UI",
+                )
+            conn_type, adapter_config, needs_secret = (
+                build_adapter_config_from_dremio_source_row(dict(row), placeholder)
+            )
+            secret_column = "token_encrypted"
+
+        if needs_secret:
+            secret = decrypt_secret_or_plaintext(row[secret_column])
+            if secret:
+                dbt_env[secret_env] = secret
+
+        return conn_type, adapter_config, dbt_env
+
+    @staticmethod
     async def _regenerate_profiles_from_db(
         session: AsyncSession, project_id: str, project_path: Path
     ) -> Dict[str, str]:
-        """Regenerate profiles.yml from the project's stored connection in the DB.
+        """Regenerate profiles.yml from the project's stored connections.
 
-        Queries dbt_projects → connection_id or dremio_source_id → builds adapter
-        config → writes profiles.yml.  Silently returns empty env on any error so the
-        caller can fall back to the existing file on disk.
+        Queries dbt_projects → connection_id or dremio_source_id for the default
+        `dev` target, then project_targets for any extra named target (staging,
+        prod, ...). Each target is rendered by its own adapter and the outputs
+        are merged into one profile, so `dbt run --target prod` reaches a
+        different warehouse without a second project.
+
+        Returns an empty env (and leaves profiles.yml alone) only when the
+        project has no connection at all, i.e. the user manages profiles.yml by
+        hand. When a connection *is* attached but its profile cannot be
+        rendered, raises DbtOperationError instead of falling back to the file on
+        disk: a stale or placeholder profile silently points dbt at the wrong
+        warehouse.
         """
         import yaml as _yaml
         get_adapter = _load_connection_adapter_factory()
@@ -372,9 +499,13 @@ class DbtService:
 
             connection_id = row["connection_id"]
             dremio_source_id = row["dremio_source_id"]
+            extra_targets = await DbtService._load_project_targets(session, project_id)
 
-            if not connection_id and not dremio_source_id:
-                return {}  # manual profiles.yml – leave it alone
+            if not connection_id and not dremio_source_id and not extra_targets:
+                # manual profiles.yml – leave it alone, except for the broken
+                # in-memory DuckDB target older placeholders were written with.
+                _fix_in_memory_duckdb_profile(project_path)
+                return {}
 
             dbt_project_file = project_path / "dbt_project.yml"
             if not dbt_project_file.exists():
@@ -386,64 +517,170 @@ class DbtService:
             if not profile_name:
                 return {}
 
-            conn_type: str
-            adapter_config: Dict[str, Any]
+            specs: List[tuple[str, Optional[str], Optional[str]]] = []
+            if connection_id or dremio_source_id:
+                specs.append((DEFAULT_TARGET_NAME, connection_id, dremio_source_id))
+            specs.extend(
+                (target["name"], target["connection_id"], None)
+                for target in extra_targets
+                if target["name"] != DEFAULT_TARGET_NAME
+            )
+
             dbt_env: Dict[str, str] = {}
+            outputs: Dict[str, Any] = {}
+            default_target: Optional[str] = None
+            release_duckdb_file = False
+            conn_types: List[str] = []
 
-            if connection_id:
-                conn_result = await session.execute(
-                    text(
-                        "SELECT connection_type, host, port, database, username, "
-                        "password_encrypted, extra_config "
-                        "FROM connections WHERE id = CAST(:cid AS uuid)"
-                    ),
-                    {"cid": str(connection_id)},
+            for target_name, target_connection_id, target_dremio_id in specs:
+                secret_env = DbtService.target_secret_env(target_name)
+                conn_type, adapter_config, target_env = (
+                    await DbtService._build_target_config(
+                        session,
+                        connection_id=target_connection_id,
+                        dremio_source_id=target_dremio_id,
+                        secret_env=secret_env,
+                    )
                 )
-                conn_row = conn_result.mappings().first()
-                if not conn_row:
-                    return {}
-
-                conn_type, adapter_config, needs_secret = (
-                    build_adapter_config_from_connection_row(dict(conn_row))
+                dbt_env.update(target_env)
+                dbt_env.update(
+                    await DbtService._apply_lakehouse_attach(
+                        session, project_id, conn_type, adapter_config
+                    )
                 )
-                if needs_secret:
-                    secret = decrypt_secret_or_plaintext(conn_row["password_encrypted"])
-                    if secret:
-                        dbt_env[DBT_PROFILE_SECRET_ENV] = secret
+                if conn_type == "duckdb" and (
+                    adapter_config.get("path") or ""
+                ) not in ("", ":memory:"):
+                    release_duckdb_file = True
 
-            else:  # dremio_source_id
-                src_result = await session.execute(
-                    text(
-                        "SELECT host, port, username, token_encrypted, catalog "
-                        "FROM dremio_sources WHERE id = CAST(:sid AS uuid)"
-                    ),
-                    {"sid": str(dremio_source_id)},
+                try:
+                    adapter = get_adapter(conn_type, adapter_config)
+                    rendered = _yaml.safe_load(
+                        adapter.generate_profiles_yml(profile_name, target_name)
+                    )
+                except Exception as exc:
+                    raise DbtOperationError(
+                        "profile setup",
+                        f"could not render target '{target_name}' for the "
+                        f"{conn_type} connection: {exc}",
+                    ) from exc
+
+                # Adapters own their own YAML, so read the output back out of it
+                # rather than assuming the key they used.
+                rendered_outputs = (
+                    ((rendered or {}).get(profile_name) or {}).get("outputs") or {}
                 )
-                src_row = src_result.mappings().first()
-                if not src_row:
-                    return {}
-
-                conn_type, adapter_config, needs_secret = (
-                    build_adapter_config_from_dremio_source_row(dict(src_row))
+                output = rendered_outputs.get(target_name) or next(
+                    iter(rendered_outputs.values()), None
                 )
-                if needs_secret:
-                    secret = decrypt_secret_or_plaintext(src_row["token_encrypted"])
-                    if secret:
-                        dbt_env[DBT_PROFILE_SECRET_ENV] = secret
+                if output is None:
+                    raise DbtOperationError(
+                        "profile setup",
+                        f"the {conn_type} adapter produced no output for target "
+                        f"'{target_name}'",
+                    )
+                outputs[target_name] = output
+                conn_types.append(conn_type)
+                if default_target is None:
+                    default_target = target_name
 
-            adapter = get_adapter(conn_type, adapter_config)
-            profiles_content = adapter.generate_profiles_yml(profile_name)
-            (project_path / "profiles.yml").write_text(profiles_content.strip())
+            if not outputs:
+                _fix_in_memory_duckdb_profile(project_path)
+                return {}
+
+            # Every path that runs dbt regenerates the profile first, so this is
+            # the one place all of them pass through. A warm worker holding the
+            # project's DuckDB file open makes the next run fail on the file
+            # lock, so hand the file back before dbt is invoked.
+            if release_duckdb_file:
+                await warm_worker_pool.release_project(project_id)
+
+            try:
+                profiles_content = _yaml.safe_dump(
+                    {profile_name: {"outputs": outputs, "target": default_target}},
+                    sort_keys=False,
+                    default_flow_style=False,
+                )
+                (project_path / "profiles.yml").write_text(profiles_content.strip())
+            except Exception as exc:
+                raise DbtOperationError(
+                    "profile setup",
+                    f"could not write profiles.yml for this project: {exc}",
+                ) from exc
+
             logger.debug(
-                "Regenerated profiles.yml for project %s (type=%s)", project_id, conn_type
+                "Regenerated profiles.yml for project %s (targets=%s types=%s)",
+                project_id,
+                list(outputs),
+                conn_types,
             )
             return dbt_env
 
+        except DbtOperationError:
+            raise
         except Exception as exc:
             logger.warning(
                 "Could not regenerate profiles.yml for %s: %s", project_id, exc
             )
             return {}
+
+    @staticmethod
+    async def _apply_lakehouse_attach(
+        session: AsyncSession,
+        project_id: str,
+        conn_type: str,
+        adapter_config: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Attach the project's DuckLake catalog to its dbt profile, if it has one.
+
+        Only DuckDB projects with a lakehouse-bound ingest source get the attach
+        block: attaching opens a Postgres connection on every dbt invocation, and
+        a project with no ingest source has nothing there to read.
+
+        Returns the env carrying the catalog password, so the secret reaches dbt
+        through env_var() instead of being written into profiles.yml.
+        """
+        if conn_type != "duckdb" or not lakehouse.is_configured():
+            return {}
+
+        # Ask whether the table exists before querying it. A failed statement
+        # aborts the transaction, and rolling this session back would discard the
+        # oidc_sub update resolve_user_id may have made earlier in the request.
+        # The table is absent until the ingest migration is applied, and a dbt run
+        # must not break over a feature the deployment has not enabled yet.
+        exists = await session.execute(
+            text("SELECT to_regclass('ingest_sources') IS NOT NULL")
+        )
+        if not exists.scalar():
+            logger.debug("No ingest_sources table; skipping lakehouse attach")
+            return {}
+
+        result = await session.execute(
+            text(
+                "SELECT 1 FROM ingest_sources "
+                "WHERE project_id = CAST(:pid AS uuid) AND destination = 'ducklake' "
+                "LIMIT 1"
+            ),
+            {"pid": project_id},
+        )
+        if result.first() is None:
+            return {}
+
+        try:
+            entry = lakehouse.dbt_attach_entry(project_id)
+            password = lakehouse.catalog_password()
+        except lakehouse.LakehouseError as exc:
+            logger.warning("Lakehouse attach unavailable for %s: %s", project_id, exc)
+            return {}
+
+        extensions = list(adapter_config.get("extensions") or [])
+        for extension in lakehouse.DUCKDB_EXTENSIONS:
+            if extension not in extensions:
+                extensions.append(extension)
+        adapter_config["extensions"] = extensions
+        adapter_config["attach"] = [*(adapter_config.get("attach") or []), entry]
+
+        return {lakehouse.CATALOG_PASSWORD_ENV: password} if password else {}
 
     @staticmethod
     async def _load_persisted_environment(
@@ -532,6 +769,16 @@ class DbtService:
 
         if request.selector:
             cmd.extend(["--select", request.selector])
+
+        if request.target:
+            # Reaches the dbt CLI, so the shape is checked rather than quoted.
+            if not TARGET_NAME_RE.match(request.target):
+                raise DbtOperationError(
+                    "dbt command",
+                    f"invalid target name '{request.target}' - lowercase letters, "
+                    "digits and underscores only",
+                )
+            cmd.extend(["--target", request.target])
 
         if request.flags:
             cmd.extend(request.flags)
@@ -758,8 +1005,10 @@ class DbtService:
 
         valid_commands = {
             "run", "test", "build", "compile", "docs", "deps", "clean",
-            "seed", "snapshot",
+            "seed", "snapshot", "source_freshness",
         }
+        # `dbt source freshness` is two CLI words but one enum value.
+        command_name = "source_freshness" if command_name == "source" else command_name
         cmd_enum = command_name if command_name in valid_commands else "run"
 
         await session.execute(
@@ -1806,6 +2055,19 @@ class DbtService:
             "--profiles-dir",
             str(project_path),
         ]
+        if request.target:
+            # Shape-checked, not quoted: it becomes a CLI argument. Same rule as
+            # run_command - an ad-hoc query must be able to read prod without
+            # being a second way to smuggle arguments into dbt.
+            if not TARGET_NAME_RE.match(request.target):
+                return {
+                    "success": False,
+                    "data": [],
+                    "columns": [],
+                    "row_count": 0,
+                    "error": f"invalid target name '{request.target}'",
+                }
+            cmd.extend(["--target", request.target])
         start_time = time.time()
         try:
             async with AsyncFileLock.lock(request.project_id, "query", timeout=30):
@@ -1953,21 +2215,17 @@ class DbtService:
     def _placeholder_profiles_yml(profile_name: str) -> str:
         """Editable placeholder profiles.yml for a project with no connection.
 
-        Uses an in-memory DuckDB target so dbt can still parse the profile.
-        Replace it by attaching a connection in the UI, or edit by hand.
+        Uses a project-local DuckDB file (never ':memory:', which loses every
+        model between dbt processes) so runs work before a connection is
+        attached. Replace it by attaching a connection in the UI, or edit by hand.
         """
+        get_adapter = _load_connection_adapter_factory()
+        target = get_adapter("duckdb", {}).generate_profiles_yml(profile_name)
         return (
-            f"# Placeholder profile - no connection configured.\n"
-            f"# Attach a connection in the Develop screen to regenerate this,\n"
-            f"# or edit the target below manually.\n"
-            f"{profile_name}:\n"
-            f"  target: dev\n"
-            f"  outputs:\n"
-            f"    dev:\n"
-            f"      type: duckdb\n"
-            f"      path: ':memory:'\n"
-            f"      schema: main\n"
-            f"      threads: 4\n"
+            "# Placeholder profile - no connection configured.\n"
+            "# Attach a connection in the Develop screen to regenerate this,\n"
+            "# or edit the target below manually.\n"
+            f"{target}"
         )
 
     async def init_project(self, request: DbtInitRequest) -> Dict[str, Any]:

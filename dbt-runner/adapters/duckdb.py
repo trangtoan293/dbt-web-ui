@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from .base import BaseAdapter, Column, Table
 
+# Default DuckDB file, relative to the dbt project dir (dbt always runs with
+# cwd = project dir). Every dbt command is a separate process, so ':memory:'
+# throws away every model as soon as the run ends and the next run fails with
+# "Catalog Error: Table with name X does not exist". Never put ':memory:' in a
+# generated profiles.yml.
+DEFAULT_DB_FILE = "dev.duckdb"
+
 
 class DuckDBAdapter(BaseAdapter):
     """
@@ -273,7 +280,9 @@ class DuckDBAdapter(BaseAdapter):
     
     def generate_profiles_yml(self, project_name: str, target: str = "dev") -> str:
         """Generate dbt profiles.yml for DuckDB."""
-        db_path = self._path
+        # ponytail: in-memory is never usable for dbt here (see DEFAULT_DB_FILE),
+        # so an unset/':memory:' path becomes a project-local file.
+        db_path = DEFAULT_DB_FILE if self._path == ":memory:" else self._path
         schema = self.config.get("schema", "main")
         threads = self.config.get("threads", 4)
 
@@ -285,12 +294,29 @@ class DuckDBAdapter(BaseAdapter):
             for ext in extensions:
                 extensions_yaml += f"        - {ext}\n"
 
+        # Attached databases (a DuckLake catalog, for projects with ingest
+        # sources). Rendered via yaml so nested option dicts stay valid.
+        attach = self.config.get("attach") or []
+        attach_yaml = ""
+        if attach:
+            import yaml
+
+            dumped = yaml.safe_dump(
+                {"attach": attach}, default_flow_style=False, sort_keys=False
+            )
+            attach_yaml = "\n" + "\n".join(
+                f"      {line}" for line in dumped.rstrip().splitlines()
+            )
+
+        database = self.config.get("database")
+        database_yaml = f"\n      database: {database}" if database else ""
+
         return f"""{project_name}:
   outputs:
     {target}:
       type: duckdb
-      path: '{db_path}'
+      path: '{db_path}'{database_yaml}
       schema: {schema}
-      threads: {threads}{extensions_yaml.rstrip()}
+      threads: {threads}{extensions_yaml.rstrip()}{attach_yaml}
   target: {target}
 """

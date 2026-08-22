@@ -3,6 +3,7 @@
 import { db } from '@/lib/db'
 import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
+import { isPlausibleCron } from '@/lib/cron'
 import { revalidatePath } from 'next/cache'
 import type { Prisma, RunCommand } from '@prisma/client'
 
@@ -130,7 +131,7 @@ export async function deleteDremioSource(id: string) {
   const userId = await getCurrentUserId()
   await ensureOwnership('dremioSource', id, userId)
   await db.dremioSource.delete({ where: { id } })
-  revalidatePath('/connections')
+  revalidatePath('/data')
 }
 
 // --- Connections ---
@@ -171,7 +172,7 @@ export async function deleteConnection(id: string) {
   const userId = await getCurrentUserId()
   await ensureOwnership('connection', id, userId)
   await db.connection.delete({ where: { id } })
-  revalidatePath('/connections')
+  revalidatePath('/data')
 }
 
 export async function getConnectionById(id: string) {
@@ -454,3 +455,321 @@ async function ensureOwnership(model: string, id: string, userId: string) {
   }
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ---------------------------------------------------------------------------
+// Ingest sources
+//
+// An ingest source stores no credentials: it references a Connection, which
+// already owns the encrypted password. Nothing here needs encryptSecret.
+// ---------------------------------------------------------------------------
+
+const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
+const TABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
+const WRITE_DISPOSITIONS = new Set(['append', 'replace', 'merge'])
+
+export type IngestSourceInput = {
+  projectId: string
+  sourceConnectionId: string
+  name: string
+  dataset: string
+  tables: string[]
+  destination?: 'connection' | 'ducklake'
+  writeDisposition?: string
+  primaryKey?: string[]
+}
+
+/** Reject anything that would reach SQL as an identifier, before it is stored. */
+function validateIngestSource(input: IngestSourceInput) {
+  if (!input.name?.trim()) throw new Error('Name is required')
+  if (!DATASET_PATTERN.test(input.dataset ?? '')) {
+    throw new Error(
+      'Dataset must start with a letter and use only lowercase letters, digits and underscores (max 40 characters)',
+    )
+  }
+  if (!Array.isArray(input.tables) || input.tables.length === 0) {
+    throw new Error('Select at least one table')
+  }
+  const badTables = input.tables.filter((t) => !TABLE_PATTERN.test(t))
+  if (badTables.length) throw new Error(`Invalid table name(s): ${badTables.slice(0, 5).join(', ')}`)
+
+  const disposition = input.writeDisposition ?? 'append'
+  if (!WRITE_DISPOSITIONS.has(disposition)) {
+    throw new Error(`writeDisposition must be one of ${[...WRITE_DISPOSITIONS].join(', ')}`)
+  }
+  if (disposition === 'merge' && !input.primaryKey?.length) {
+    throw new Error('A primary key is required for merge')
+  }
+}
+
+export async function getIngestSources(projectId?: string) {
+  const userId = await getCurrentUserId()
+  return db.ingestSource.findMany({
+    where: { createdBy: userId, ...(projectId ? { projectId } : {}) },
+    include: { sourceConnection: { select: { id: true, name: true, connectionType: true } } },
+    orderBy: { createdAt: 'desc' },
+  })
+}
+
+export async function createIngestSource(input: IngestSourceInput) {
+  const userId = await getCurrentUserId()
+  validateIngestSource(input)
+  // Both the project and the connection must belong to the caller; without this
+  // a user could ingest another user's warehouse into their own project.
+  await ensureOwnership('dbtProject', input.projectId, userId)
+  await ensureOwnership('connection', input.sourceConnectionId, userId)
+
+  const created = await db.ingestSource.create({
+    data: {
+      projectId: input.projectId,
+      sourceConnectionId: input.sourceConnectionId,
+      name: input.name.trim(),
+      dataset: input.dataset,
+      tables: input.tables,
+      destination: input.destination ?? 'ducklake',
+      writeDisposition: input.writeDisposition ?? 'append',
+      primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
+      createdBy: userId,
+    },
+  })
+  revalidatePath('/data')
+  return created
+}
+
+export async function updateIngestSource(id: string, input: IngestSourceInput) {
+  const userId = await getCurrentUserId()
+  validateIngestSource(input)
+  await ensureOwnership('ingestSource', id, userId)
+  await ensureOwnership('connection', input.sourceConnectionId, userId)
+
+  const updated = await db.ingestSource.update({
+    where: { id },
+    data: {
+      sourceConnectionId: input.sourceConnectionId,
+      name: input.name.trim(),
+      dataset: input.dataset,
+      tables: input.tables,
+      destination: input.destination ?? 'ducklake',
+      writeDisposition: input.writeDisposition ?? 'append',
+      primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
+    },
+  })
+  revalidatePath('/data')
+  return updated
+}
+
+export async function deleteIngestSource(id: string) {
+  const userId = await getCurrentUserId()
+  await ensureOwnership('ingestSource', id, userId)
+  await db.ingestSource.delete({ where: { id } })
+  revalidatePath('/data')
+}
+
+// ---------------------------------------------------------------------------
+// Project targets
+//
+// The project's own connection is always target `dev`; rows here are the extra
+// named targets (staging, prod, ...). Ownership runs through the project, not a
+// createdBy column, so these cannot use ensureOwnership.
+// ---------------------------------------------------------------------------
+
+/** Same shape the backend enforces: it becomes a profiles.yml key and `dbt --target`. */
+const TARGET_NAME_PATTERN = /^[a-z][a-z0-9_]{0,29}$/
+const RESERVED_TARGET_NAMES = new Set(['dev'])
+
+async function ensureProjectOwnership(projectId: string, userId: string) {
+  const project = await db.dbtProject.findFirst({
+    where: { id: projectId, createdBy: userId, deletedAt: null },
+    select: { id: true },
+  })
+  if (!project) throw new Error('Not found or not authorized')
+}
+
+export type ProjectTargetInput = {
+  projectId: string
+  name: string
+  connectionId: string
+}
+
+export async function getProjectTargets(projectId: string) {
+  const userId = await getCurrentUserId()
+  await ensureProjectOwnership(projectId, userId)
+  return db.projectTarget.findMany({
+    where: { projectId },
+    include: { connection: { select: { id: true, name: true, connectionType: true } } },
+    orderBy: { name: 'asc' },
+  })
+}
+
+function validateProjectTarget(input: ProjectTargetInput) {
+  const name = input.name?.trim() ?? ''
+  if (!TARGET_NAME_PATTERN.test(name)) {
+    throw new Error(
+      'Target name must start with a lowercase letter and use only lowercase letters, digits and underscores (max 30 characters)',
+    )
+  }
+  if (RESERVED_TARGET_NAMES.has(name)) {
+    throw new Error("'dev' is the project's own connection and cannot be redefined here")
+  }
+  if (!input.connectionId) throw new Error('A connection is required')
+  return name
+}
+
+export async function createProjectTarget(input: ProjectTargetInput) {
+  const userId = await getCurrentUserId()
+  const name = validateProjectTarget(input)
+  await ensureProjectOwnership(input.projectId, userId)
+  // Without this a user could point their prod target at someone else's warehouse.
+  await ensureOwnership('connection', input.connectionId, userId)
+
+  const created = await db.projectTarget.create({
+    data: { projectId: input.projectId, name, connectionId: input.connectionId },
+  })
+  revalidatePath('/develop')
+  return created
+}
+
+export async function updateProjectTarget(id: string, input: ProjectTargetInput) {
+  const userId = await getCurrentUserId()
+  const name = validateProjectTarget(input)
+  const existing = await db.projectTarget.findUnique({ where: { id } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await ensureProjectOwnership(existing.projectId, userId)
+  await ensureOwnership('connection', input.connectionId, userId)
+
+  const updated = await db.projectTarget.update({
+    where: { id },
+    data: { name, connectionId: input.connectionId },
+  })
+  revalidatePath('/develop')
+  return updated
+}
+
+export async function deleteProjectTarget(id: string) {
+  const userId = await getCurrentUserId()
+  const existing = await db.projectTarget.findUnique({ where: { id } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await ensureProjectOwnership(existing.projectId, userId)
+  await db.projectTarget.delete({ where: { id } })
+  revalidatePath('/develop')
+}
+
+// ---------------------------------------------------------------------------
+// Schedules
+//
+// The cron expression is parsed for real by the runner (croniter). This layer
+// rejects obvious junk so a typo fails while saving instead of silently never
+// firing; /dbt/cron/preview is what the form uses to confirm the timing.
+// ---------------------------------------------------------------------------
+
+const RUN_COMMANDS = new Set<RunCommand>([
+  'run',
+  'test',
+  'build',
+  'compile',
+  'docs',
+  'deps',
+  'clean',
+  'seed',
+  'snapshot',
+  'source_freshness',
+])
+
+const MAX_SELECTOR_LENGTH = 500
+
+export type ScheduleInput = {
+  projectId: string
+  name: string
+  command?: RunCommand
+  selector?: string | null
+  target?: string | null
+  cron: string
+  isActive?: boolean
+  webhookUrl?: string | null
+}
+
+function validateSchedule(input: ScheduleInput) {
+  const name = input.name?.trim() ?? ''
+  if (!name) throw new Error('Name is required')
+  if (!isPlausibleCron(input.cron)) {
+    throw new Error('Cron must be 5 fields, e.g. "0 2 * * *" for 02:00 UTC daily')
+  }
+  const command = input.command ?? 'run'
+  if (!RUN_COMMANDS.has(command)) throw new Error(`Unsupported command: ${command}`)
+
+  const selector = input.selector?.trim() || null
+  if (selector && selector.length > MAX_SELECTOR_LENGTH) {
+    throw new Error(`Selector must be ${MAX_SELECTOR_LENGTH} characters or fewer`)
+  }
+
+  const target = input.target?.trim() || null
+  if (target && !TARGET_NAME_PATTERN.test(target)) {
+    throw new Error('Target name must be lowercase letters, digits and underscores')
+  }
+
+  // The runner re-checks this against host_guard before every delivery; this is
+  // the early, legible rejection, not the security boundary.
+  const webhookUrl = input.webhookUrl?.trim() || null
+  if (webhookUrl && !/^https?:\/\/.+/i.test(webhookUrl)) {
+    throw new Error('Webhook URL must start with http:// or https://')
+  }
+
+  return { name, command, selector, target, cron: input.cron.trim(), webhookUrl }
+}
+
+export async function getSchedules(projectId?: string) {
+  const userId = await getCurrentUserId()
+  return db.dbtSchedule.findMany({
+    where: { createdBy: userId, ...(projectId ? { projectId } : {}) },
+    include: { project: { select: { id: true, name: true } } },
+    orderBy: { createdAt: 'desc' },
+  })
+}
+
+export async function createSchedule(input: ScheduleInput) {
+  const userId = await getCurrentUserId()
+  const clean = validateSchedule(input)
+  await ensureProjectOwnership(input.projectId, userId)
+
+  const created = await db.dbtSchedule.create({
+    data: {
+      projectId: input.projectId,
+      ...clean,
+      isActive: input.isActive ?? true,
+      createdBy: userId,
+      // Left null on purpose: the runner arms it on its first tick, which is
+      // also what stops a schedule from firing the instant it is saved.
+      nextRunAt: null,
+    },
+  })
+  revalidatePath('/orchestrate')
+  return created
+}
+
+export async function updateSchedule(id: string, input: ScheduleInput) {
+  const userId = await getCurrentUserId()
+  const clean = validateSchedule(input)
+  await ensureOwnership('dbtSchedule', id, userId)
+  await ensureProjectOwnership(input.projectId, userId)
+
+  const existing = await db.dbtSchedule.findUnique({ where: { id } })
+  const updated = await db.dbtSchedule.update({
+    where: { id },
+    data: {
+      projectId: input.projectId,
+      ...clean,
+      isActive: input.isActive ?? true,
+      // A changed cron must not keep the old due time, or the next fire is
+      // computed from a schedule that no longer exists.
+      nextRunAt: existing?.cron === clean.cron ? existing?.nextRunAt : null,
+    },
+  })
+  revalidatePath('/orchestrate')
+  return updated
+}
+
+export async function deleteSchedule(id: string) {
+  const userId = await getCurrentUserId()
+  await ensureOwnership('dbtSchedule', id, userId)
+  await db.dbtSchedule.delete({ where: { id } })
+  revalidatePath('/orchestrate')
+}

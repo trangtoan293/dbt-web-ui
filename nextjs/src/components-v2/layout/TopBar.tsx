@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { Menu, ChevronDown, Key, LogOut, HelpCircle } from "lucide-react"
 import { useGlobal } from "@/lib/context/GlobalContext"
 import { useTopBar } from "./TopBarContext"
@@ -9,6 +9,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components-v2/ui/dropdown-menu"
+import { getPageLabel } from "./navigation"
 
 interface TopBarProps {
   onMenuClick: () => void
@@ -25,28 +26,41 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
   const { user } = useGlobal()
   const { content } = useTopBar()
   const router = useRouter()
+  const pathname = usePathname()
 
   const handleLogout = () => {
     window.location.href = "/logout"
   }
 
   return (
-    <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
+    <header className="sticky top-0 z-10 flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-3 backdrop-blur-xl sm:px-5">
       <div className="flex min-w-0 items-center gap-3">
-        <button onClick={onMenuClick} className="lg:hidden text-gray-500 hover:text-gray-700">
+        <button
+          type="button"
+          aria-label="Open navigation"
+          onClick={onMenuClick}
+          className="grid h-9 w-9 place-items-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4] lg:hidden"
+        >
           <Menu className="h-5 w-5" />
         </button>
-        {content}
+        {content || <span className="truncate text-sm font-semibold text-gray-800">{getPageLabel(pathname)}</span>}
       </div>
 
-      <div className="flex items-center gap-3">
-        <button className="text-gray-400 hover:text-gray-600" title="Documentation">
+      <div className="flex items-center gap-1.5 sm:gap-2">
+        <a
+          href="https://github.com/trangtoan293/dbt-web-ui#readme"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Open documentation"
+          className="grid h-9 w-9 place-items-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4]"
+          title="Documentation"
+        >
           <HelpCircle className="h-5 w-5" />
-        </button>
+        </a>
 
         <DropdownMenu>
-          <DropdownMenuTrigger className="flex items-center gap-2 rounded-full hover:bg-gray-100 px-2 py-1 transition-colors">
-            <div className="h-8 w-8 rounded-full bg-[#0078D4]/10 flex items-center justify-center">
+          <DropdownMenuTrigger className="flex h-10 items-center gap-2 rounded-full px-1.5 pr-2 transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4]">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-50 to-cyan-50 ring-1 ring-blue-100">
               <span className="text-sm font-medium text-[#0078D4]">
                 {user ? getInitials(user.email) : "??"}
               </span>

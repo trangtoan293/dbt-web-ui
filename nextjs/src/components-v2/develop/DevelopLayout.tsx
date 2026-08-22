@@ -13,10 +13,8 @@ import {
   GitBranch,
   History,
   KeyRound,
-  Plus,
   RotateCcw,
   SlidersHorizontal,
-  Trash2,
 } from "lucide-react";
 import {
   getProjectById,
@@ -25,7 +23,7 @@ import {
   hardDeleteProject,
 } from "@/lib/api-client";
 import { filesApi, dbtApi, gitApi, envVarsApi } from "@/lib/api";
-import { generateUUID, getDbtRunnerUrl } from "@/lib/api/client";
+import { getDbtRunnerUrl } from "@/lib/api/client";
 import { buildDbtAdditionalArgs, buildDbtCommandWithArgs } from "@/lib/dbt-command-args";
 import { clearLegacyDevelopSession, loadDevelopSession, saveDevelopSession, type DevelopSessionState } from "@/lib/develop-session";
 import {
@@ -40,14 +38,13 @@ import {
   EditorTabs,
   TerminalPanel,
   RightPanel,
-  ConnectionSelectorModal,
 } from "@/components-v2/develop/transforms";
+import { formatFile } from "@/components-v2/develop/workspace/CodeEditor";
 import SourceControlPanel from "@/components-v2/develop/workspace/SourceControlPanel";
 import CommitHistory from "@/components-v2/develop/workspace/CommitHistory";
 import { GitCredentialDialog } from "@/components-v2/develop/git";
 import { DeleteProjectDialog } from "@/components-v2/develop/transforms/DeleteProjectDialog";
 import { HardDeleteProjectDialog } from "@/components-v2/develop/transforms/HardDeleteProjectDialog";
-import { RenameProjectDialog } from "@/components-v2/develop/transforms/RenameProjectDialog";
 import { RestoreProjectDialog } from "@/components-v2/develop/transforms/RestoreProjectDialog";
 import { Button } from "@/components-v2/ui/button";
 import { Input } from "@/components-v2/ui/input";
@@ -59,7 +56,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components-v2/ui/dropdown-menu";
-import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog";
+import ProjectSettingsDialog from "@/components-v2/develop/settings/ProjectSettingsDialog";
+import type { DbtEnvironmentVariable, ProjectSettingsTab } from "@/components-v2/develop/settings/types";
+import TargetSelector, { DEFAULT_DBT_TARGET } from "@/components-v2/develop/TargetSelector";
 import { useTopBar } from "@/components-v2/layout/TopBarContext";
 import type { Connection } from "@/components-v2/develop/types";
 
@@ -99,16 +98,6 @@ interface OpenTab {
 type TerminalTabType = "results" | "lineage" | "compiled" | "queryPlan" | "logs";
 type QueryPanelView = "results" | "plan";
 type SidebarTabType = "files" | "git" | "history";
-type DbtEnvironmentVariableType = "text" | "password";
-
-interface DbtEnvironmentVariable {
-  id: string;
-  name: string;
-  value: string;
-  type: DbtEnvironmentVariableType;
-  hasValue?: boolean;
-}
-
 interface DevelopLayoutProps {
   projectId: string;
 }
@@ -140,13 +129,7 @@ const removeNodes = (nodes: FileNode[], path: string): FileNode[] =>
 
 const getDbtArgsStorageKey = (projectId: string, userId: string) => `dbt-command-args:${userId}:${projectId}`;
 const getDbtFullRefreshStorageKey = (projectId: string, userId: string) => `dbt-full-refresh:${userId}:${projectId}`;
-
-const createEnvironmentVariable = (): DbtEnvironmentVariable => ({
-  id: generateUUID(),
-  name: "",
-  value: "",
-  type: "text",
-});
+const getDbtTargetStorageKey = (projectId: string, userId: string) => `dbt-target:${userId}:${projectId}`;
 
 const toEnvironmentPayload = (_vars: DbtEnvironmentVariable[]): Record<string, string> => ({});
 
@@ -158,6 +141,11 @@ const loadDbtCommandArgs = (projectId: string, userId: string): string => {
 const loadDbtFullRefresh = (projectId: string, userId: string): boolean => {
   if (typeof window === "undefined") return false;
   return localStorage.getItem(getDbtFullRefreshStorageKey(projectId, userId)) === "true";
+};
+
+const loadDbtTarget = (projectId: string, userId: string): string => {
+  if (typeof window === "undefined") return DEFAULT_DBT_TARGET;
+  return localStorage.getItem(getDbtTargetStorageKey(projectId, userId)) || DEFAULT_DBT_TARGET;
 };
 
 const clearLegacyBrowserStorage = (projectId: string): void => {
@@ -268,16 +256,26 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   const recentlySavedFilesRef = useRef<Set<string>>(new Set());
   const intellisenseRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [connectionModalOpen, setConnectionModalOpen] = useState(false);
   const [docsLoading, setDocsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [fileWatcherConnected, setFileWatcherConnected] = useState(false);
   const [createFileTrigger] = useState(0);
-  const [envDialogOpen, setEnvDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<ProjectSettingsTab>("general");
+  // Bumped when the settings dialog adds or removes a target, so the toolbar
+  // selector does not keep offering one that no longer exists.
+  const [targetsVersion, setTargetsVersion] = useState(0);
+  const worktreeLabel = project?.git_project_subdirectory?.trim() || "Repository root";
+  const openSettings = useCallback((tab: ProjectSettingsTab = "general") => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
   const [dbtArgsDialogOpen, setDbtArgsDialogOpen] = useState(false);
   const [dbtCommandArgs, setDbtCommandArgs] = useState("");
   const [dbtFullRefresh, setDbtFullRefresh] = useState(false);
+  // Which profiles.yml output every command in this project runs against.
+  const [dbtTarget, setDbtTarget] = useState(DEFAULT_DBT_TARGET);
   const [environmentVariables, setEnvironmentVariables] = useState<DbtEnvironmentVariable[]>([]);
   const [envVarsSaving, setEnvVarsSaving] = useState(false);
   const [envVarsError, setEnvVarsError] = useState<string | null>(null);
@@ -290,7 +288,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   }>({ isOpen: false, pendingCommand: "", type: "push" });
   const [gitRemoteUrl, setGitRemoteUrl] = useState("");
 
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [hardDeleteDialogOpen, setHardDeleteDialogOpen] = useState(false);
@@ -355,7 +352,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
       return;
     }
 
-    const worktreeLabel = project.git_project_subdirectory?.trim() || "Repository root";
     const hasChanges = gitStatus.changes.length > 0;
     const projectStatus = project.deleted_at ? "Deleted" : hasChanges ? `${gitStatus.changes.length} changed` : "Clean";
 
@@ -446,35 +442,28 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
             <DropdownMenuSeparator className="my-0" />
             {!project.deleted_at ? (
               <>
-                <DropdownMenuItem onClick={() => setRenameDialogOpen(true)} className="mx-1 my-1">
-                  <Edit className="mr-2 h-4 w-4" />
-                  Rename project
-                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setConnectionModalOpen(true);
                     loadConnections();
+                    openSettings("general");
                   }}
                   className="mx-1 my-1"
                 >
                   <SlidersHorizontal className="mr-2 h-4 w-4" />
-                  Project connection
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setDeleteDialogOpen(true)} className="mx-1 my-1 text-red-600 focus:text-red-600">
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete project
+                  Project settings
                 </DropdownMenuItem>
               </>
             ) : (
               <>
-                <DropdownMenuItem onClick={() => setRestoreDialogOpen(true)} className="mx-1 my-1 text-green-700 focus:text-green-700">
-                  <RotateCcw className="mr-2 h-4 w-4" />
-                  Restore project
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setHardDeleteDialogOpen(true)} className="mx-1 my-1 text-red-600 focus:text-red-600">
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete permanently
+                <DropdownMenuItem
+                  onClick={() => {
+                    loadConnections();
+                    openSettings("danger");
+                  }}
+                  className="mx-1 my-1"
+                >
+                  <SlidersHorizontal className="mr-2 h-4 w-4" />
+                  Project settings
                 </DropdownMenuItem>
               </>
             )}
@@ -482,17 +471,29 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
         </DropdownMenu>
 
         <button
-          onClick={() => (!project.deleted_at ? setRenameDialogOpen(true) : setRestoreDialogOpen(true))}
+          onClick={() => openSettings(project.deleted_at ? "danger" : "general")}
           className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-md text-[#616161] transition-colors hover:bg-[#F3F2F1] hover:text-[#242424] md:flex"
           title={project.deleted_at ? "Restore project" : "Rename project"}
         >
           {project.deleted_at ? <RotateCcw className="h-4 w-4" /> : <Edit className="h-4 w-4" />}
         </button>
+
+        {!project.deleted_at && (
+          <div className="hidden shrink-0 md:flex">
+            <TargetSelector
+              projectId={project.id}
+              value={dbtTarget}
+              onChange={setDbtTarget}
+              onManage={() => openSettings("environments")}
+              reloadKey={targetsVersion}
+            />
+          </div>
+        )}
       </div>
     );
 
     return () => setTopBarContent(null);
-  }, [gitStatus.changes.length, gitStatus.clean, project, setTopBarContent]);
+  }, [dbtTarget, gitStatus.changes.length, gitStatus.clean, openSettings, project, setTopBarContent, targetsVersion, worktreeLabel]);
 
   useEffect(() => {
     if (!userId || restoredForUserRef.current === userId) return;
@@ -528,6 +529,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setLoadedChildren(restored.loadedChildren ?? {});
     setDbtCommandArgs(loadDbtCommandArgs(projectId, userId));
     setDbtFullRefresh(loadDbtFullRefresh(projectId, userId));
+    setDbtTarget(loadDbtTarget(projectId, userId));
 
     void envVarsApi.list(projectId)
       .then((vars) => {
@@ -552,6 +554,11 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     if (typeof window === "undefined" || !userId) return;
     localStorage.setItem(getDbtFullRefreshStorageKey(projectId, userId), String(dbtFullRefresh));
   }, [projectId, userId, dbtFullRefresh]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !userId) return;
+    localStorage.setItem(getDbtTargetStorageKey(projectId, userId), dbtTarget);
+  }, [projectId, userId, dbtTarget]);
 
   useEffect(() => {
     if (!userId) return;
@@ -653,7 +660,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
         type: item.type,
         hasValue: item.hasValue,
       })));
-      setEnvDialogOpen(false);
     } catch (error) {
       setEnvVarsError(error instanceof Error ? error.message : "Failed to save env vars");
     } finally {
@@ -870,7 +876,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           console.error("Failed to regenerate profiles.yml:", regenError);
         }
       }
-      setConnectionModalOpen(false);
       setTerminalOutput((prev) => [...prev, connectionId ? "✅ Connection updated" : "✅ Connection disconnected"]);
     } catch (error) {
       console.error("Error updating connection:", error);
@@ -892,7 +897,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
 
   const handleRunDbt = async (command: string) => {
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
-    const commandWithArgs = buildDbtCommandWithArgs(command, dbtCommandArgs, dbtFullRefresh);
+    const commandWithArgs = buildDbtCommandWithArgs(command, dbtCommandArgs, dbtFullRefresh, dbtTarget);
     setTerminalOpen(true);
     setTerminalTab("logs");
     setTerminalOutput((prev) => [...prev, "[INFO] Connecting to dbt-runner..."]);
@@ -1212,6 +1217,33 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setOpenTabs((prev) =>
       prev.map((t) => (t.path === activeTabPath ? { ...t, content, isDirty: content !== t.originalContent } : t))
     );
+  };
+
+  /**
+   * Format the active SQL file.
+   *
+   * The runner's formatter parses the SQL (sqlglot) instead of pattern-matching
+   * keywords, so it is tried first; it refuses rather than guess when Jinja
+   * control flow makes the statement unparseable, and then the local formatter
+   * still tidies the file. Both the toolbar button and Shift+Alt+F land here.
+   */
+  const handleFormatSql = async () => {
+    const path = activeTabPath || selectedFile;
+    if (!path || !path.endsWith(".sql")) return;
+    try {
+      const result = await dbtApi.format(fileContent);
+      if (result.formatted) {
+        handleFormatContent(result.sql);
+        return;
+      }
+      setTerminalOutput((prev) => [
+        ...prev,
+        `[INFO] Server formatter declined (${result.reason ?? "unknown reason"}); used the local formatter`,
+      ]);
+    } catch {
+      // Runner unreachable - fall through to the local formatter silently.
+    }
+    handleFormatContent(formatFile(path, fileContent));
   };
 
   const handleFormatContent = (formatted: string) => {
@@ -1653,7 +1685,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   // ---- Project management ----
   const handleRenameProject = async (newName: string) => {
     if (!project) return;
-    try { setOperationLoading(true); await updateProject(project.id, { name: newName }); setProject({ ...project, name: newName }); setRenameDialogOpen(false); }
+    try { setOperationLoading(true); await updateProject(project.id, { name: newName }); setProject({ ...project, name: newName }); }
     catch { alert("Failed to rename"); }
     finally { setOperationLoading(false); }
   };
@@ -1793,7 +1825,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
             <History className="h-5 w-5" />
           </button>
           <button
-            onClick={() => setEnvDialogOpen(true)}
+            onClick={() => openSettings("variables")}
             className="p-2 rounded text-gray-500 hover:text-[#0078D4] hover:bg-white"
             title="dbt Environment Variables"
           >
@@ -1877,6 +1909,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
             onNewDraft={createDraftSqlFile}
             onRunParse={handleRunParse}
             onOpenDefinition={handleFileSelect}
+            onFormatSql={handleFormatSql}
             onFormatContent={handleFormatContent}
             getLanguage={getFileLanguage}
             isSaving={isSaving}
@@ -1939,118 +1972,17 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           onOpenDocs={handleOpenDocs}
           onSaveFile={handleSaveFile}
           onToggleTerminal={() => setTerminalOpen((open) => !open)}
-          onOpenConnectionModal={() => {
-            setConnectionModalOpen(true);
+          onOpenSettings={() => {
             loadConnections();
+            openSettings("general");
           }}
-          onDeleteProject={!project.deleted_at ? () => setDeleteDialogOpen(true) : () => setHardDeleteDialogOpen(true)}
+          onOpenDangerZone={() => {
+            loadConnections();
+            openSettings("danger");
+          }}
           deleteProjectLabel={project.deleted_at ? "Delete Permanently" : "Delete Project"}
         />
       </div>
-
-      {envDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
-            <div className="border-b border-gray-200 px-5 py-4">
-              <div className="flex items-center gap-2">
-                <KeyRound className="h-5 w-5 text-[#0078D4]" />
-                <h2 className="text-base font-semibold text-gray-900">dbt Environment Variables</h2>
-              </div>
-            </div>
-
-            <div className="max-h-[60vh] overflow-auto px-5 py-4">
-              <div className="grid grid-cols-[1fr_1fr_120px_40px] gap-2 text-xs font-medium uppercase text-gray-500">
-                <span>Name</span>
-                <span>Value</span>
-                <span>Type</span>
-                <span />
-              </div>
-              <div className="mt-2 space-y-2">
-                {environmentVariables.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-gray-300 px-3 py-6 text-center text-sm text-gray-500">
-                    No environment variables configured.
-                  </div>
-                ) : (
-                  environmentVariables.map((item) => (
-                    <div key={item.id} className="grid grid-cols-[1fr_1fr_120px_40px] gap-2">
-                      <Input
-                        value={item.name}
-                        onChange={(event) =>
-                          setEnvironmentVariables((prev) =>
-                            prev.map((env) => env.id === item.id ? { ...env, name: event.target.value } : env)
-                          )
-                        }
-                        placeholder="DBT_ENV_SECRET_TOKEN"
-                        className="font-mono text-xs"
-                      />
-                      <Input
-                        value={item.value}
-                        type={item.type === "password" ? "password" : "text"}
-                        onChange={(event) =>
-                          setEnvironmentVariables((prev) =>
-                            prev.map((env) => env.id === item.id ? { ...env, value: event.target.value, hasValue: env.hasValue } : env)
-                          )
-                        }
-                        placeholder={item.hasValue ? "Saved value unchanged" : item.type === "password" ? "secret value" : "value"}
-                        className="font-mono text-xs"
-                      />
-                      <select
-                        value={item.type}
-                        onChange={(event) =>
-                          setEnvironmentVariables((prev) =>
-                            prev.map((env) =>
-                              env.id === item.id
-                                ? { ...env, type: event.target.value as DbtEnvironmentVariableType }
-                                : env
-                            )
-                          )
-                        }
-                        className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4]"
-                      >
-                        <option value="text">Text</option>
-                        <option value="password">Password</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setEnvironmentVariables((prev) => prev.filter((env) => env.id !== item.id))}
-                        className="flex h-9 w-9 items-center justify-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"
-                        title="Remove variable"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <Button
-                type="button"
-                variant="outline"
-                className="mt-4"
-                onClick={() => setEnvironmentVariables((prev) => [...prev, createEnvironmentVariable()])}
-              >
-                <Plus className="h-4 w-4" />
-                Add variable
-              </Button>
-              {envVarsError && <p className="mt-3 text-sm text-red-600">{envVarsError}</p>}
-            </div>
-
-            <div className="flex items-center justify-between border-t border-gray-200 px-5 py-4">
-              <p className="text-xs text-gray-500">
-                Values are stored encrypted on the server and never returned to the browser.
-              </p>
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={() => setEnvDialogOpen(false)}>
-                  Close
-                </Button>
-                <Button type="button" onClick={handleSaveEnvironmentVariables} disabled={envVarsSaving}>
-                  {envVarsSaving ? "Saving..." : "Save"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {dbtArgsDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -2111,21 +2043,25 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
         onCancel={handleGitCredentialCancel}
       />
 
-      <ConnectionSelectorModal
-        isOpen={connectionModalOpen}
+      <ProjectSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        initialTab={settingsTab}
+        project={project}
+        worktreeLabel={worktreeLabel}
         connections={connections}
-        selectedConnectionId={project?.connection_id || project?.dremio_source_id || null}
-        actions={<ConnectionCheckDialog projectId={project.id} />}
+        busy={operationLoading}
         onSelectConnection={updateProjectConnection}
-        onClose={() => setConnectionModalOpen(false)}
-      />
-
-      <RenameProjectDialog
-        open={renameDialogOpen}
-        onOpenChange={setRenameDialogOpen}
-        currentName={project?.name || ""}
-        onConfirm={handleRenameProject}
-        loading={operationLoading}
+        onRename={handleRenameProject}
+        onTargetsChanged={() => setTargetsVersion((version) => version + 1)}
+        environmentVariables={environmentVariables}
+        onEnvironmentVariablesChange={setEnvironmentVariables}
+        onSaveEnvironmentVariables={handleSaveEnvironmentVariables}
+        envVarsSaving={envVarsSaving}
+        envVarsError={envVarsError}
+        onDeleteProject={() => setDeleteDialogOpen(true)}
+        onRestoreProject={() => setRestoreDialogOpen(true)}
+        onHardDeleteProject={() => setHardDeleteDialogOpen(true)}
       />
       <DeleteProjectDialog
         open={deleteDialogOpen}

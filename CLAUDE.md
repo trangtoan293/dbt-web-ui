@@ -15,6 +15,7 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 │   └── prisma/          # schema.prisma + migrations/
 ├── dbt-runner/          # FastAPI backend
 │   ├── adapters/        # warehouse connection adapters
+│   ├── ingest/          # dlt ingest: sources, destinations, DuckLake layout
 │   └── app/
 │       ├── routers/     # API route handlers
 │       ├── services/    # business logic
@@ -39,8 +40,26 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 
 ### Routing
 - Route groups: `src/app/(app)/` is the authenticated app (`/`, `/develop`,
-  `/runs`, `/explore`, `/connections`, `/settings`), `src/app/(auth)/` is
-  `/login` and `/logout`. One root layout, in `src/app/layout.tsx`.
+  `/orchestrate`, `/explore`, `/data`, `/settings`),
+  `src/app/(auth)/` is `/login` and `/logout`. One root layout, in
+  `src/app/layout.tsx`.
+- The sidebar carries the five *workspace* sections only. `/orchestrate` hosts
+  Runs and Schedules, `/data` hosts Connections and Sources, each as a tab whose
+  id is in the query string (`?tab=schedules`) so the retired paths can redirect
+  into them — those redirects live in `next.config.ts` and are covered by a
+  test. `/settings` deliberately has **no** sidebar slot; it is reached from the
+  avatar menu, and `navigation.ts` keeps it in `SECONDARY_PAGES` only so the top
+  bar can still label it.
+- Adding a page means adding it to `components-v2/layout/navigation.ts` **and**
+  the icon map in `Sidebar.tsx`; a missing icon renders an empty slot rather
+  than failing the build (covered by a test).
+- Anything scoped to one project belongs in
+  `components-v2/develop/settings/ProjectSettingsDialog.tsx`, not in a new
+  dialog hung off the IDE chrome. Name, connection, targets, env vars and delete
+  used to be seven separate controls spread across the toolbar, the project menu
+  and the right rail, so no screen showed a project's configuration as a whole.
+  Picking a target stays on the toolbar (`TargetSelector`) because that is a
+  property of the next run; managing the list of targets is configuration.
 
 ### Database
 - PostgreSQL 16. Migrations run via the one-shot `db-migrate` service before the
@@ -58,10 +77,72 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 - Frontend consumes via `fetch` + `ReadableStream` (`useDbtRunStream`) and
   `EventSource` (`useFileWatcher`).
 
+### Ingest (dlt) and the lakehouse
+- `POST /sse/ingest/{source_id}` runs one load and streams it. dlt executes in a
+  subprocess (`python -m ingest.runner`) whose configuration arrives on **stdin**,
+  never argv: it carries a decrypted warehouse password and argv is readable via
+  `ps`.
+- An `ingest_sources` row stores no credentials. It references a `connections`
+  row, so a warehouse password still lives in exactly one table.
+- Destinations: `ducklake` (default) or `connection` (the project's own DuckDB or
+  Postgres). Dremio, Oracle and Spark have no dlt destination - those projects
+  ingest into the lakehouse and read it from dbt.
+- The lakehouse is DuckLake: catalog tables in Postgres, Parquet on the
+  `storage-data` volume, one catalog per project. `ingest/lakehouse.py` owns the
+  layout and is shared with dbt profile generation.
+- Ingest counts against the same `global_run_semaphore()` as dbt runs, and takes
+  the `dbt_run` file lock when (and only when) it writes a DuckDB file.
+- Each load writes an `ingest_runs` row. Row counts come from the runner's
+  `row_counts` field (`ingest/runner.py`); logs are a capped tail
+  (`INGEST_RUN_LOG_MAX_CHARS`), because dlt is chatty and unbounded log text is
+  what makes a history table the reason Postgres grows.
+
+### Scheduling, notifications and retention
+- `app/services/scheduler.py` is one asyncio poll loop doing three jobs: fire due
+  `dbt_schedules` rows, prune run history past `RUN_HISTORY_RETENTION_DAYS`, and
+  run DuckLake maintenance. State lives in Postgres (`next_run_at`), so a restart
+  loses nothing.
+- Exactly one process works at a time: leadership is a Redis key with a TTL the
+  leader refreshes, because uvicorn can run several workers
+  (`DBT_RUNNER_UVICORN_WORKERS`). Without Redis it still runs and logs that it is
+  leaderless - two leaderless workers would double-fire every schedule.
+- A schedule is armed on its first tick, not on save, so creating one never fires
+  it immediately. `next_run_at` is advanced *before* the run starts: a crash
+  between the two skips one run, the other order re-fires forever.
+- Cron is UTC and parsed by `croniter`. `GET /dbt/cron/preview` is what the form
+  uses to validate, so a typo is caught while saving rather than silently never
+  running.
+- A schedule's `webhookUrl` is a user-supplied URL the server POSTs to, i.e. the
+  same SSRF surface as a connection host - `app/services/notify.py` puts it
+  through `host_guard` before every delivery. One payload carries `text` (Slack,
+  Teams), `content` (Discord) and a structured `run` object.
+- Both `/dbt/runs` and the scheduler start runs through
+  `app/services/run_launcher.py`. Anything that needs "run this project and tell
+  me how it ended" belongs there, not in a router.
+
+### Environments (targets)
+- A project's own `connectionId` is always target `dev`. Extra targets are
+  `project_targets` rows, each pointing at another Connection the same user owns,
+  and `_regenerate_profiles_from_db` renders one profiles.yml output per target
+  via that connection's own adapter.
+- **Each target needs its own credential env var.** `DbtService.target_secret_env`
+  suffixes the name (`..._CREDENTIAL__PROD`); sharing one would mean whichever
+  output is rendered last wins and the other target authenticates against its
+  warehouse with the wrong password.
+- Target names are validated against `TARGET_NAME_RE` on both sides: the name
+  becomes a profiles.yml key, a `--target` argument and an env var suffix.
+- The frontend appends `--target` in exactly one place,
+  `buildDbtCommandWithArgs` - a per-caller append leaves whichever path was
+  forgotten silently on `dev`.
+
 ### dbt-runner
 - FastAPI + uvicorn, async throughout.
-- Routers: `health, process, dbt, git, files, connection, project, sse, dremio,
-  client_logs`.
+- Routers: `health, process, dbt, git, files, connection, ingest, project, sse,
+  dremio, client_logs, system`.
+- `GET /system/info` is what the Settings page reads. It returns a **hand-picked
+  whitelist** of `Settings` fields and must never serialise the settings object:
+  that object also holds `app_encryption_key`, which decrypts every stored
+  warehouse password (`tests/test_system_info.py` fails if a secret leaks in).
 - Two layers of run control: a per-project Redis lock and a global Redis
   semaphore (`MAX_CONCURRENT_DBT_RUNS`, returns HTTP 429 when full).
 - Adapters: postgresql, duckdb, dremio, oracle, and spark (spark installs via
@@ -89,6 +170,23 @@ uv run uvicorn app.main:app --reload --port 8080
 uv run pytest -q
 ```
 
+### Ingest
+```bash
+# Run one job the way the router does - config on stdin, never argv
+echo "$JOB_JSON" | uv run python -m ingest.runner
+uv run pytest tests/test_ingest_lakehouse.py -q   # end-to-end, no services needed
+```
+
+### Demo source (trying out ingest)
+```bash
+# Dummy CRM Postgres: customers/products/orders + a read-only role.
+docker compose --profile demo up -d demo-source
+# Connection details: host demo-source, port 5432, db crm,
+# user ingest_reader, password demo_reader_pw. Needs
+# INGEST_ALLOW_PRIVATE_HOSTS=true (a container address is private).
+docker compose --profile demo down -v   # remove it again
+```
+
 ### Docker
 ```bash
 docker compose up -d
@@ -113,10 +211,55 @@ docker compose run --rm db-migrate npx prisma migrate deploy
 - DuckDB is single-writer and `warm_worker_pool` keeps project-scoped dbt
   processes alive, so a `.duckdb` file stays locked by its project. Two projects
   pointing at one file fail with `could not set lock on file`. One file per
-  project.
+  project. A warm worker also locks out the project's *own* next run, which is
+  why `_regenerate_profiles_from_db` calls `warm_worker_pool.release_project()`
+  before dbt starts on a file-backed DuckDB warehouse - without it the first run
+  succeeds and every later one fails on the lock.
 - The file listing endpoint returns one directory level (`{path, items[]}`), not
   a recursive tree — walk down a level at a time.
+- `dbt source freshness` is two CLI words but one `run_command` enum value
+  (`source_freshness`). `_insert_run_start` maps `source` → `source_freshness`;
+  the UI maps it back. Miss either half and freshness runs are recorded, or
+  displayed, as plain `run`.
+- SQL formatting is `sqlglot`, not sqlfluff: `app/services/sql_format.py` masks
+  Jinja, formats, and **refuses** rather than guesses when the round trip cannot
+  be verified. The editor falls back to its local regex formatter in that case.
+  sqlfluff with the dbt templater needs a compiled project per lint.
 - `/dbt/compile` takes `model_path`, not `file_path`.
+- **DuckLake metadata schema must be pinned on both sides.** dlt derives it from
+  the DuckLake name while dbt-duckdb attaches into `public`, so the defaults build
+  two independent catalogs over one data directory: ingest reports success and dbt
+  then fails with `schema ... does not exist`. Everything goes through
+  `lakehouse.metadata_schema()`.
+- **DuckLake v1.0 inlines small writes into the catalog database**, not Parquet, so
+  ingested rows silently end up inside Postgres - which also blocks the
+  metadata-only migration to Iceberg. `lakehouse.provision()` pins
+  `data_inlining_row_limit` (`LAKE_INLINE_ROW_LIMIT`, default 0). Existing inlined
+  data is flushed with `CALL ducklake_flush_inlined_data('lake')`.
+- DuckLake snapshots and dbt's `__dbt_backup` tables accumulate. The scheduler
+  now does this (`lakehouse.maintain`, `LAKE_SNAPSHOT_RETENTION_DAYS`); each step
+  is attempted independently because which `ducklake_*` functions exist depends
+  on the extension version baked into the image.
+- `INSTALL ducklake` reaches the internet, so the extensions are baked into the
+  image. An air-gapped deployment that skips that build step fails on its first load.
+- `dlt`'s incremental cursors live in `STORAGE_DIR/dlt/{project_id}`. Anywhere else
+  and a container restart resets them, so the next load re-reads or skips rows.
+- `INGEST_ALLOW_PRIVATE_HOSTS=true` is needed for on-premise warehouses. It does
+  **not** unblock this deployment's own Postgres/Redis or link-local addresses -
+  see `app/core/host_guard.py`, which compares resolved IPs, not hostnames.
+- Models materialise into the lake only when they target it: `+database: lake`
+  in `dbt_project.yml` (or per-model `config(database='lake')`). Without it dbt
+  writes to the local `.duckdb` file while reading the lake, which looks like
+  the marts silently went missing.
+- **Only dbt-duckdb can attach a DuckLake catalog.** A project whose warehouse is
+  Postgres/Dremio/Oracle loads into the lake successfully and then cannot read it
+  from dbt. Those projects want the `connection` destination; the lake stays
+  readable by engines outside dbt.
+- The lake attach block is added to profiles.yml **only while the project has an
+  ingest source with `destination = 'ducklake'`**. Delete the last one and models
+  referencing `lake.*` stop resolving - the attach is gated in
+  `DbtService._apply_lakehouse_attach` so projects that never ingest do not pay
+  for a Postgres connection on every dbt invocation.
 
 ## What NOT to do
 
@@ -125,3 +268,9 @@ docker compose run --rm db-migrate npx prisma migrate deploy
 - Don't add third-party analytics or telemetry. This is self-hosted software.
 - Don't add a warehouse to the connection UI without adding its dbt adapter to
   `dbt-runner/pyproject.toml`.
+- Don't accept Python source for an ingest source. dlt defines sources in Python,
+  which is remote code execution the moment that code comes from a request body.
+  Source configuration is declarative (table lists) only.
+- Don't skip `app/core/host_guard.py` on any endpoint that connects to a
+  user-supplied host. Without it a user can point a connection at the application
+  database and read every other user's encrypted credentials.

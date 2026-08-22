@@ -159,7 +159,10 @@ class DremioAdapter(BaseAdapter):
         even when authenticating via PAT.  Without it dbt raises a validation error.
         """
         user = self.config.get("user") or self.config.get("username") or ""
-        dremio_space = self.config.get("dremio_space") or f"@{user}" if user else "@dremio"
+        # Parenthesised on purpose: `a or b if user else c` binds as
+        # `(a or b) if user else c`, which threw away an explicit dremio_space
+        # whenever user was empty and wrote models to @dremio instead.
+        dremio_space = self.config.get("dremio_space") or (f"@{user}" if user else "@dremio")
         dremio_space_folder = self.config.get("dremio_space_folder", "")
         object_storage_source = self.config.get("object_storage_source", "")
         object_storage_path = self.config.get("object_storage_path", "")

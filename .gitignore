@@ -51,3 +51,6 @@ safety-report.json
 
 # internal tooling
 .codegraph/
+
+# Saved web page: 13 MB of third-party assets, kept locally only.
+docs/dbt_guide_ultimate/

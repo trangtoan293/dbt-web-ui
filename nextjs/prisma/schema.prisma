@@ -8,60 +8,66 @@ datasource db {
 }
 
 model User {
-  id          String   @id @default(uuid()) @db.Uuid
-  oidcSub     String   @unique @map("oidc_sub")
-  email       String   @unique
-  name        String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  id        String   @id @default(uuid()) @db.Uuid
+  oidcSub   String   @unique @map("oidc_sub")
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   dremioSources           DremioSource[]
   dbtProjects             DbtProject[]
   connections             Connection[]
   gitCredentials          GitCredential[]
   dbtEnvironmentVariables DbtEnvironmentVariable[]
+  ingestSources           IngestSource[]
+  schedules               DbtSchedule[]
 
   @@map("users")
 }
 
 model DremioSource {
-  id               String   @id @default(uuid()) @db.Uuid
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz()
-  name             String   @db.Text
-  host             String   @db.Text
-  port             Int
-  username         String   @db.Text
-  tokenEncrypted   String   @map("token_encrypted") @db.Text
-  catalog          String   @db.Text @default("")
-  arrowFlightPort  Int      @map("arrow_flight_port") @default(32010)
-  createdBy        String   @map("created_by") @db.Uuid
-  user             User     @relation(fields: [createdBy], references: [id], onDelete: Cascade)
-  dbtProjects      DbtProject[] @relation("DremioSourceProjects")
+  id              String       @id @default(uuid()) @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz()
+  name            String       @db.Text
+  host            String       @db.Text
+  port            Int
+  username        String       @db.Text
+  tokenEncrypted  String       @map("token_encrypted") @db.Text
+  catalog         String       @default("") @db.Text
+  arrowFlightPort Int          @default(32010) @map("arrow_flight_port")
+  createdBy       String       @map("created_by") @db.Uuid
+  user            User         @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  dbtProjects     DbtProject[] @relation("DremioSourceProjects")
 
   @@unique([name, createdBy])
   @@map("dremio_sources")
 }
 
 model DbtProject {
-  id                     String    @id @default(uuid()) @db.Uuid
-  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
-  name                   String    @db.Text
-  description            String?   @db.Text
-  gitUrl                 String?   @map("git_url") @db.Text
-  gitBranch              String?   @map("git_branch") @db.Text @default("main")
-  gitProjectSubdirectory String?   @map("git_project_subdirectory") @db.Text @default("")
-  stagingDir             String?   @map("staging_dir") @db.Text
-  martsDir               String?   @map("marts_dir") @db.Text
-  syncStatus             String?   @map("sync_status") @db.Text @default("not_synced")
-  dremioSourceId         String?   @map("dremio_source_id") @db.Uuid
-  connectionId           String?   @map("connection_id") @db.Uuid
-  deletedAt              DateTime? @map("deleted_at") @db.Timestamptz()
-  createdBy              String    @map("created_by") @db.Uuid
-  user                   User      @relation(fields: [createdBy], references: [id], onDelete: Cascade)
-  dremioSource           DremioSource? @relation("DremioSourceProjects", fields: [dremioSourceId], references: [id], onDelete: SetNull)
-  connection             Connection?   @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  id                     String                   @id @default(uuid()) @db.Uuid
+  createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime                 @updatedAt @map("updated_at") @db.Timestamptz()
+  name                   String                   @db.Text
+  description            String?                  @db.Text
+  gitUrl                 String?                  @map("git_url") @db.Text
+  gitBranch              String?                  @default("main") @map("git_branch") @db.Text
+  gitProjectSubdirectory String?                  @default("") @map("git_project_subdirectory") @db.Text
+  stagingDir             String?                  @map("staging_dir") @db.Text
+  martsDir               String?                  @map("marts_dir") @db.Text
+  syncStatus             String?                  @default("not_synced") @map("sync_status") @db.Text
+  dremioSourceId         String?                  @map("dremio_source_id") @db.Uuid
+  connectionId           String?                  @map("connection_id") @db.Uuid
+  deletedAt              DateTime?                @map("deleted_at") @db.Timestamptz()
+  createdBy              String                   @map("created_by") @db.Uuid
+  user                   User                     @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  dremioSource           DremioSource?            @relation("DremioSourceProjects", fields: [dremioSourceId], references: [id], onDelete: SetNull)
+  connection             Connection?              @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   runs                   DbtRun[]
+  ingestSources          IngestSource[]
+  ingestRuns             IngestRun[]
+  schedules              DbtSchedule[]
+  targets                ProjectTarget[]
   gitCredentials         GitCredential[]
   environmentVariables   DbtEnvironmentVariable[]
 
@@ -112,28 +118,29 @@ enum RunCommand {
   clean
   seed
   snapshot
+  source_freshness
 
   @@map("run_command")
 }
 
 model DbtRun {
-  id            String    @id @default(uuid()) @db.Uuid
-  projectId     String    @map("project_id") @db.Uuid
-  command       RunCommand @default(run)
-  selector      String?   @db.Text
-  status        String    @default("pending") @db.Text
-  startedAt     DateTime? @map("started_at") @db.Timestamptz()
-  completedAt   DateTime? @map("completed_at") @db.Timestamptz()
-  durationMs    BigInt?   @map("duration_ms")
-  modelsTotal   Int?      @map("models_total") @default(0)
-  modelsSuccess Int?      @map("models_success") @default(0)
-  modelsError   Int?      @map("models_error") @default(0)
-  logs          String?   @db.Text
-  errorMessage  String?   @map("error_message") @db.Text
-  results       Json?     @db.JsonB
-  gitCommit     String?   @map("git_commit") @db.VarChar(40)
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
-  project       DbtProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id            String           @id @default(uuid()) @db.Uuid
+  projectId     String           @map("project_id") @db.Uuid
+  command       RunCommand       @default(run)
+  selector      String?          @db.Text
+  status        String           @default("pending") @db.Text
+  startedAt     DateTime?        @map("started_at") @db.Timestamptz()
+  completedAt   DateTime?        @map("completed_at") @db.Timestamptz()
+  durationMs    BigInt?          @map("duration_ms")
+  modelsTotal   Int?             @default(0) @map("models_total")
+  modelsSuccess Int?             @default(0) @map("models_success")
+  modelsError   Int?             @default(0) @map("models_error")
+  logs          String?          @db.Text
+  errorMessage  String?          @map("error_message") @db.Text
+  results       Json?            @db.JsonB
+  gitCommit     String?          @map("git_commit") @db.VarChar(40)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  project       DbtProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   artifacts     DbtRunArtifact[]
 
   @@index([projectId, createdAt])
@@ -156,6 +163,50 @@ model DbtRunArtifact {
   @@map("dbt_run_artifacts")
 }
 
+enum IngestSourceType {
+  sql_database
+
+  @@map("ingest_source_type")
+}
+
+enum IngestDestination {
+  connection
+  ducklake
+
+  @@map("ingest_destination")
+}
+
+/// One ingest job: which Connection to read, which tables, and where to write.
+/// Holds no credentials - sourceConnection owns them, so a warehouse password
+/// still lives in exactly one table.
+model IngestSource {
+  id                 String            @id @default(uuid()) @db.Uuid
+  projectId          String            @map("project_id") @db.Uuid
+  sourceConnectionId String            @map("source_connection_id") @db.Uuid
+  name               String            @db.Text
+  sourceType         IngestSourceType  @default(sql_database) @map("source_type")
+  destination        IngestDestination @default(ducklake)
+  /// Target schema in the destination. Validated against ^[a-z][a-z0-9_]{0,39}$
+  /// before it reaches SQL.
+  dataset            String            @db.Text
+  tables             Json              @db.JsonB
+  writeDisposition   String            @default("append") @map("write_disposition") @db.Text
+  /// Required for writeDisposition = merge.
+  primaryKey         Json?             @map("primary_key") @db.JsonB
+  isActive           Boolean           @default(true) @map("is_active")
+  createdBy          String            @map("created_by") @db.Uuid
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz()
+  project            DbtProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceConnection   Connection        @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  user               User              @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  runs               IngestRun[]
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("ingest_sources")
+}
+
 enum ConnectionType {
   postgresql
   duckdb
@@ -167,22 +218,100 @@ enum ConnectionType {
 }
 
 model Connection {
-  id                String         @id @default(uuid()) @db.Uuid
-  name              String         @db.Text
-  connectionType    ConnectionType @map("connection_type")
-  host              String         @db.Text
+  id                String          @id @default(uuid()) @db.Uuid
+  name              String          @db.Text
+  connectionType    ConnectionType  @map("connection_type")
+  host              String          @db.Text
   port              Int
-  database          String         @db.Text
-  username          String         @db.Text
-  passwordEncrypted String?        @map("password_encrypted") @db.Text
-  sslMode           String?        @map("ssl_mode") @db.Text @default("prefer")
-  extraConfig       Json?          @map("extra_config") @db.JsonB
-  isActive          Boolean        @default(true) @map("is_active")
-  createdBy         String         @map("created_by") @db.Uuid
-  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt         DateTime       @updatedAt @map("updated_at") @db.Timestamptz()
-  user              User           @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  database          String          @db.Text
+  username          String          @db.Text
+  passwordEncrypted String?         @map("password_encrypted") @db.Text
+  sslMode           String?         @default("prefer") @map("ssl_mode") @db.Text
+  extraConfig       Json?           @map("extra_config") @db.JsonB
+  isActive          Boolean         @default(true) @map("is_active")
+  createdBy         String          @map("created_by") @db.Uuid
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
+  user              User            @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   projects          DbtProject[]
+  ingestSources     IngestSource[]
+  projectTargets    ProjectTarget[]
 
   @@map("connections")
+}
+
+/// A named dbt target for one project: which Connection that target runs against.
+/// The project's own connectionId is always target `dev` and needs no row here,
+/// so every existing project keeps one working target with no data migration.
+model ProjectTarget {
+  id           String     @id @default(uuid()) @db.Uuid
+  projectId    String     @map("project_id") @db.Uuid
+  /// Rendered into profiles.yml as an output name, so it is validated against
+  /// ^[a-z][a-z0-9_]{0,29}$ before it is written. `dev` is reserved.
+  name         String     @db.Text
+  connectionId String     @map("connection_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz()
+  project      DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  connection   Connection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, name])
+  @@index([projectId])
+  @@map("project_targets")
+}
+
+/// One cron entry: run `command` against `project` on a schedule.
+/// Cron is evaluated in UTC - a per-schedule timezone is a column and a
+/// croniter argument away, but nothing here needs one yet.
+model DbtSchedule {
+  id         String     @id @default(uuid()) @db.Uuid
+  projectId  String     @map("project_id") @db.Uuid
+  name       String     @db.Text
+  command    RunCommand @default(run)
+  selector   String?    @db.Text
+  /// dbt --target. Null means the project's default target.
+  target     String?    @db.Text
+  /// 5-field cron expression, UTC.
+  cron       String     @db.Text
+  isActive   Boolean    @default(true) @map("is_active")
+  /// POSTed a JSON summary when a scheduled run fails. Slack, Teams and Discord
+  /// incoming webhooks all accept it. Validated through host_guard before use:
+  /// a user-supplied URL the server fetches is an SSRF hole otherwise.
+  webhookUrl String?    @map("webhook_url") @db.Text
+  lastRunAt  DateTime?  @map("last_run_at") @db.Timestamptz()
+  lastRunId  String?    @map("last_run_id") @db.Uuid
+  lastStatus String?    @map("last_status") @db.Text
+  nextRunAt  DateTime?  @map("next_run_at") @db.Timestamptz()
+  createdBy  String     @map("created_by") @db.Uuid
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz()
+  project    DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@index([isActive, nextRunAt])
+  @@map("dbt_schedules")
+}
+
+/// History for one ingest load. Same shape as DbtRun so the two run lists read
+/// alike; logs are capped by the writer, not by the column.
+model IngestRun {
+  id           String       @id @default(uuid()) @db.Uuid
+  sourceId     String       @map("source_id") @db.Uuid
+  projectId    String       @map("project_id") @db.Uuid
+  status       String       @default("running") @db.Text
+  startedAt    DateTime     @map("started_at") @db.Timestamptz()
+  completedAt  DateTime?    @map("completed_at") @db.Timestamptz()
+  durationMs   BigInt?      @map("duration_ms")
+  rowsLoaded   Int?         @map("rows_loaded")
+  tables       Json?        @db.JsonB
+  logs         String?      @db.Text
+  errorMessage String?      @map("error_message") @db.Text
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  source       IngestSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  project      DbtProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId, createdAt])
+  @@index([projectId, createdAt])
+  @@map("ingest_runs")
 }

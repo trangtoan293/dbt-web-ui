@@ -29,5 +29,8 @@ export function shortHash(value: string | null | undefined): string {
 }
 
 export function getFullCommand(run: DbtRun): string {
-  return `dbt ${run.command}${run.selector ? ` --select ${run.selector}` : ""}`
+  // source_freshness is one enum value but two CLI words; showing the enum
+  // spelling makes the History row not match what was actually run.
+  const command = run.command === "source_freshness" ? "source freshness" : run.command
+  return `dbt ${command}${run.selector ? ` --select ${run.selector}` : ""}`
 }

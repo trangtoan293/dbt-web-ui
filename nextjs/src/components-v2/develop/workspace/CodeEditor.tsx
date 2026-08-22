@@ -6,8 +6,10 @@ import type { editor, languages } from 'monaco-editor';
 import type { DbtIntellisenseResponse } from '@/lib/api/dbt';
 import { getColumnQualifier, resolveColumnsForQualifier } from '@/lib/dbt/intellisense';
 
-// Dynamically import Monaco Editor to prevent SSR issues
-const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+const Editor = dynamic(
+    () => import('@/lib/monaco-loader').then(({ loadMonacoEditor }) => loadMonacoEditor()),
+    { ssr: false }
+);
 
 // Global flag to ensure completion provider is registered only once
 let completionProviderRegistered = false;
@@ -28,6 +30,13 @@ interface CodeEditorProps {
     onNewFile?: () => void;
     onCloseFile?: () => void;
     fileName?: string; // Current file name/path for format detection
+    /**
+     * Format the active file. Supplied by the workspace so the toolbar button
+     * and Shift+Alt+F run the same code path - which tries the server-side
+     * sqlglot formatter and falls back to formatSQL below. Without it this
+     * editor formats locally on its own.
+     */
+    onFormat?: () => void;
     dbtIntellisense?: DbtIntellisenseResponse | null;
     onOpenDefinition?: (path: string) => void;
 }
@@ -240,6 +249,7 @@ export default function CodeEditor({
     onNewFile,
     onCloseFile,
     fileName,
+    onFormat,
     dbtIntellisense,
     onOpenDefinition,
 }: CodeEditorProps) {
@@ -253,6 +263,7 @@ export default function CodeEditor({
     const onNewFileRef = useRef(onNewFile);
     const onCloseFileRef = useRef(onCloseFile);
     const fileNameRef = useRef(fileName);
+    const onFormatRef = useRef(onFormat);
 
     // Keep refs updated
     onSaveRef.current = onSave;
@@ -261,6 +272,7 @@ export default function CodeEditor({
     onNewFileRef.current = onNewFile;
     onCloseFileRef.current = onCloseFile;
     fileNameRef.current = fileName;
+    onFormatRef.current = onFormat;
     currentIntellisenseMetadata = dbtIntellisense || null;
     currentOpenDefinition = onOpenDefinition;
 
@@ -452,14 +464,17 @@ export default function CodeEditor({
             ],
             run: () => {
                 const currentFileName = fileNameRef.current;
-                const currentValue = editor.getValue();
+                if (!currentFileName || !canFormatFile(currentFileName)) return;
 
-                // Check if file can be formatted
-                if (currentFileName && canFormatFile(currentFileName)) {
-                    const formatted = formatFile(currentFileName, currentValue);
-                    editor.setValue(formatted);
-                    onChange?.(formatted);
+                // One implementation, whichever way formatting was asked for.
+                if (onFormatRef.current) {
+                    onFormatRef.current();
+                    return;
                 }
+
+                const formatted = formatFile(currentFileName, editor.getValue());
+                editor.setValue(formatted);
+                onChange?.(formatted);
             },
         });
 

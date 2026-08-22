@@ -69,6 +69,61 @@ class Settings(BaseSettings):
     # Application encryption key
     app_encryption_key: str = os.getenv("APP_ENCRYPTION_KEY", "")
 
+    # === Ingest / DuckLake lakehouse ===
+    # Catalog lives in the application Postgres under a per-project metadata
+    # schema; data files land on the shared storage volume. Point
+    # LAKE_CATALOG_URL elsewhere to keep the catalog out of the app database.
+    # Empty means "use DATABASE_URL". The fallback lives in
+    # ingest/lakehouse._configured_catalog_url(), not in this default:
+    # docker-compose passes LAKE_CATALOG_URL as an empty string when unset, and
+    # pydantic-settings honours that, overwriting anything computed here.
+    lake_catalog_url: str = os.getenv("LAKE_CATALOG_URL", "")
+    lake_data_dir: str = os.getenv("LAKE_DATA_DIR", "")
+    # DuckLake v1.0 stores small writes inside the catalog database instead of
+    # Parquet. Left on, the app Postgres grows with ingested data, backups split
+    # across two systems, and the metadata-only migration path to Iceberg is
+    # unavailable. 0 = always write Parquet.
+    lake_inline_row_limit: int = int(os.getenv("LAKE_INLINE_ROW_LIMIT", "0"))
+    # Private/RFC1918 targets are refused by default. On-prem deployments whose
+    # warehouses live on the LAN must opt in; own-infrastructure and link-local
+    # targets stay blocked either way (see app/core/host_guard.py).
+    ingest_allow_private_hosts: bool = (
+        os.getenv("INGEST_ALLOW_PRIVATE_HOSTS", "false").lower() == "true"
+    )
+    ingest_subprocess_timeout: int = int(os.getenv("INGEST_SUBPROCESS_TIMEOUT", "3600"))
+    # Log tail persisted per ingest run. Ingest logs are unbounded (dlt is
+    # chatty and a load can run for an hour), and the whole point of the cap is
+    # to keep this table from becoming the reason Postgres grows.
+    ingest_run_log_max_chars: int = int(
+        os.getenv("INGEST_RUN_LOG_MAX_CHARS", str(256 * 1024))
+    )
+
+    # === Scheduler (cron for dbt runs, retention, lake maintenance) ===
+    # One runner process at a time holds the leader lock, so this is safe with
+    # several uvicorn workers or several replicas against one Redis.
+    scheduler_enabled: bool = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
+    scheduler_tick_seconds: int = int(os.getenv("SCHEDULER_TICK_SECONDS", "30"))
+    scheduler_leader_ttl: int = int(os.getenv("SCHEDULER_LEADER_TTL", "90"))
+    # A schedule whose due time is older than this is skipped rather than run:
+    # after a long outage nobody wants yesterday's backlog firing at once.
+    scheduler_misfire_grace_seconds: int = int(
+        os.getenv("SCHEDULER_MISFIRE_GRACE_SECONDS", "3600")
+    )
+    # Delivery timeout for a failure webhook. Short: a wedged endpoint must not
+    # hold up the next tick.
+    webhook_timeout_seconds: int = int(os.getenv("WEBHOOK_TIMEOUT_SECONDS", "10"))
+
+    # === Maintenance (runs from the scheduler, leader only) ===
+    # dbt_runs rows carry the full log text, so history is the fastest growing
+    # table in the deployment. 0 disables pruning and keeps everything.
+    run_history_retention_days: int = int(os.getenv("RUN_HISTORY_RETENTION_DAYS", "90"))
+    maintenance_interval_hours: int = int(os.getenv("MAINTENANCE_INTERVAL_HOURS", "24"))
+    # DuckLake keeps every snapshot and dbt leaves __dbt_backup tables behind, so
+    # without expiry the storage volume only grows. 0 disables lake maintenance.
+    lake_snapshot_retention_days: int = int(
+        os.getenv("LAKE_SNAPSHOT_RETENTION_DAYS", "7")
+    )
+
 
     # Concurrency limits
     max_concurrent_commands_per_project: int = 1
