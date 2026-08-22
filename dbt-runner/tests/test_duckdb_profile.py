@@ -31,12 +31,37 @@ def test_explicit_path_is_kept():
 def test_placeholder_profile_is_not_in_memory():
     content = DbtService._placeholder_profiles_yml("proj")
     assert ":memory:" not in content
-    assert _target(content) == {
-        "type": "duckdb",
-        "path": DEFAULT_DB_FILE,
-        "schema": "main",
-        "threads": 4,
-    }
+    target = _target(content)
+    assert target["type"] == "duckdb"
+    assert target["path"] == DEFAULT_DB_FILE
+    assert target["schema"] == "main"
+    assert target["threads"] == 4
+
+
+def test_generated_profile_bounds_the_engine():
+    # An unset memory_limit lets each dbt run claim ~80% of the box, so
+    # MAX_CONCURRENT_DBT_RUNS of them over-commit it and one gets OOM-killed
+    # rather than spilling. Every generated DuckDB profile must carry a limit.
+    settings_block = _target(DbtService._placeholder_profiles_yml("proj"))["settings"]
+    assert settings_block["memory_limit"].endswith("MB")
+    # And spill must not default to `<db file>.tmp` inside the project volume.
+    assert settings_block["temp_directory"]
+
+
+def test_engine_settings_are_rendered_as_a_nested_block():
+    target = _target(
+        DuckDBAdapter(
+            {"path": "x.duckdb", "settings": {"memory_limit": "8GB", "threads": 2}}
+        ).generate_profiles_yml("proj")
+    )
+    assert target["settings"] == {"memory_limit": "8GB", "threads": 2}
+
+
+def test_no_settings_key_when_there_is_nothing_to_set():
+    # dbt-duckdb treats an empty `settings:` as a value, not as absence.
+    assert "settings" not in _target(
+        DuckDBAdapter({"path": "x.duckdb"}).generate_profiles_yml("proj")
+    )
 
 
 def test_existing_in_memory_profile_is_repointed(tmp_path):

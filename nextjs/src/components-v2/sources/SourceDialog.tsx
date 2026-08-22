@@ -30,6 +30,7 @@ export interface ExistingSource {
   destination: "connection" | "ducklake"
   writeDisposition: string
   primaryKey?: string[] | null
+  partitionBy?: string[] | null
 }
 
 interface Props {
@@ -43,6 +44,10 @@ interface Props {
 }
 
 const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
+// Mirrors PARTITION_TERM_PATTERN in lib/actions/data.ts, which mirrors the
+// enforcing regex in dbt-runner/ingest/lakehouse.py.
+const PARTITION_TERM_PATTERN =
+  /^(?:(?:year|month|day|hour)\([A-Za-z_][A-Za-z0-9_$]{0,62}\)|[A-Za-z_][A-Za-z0-9_$]{0,62})$/i
 
 const DISPOSITION_HELP: Record<string, string> = {
   append: "Adds rows on every run. Safest default; duplicates if the source has no cursor.",
@@ -71,6 +76,7 @@ export default function SourceDialog({
   const [destination, setDestination] = useState<"connection" | "ducklake">("ducklake")
   const [writeDisposition, setWriteDisposition] = useState("append")
   const [primaryKey, setPrimaryKey] = useState("")
+  const [partitionBy, setPartitionBy] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -100,6 +106,7 @@ export default function SourceDialog({
     setDestination(existing?.destination ?? "ducklake")
     setWriteDisposition(existing?.writeDisposition ?? "append")
     setPrimaryKey((existing?.primaryKey ?? []).join(", "))
+    setPartitionBy((existing?.partitionBy ?? []).join(", "))
     setAvailableTables(null)
     setTableInput("")
   }, [open, existing])
@@ -145,6 +152,14 @@ export default function SourceDialog({
     if (writeDisposition === "merge" && !primaryKey.trim()) {
       return setError("Merge needs a primary key")
     }
+    const partitionTerms = partitionBy
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+    const badTerm = partitionTerms.find((t) => !PARTITION_TERM_PATTERN.test(t))
+    if (badTerm) {
+      return setError(`Invalid partition term "${badTerm}": use a column, or year/month/day/hour(column)`)
+    }
 
     const payload = {
       projectId,
@@ -158,6 +173,9 @@ export default function SourceDialog({
         .split(",")
         .map((k) => k.trim())
         .filter(Boolean),
+      // Only the lake has a Parquet layout to partition; the server rejects the
+      // combination, so do not send it.
+      partitionBy: destination === "ducklake" ? partitionTerms : [],
     }
 
     setSaving(true)
@@ -329,6 +347,23 @@ export default function SourceDialog({
               <span className="mb-1 block font-medium text-gray-700">Primary key</span>
               <Input value={primaryKey} onChange={(e) => setPrimaryKey(e.target.value)} placeholder="id" />
               <span className="mt-1 block text-xs text-gray-500">Comma-separated for a composite key.</span>
+            </label>
+          )}
+
+          {destination === "ducklake" && (
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium text-gray-700">Partition by</span>
+              <Input
+                value={partitionBy}
+                onChange={(e) => setPartitionBy(e.target.value)}
+                placeholder="month(created_at)"
+              />
+              <span className="mt-1 block text-xs text-gray-500">
+                Optional, but at scale it is the difference between reading one month of
+                Parquet and reading the whole table. A column name, or
+                year/month/day/hour(column); comma-separated for several. Applies to every
+                table this source writes, and to writes made after it is set.
+              </span>
             </label>
           )}
 

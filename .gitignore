@@ -51,6 +51,10 @@ safety-report.json
 
 # internal tooling
 .codegraph/
+# Generated per-directory summaries: a tool writes these across the tree during
+# builds and removes them again, so they only ever show up as diff noise.
+codemap.md
+.slim/
 
 # Saved web page: 13 MB of third-party assets, kept locally only.
 docs/dbt_guide_ultimate/

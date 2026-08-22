@@ -193,6 +193,10 @@ model IngestSource {
   writeDisposition   String            @default("append") @map("write_disposition") @db.Text
   /// Required for writeDisposition = merge.
   primaryKey         Json?             @map("primary_key") @db.JsonB
+  /// DuckLake partition terms applied to every table this source writes: a
+  /// column name, or year/month/day/hour(column). Without one, a filter on a
+  /// date scans every Parquet file in the table. Lakehouse destination only.
+  partitionBy        Json?             @map("partition_by") @db.JsonB
   isActive           Boolean           @default(true) @map("is_active")
   createdBy          String            @map("created_by") @db.Uuid
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz()
@@ -278,6 +282,10 @@ model DbtSchedule {
   /// incoming webhooks all accept it. Validated through host_guard before use:
   /// a user-supplied URL the server fetches is an SSRF hole otherwise.
   webhookUrl String?    @map("webhook_url") @db.Text
+  /// Lake schema published as Iceberg after a successful run, so engines that
+  /// cannot read DuckLake see the fresh marts. Null disables it. Validated
+  /// against ^[A-Za-z_][A-Za-z0-9_$]{0,62}$ - it becomes a SQL identifier.
+  publishSchema String? @map("publish_schema") @db.Text
   lastRunAt  DateTime?  @map("last_run_at") @db.Timestamptz()
   lastRunId  String?    @map("last_run_id") @db.Uuid
   lastStatus String?    @map("last_status") @db.Text

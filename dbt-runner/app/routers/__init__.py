@@ -10,6 +10,7 @@ from app.routers.files import router as files_router
 from app.routers.git import router as git_router
 from app.routers.health import router as health_router
 from app.routers.ingest import router as ingest_router
+from app.routers.lake import router as lake_router
 from app.routers.process import router as process_router
 from app.routers.project import router as project_router
 from app.routers.sse import router as sse_router
@@ -23,6 +24,7 @@ __all__ = [
     "client_logs_router",
     "connection_router",
     "ingest_router",
+    "lake_router",
     "process_router",
     "sse_router",
     "project_router",

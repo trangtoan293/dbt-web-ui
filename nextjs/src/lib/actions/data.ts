@@ -5,7 +5,8 @@ import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
 import { isPlausibleCron } from '@/lib/cron'
 import { revalidatePath } from 'next/cache'
-import type { Prisma, RunCommand } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { RunCommand } from '@prisma/client'
 
 // --- Projects ---
 
@@ -466,6 +467,12 @@ async function ensureOwnership(model: string, id: string, userId: string) {
 const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
 const TABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
 const WRITE_DISPOSITIONS = new Set(['append', 'replace', 'merge'])
+// A partition term reaches DuckLake as DDL, not as a bound parameter: a bare
+// column, or one date-part function over one. Kept in step with
+// dbt-runner/ingest/lakehouse.py:_PARTITION_TERM_RE, which is the enforcing side.
+const PARTITION_TERM_PATTERN =
+  /^(?:(?:year|month|day|hour)\([A-Za-z_][A-Za-z0-9_$]{0,62}\)|[A-Za-z_][A-Za-z0-9_$]{0,62})$/i
+const PARTITION_FUNCTIONS = ['year', 'month', 'day', 'hour']
 
 export type IngestSourceInput = {
   projectId: string
@@ -476,6 +483,7 @@ export type IngestSourceInput = {
   destination?: 'connection' | 'ducklake'
   writeDisposition?: string
   primaryKey?: string[]
+  partitionBy?: string[]
 }
 
 /** Reject anything that would reach SQL as an identifier, before it is stored. */
@@ -498,6 +506,17 @@ function validateIngestSource(input: IngestSourceInput) {
   }
   if (disposition === 'merge' && !input.primaryKey?.length) {
     throw new Error('A primary key is required for merge')
+  }
+
+  for (const term of input.partitionBy ?? []) {
+    if (!PARTITION_TERM_PATTERN.test(term)) {
+      throw new Error(
+        `Invalid partition term "${term}": use a column name, or ${PARTITION_FUNCTIONS.join('/')}(column)`,
+      )
+    }
+  }
+  if (input.partitionBy?.length && (input.destination ?? 'ducklake') !== 'ducklake') {
+    throw new Error('Partitioning applies to the lakehouse destination only')
   }
 }
 
@@ -528,6 +547,7 @@ export async function createIngestSource(input: IngestSourceInput) {
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
+      partitionBy: input.partitionBy?.length ? input.partitionBy : undefined,
       createdBy: userId,
     },
   })
@@ -551,6 +571,10 @@ export async function updateIngestSource(id: string, input: IngestSourceInput) {
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
+      // Cleared explicitly, not left undefined: emptying the field in the form
+      // must remove the partition spec, and `undefined` means "leave as-is".
+      // DbNull is SQL NULL; JsonNull would store the JSON value `null`.
+      partitionBy: input.partitionBy?.length ? input.partitionBy : Prisma.DbNull,
     },
   })
   revalidatePath('/data')
@@ -675,6 +699,8 @@ const RUN_COMMANDS = new Set<RunCommand>([
 ])
 
 const MAX_SELECTOR_LENGTH = 500
+// Mirrors _NAME_RE in dbt-runner/app/routers/lake.py, which is the enforcing side.
+const SCHEMA_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
 
 export type ScheduleInput = {
   projectId: string
@@ -685,6 +711,7 @@ export type ScheduleInput = {
   cron: string
   isActive?: boolean
   webhookUrl?: string | null
+  publishSchema?: string | null
 }
 
 function validateSchedule(input: ScheduleInput) {
@@ -713,7 +740,24 @@ function validateSchedule(input: ScheduleInput) {
     throw new Error('Webhook URL must start with http:// or https://')
   }
 
-  return { name, command, selector, target, cron: input.cron.trim(), webhookUrl }
+  // Becomes a SQL identifier and a directory name in the Iceberg warehouse, so
+  // it is validated here as well as in the runner.
+  const publishSchema = input.publishSchema?.trim() || null
+  if (publishSchema && !SCHEMA_NAME_PATTERN.test(publishSchema)) {
+    throw new Error(
+      'Publish schema must start with a letter or underscore and contain only letters, digits, _ or $',
+    )
+  }
+
+  return {
+    name,
+    command,
+    selector,
+    target,
+    cron: input.cron.trim(),
+    webhookUrl,
+    publishSchema,
+  }
 }
 
 export async function getSchedules(projectId?: string) {

@@ -127,6 +127,24 @@ def run(config: Dict[str, Any]) -> int:
     )
     _emit(f"[info] {info}")
 
+    if destination["kind"] == "ducklake" and config.get("partition_by"):
+        from ingest import lakehouse
+
+        _emit("[info] applying lake partitioning")
+        try:
+            applied = lakehouse.apply_partitioning(
+                catalog=destination["catalog_url"],
+                metadata=destination["metadata_schema"],
+                dataset=config["dataset"],
+                tables=tables,
+                partition_by=list(config["partition_by"]),
+            )
+            _emit(f"[info] partitioning: {applied}")
+        except Exception as exc:
+            # The rows are already loaded and committed. Failing the job here
+            # would report a successful load as failed and invite a re-run.
+            _emit(f"[warn] could not apply partitioning: {exc}")
+
     counts = _row_counts(pipeline, tables)
     result = {
         "dataset": config["dataset"],

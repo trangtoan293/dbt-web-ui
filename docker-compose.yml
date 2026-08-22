@@ -13,6 +13,25 @@ x-shared-env: &shared-env
   STORAGE_DIR: /data/storage
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
 
+# DuckDB engine resources. DuckDB is the query engine: dbt-duckdb runs it, and
+# DuckLake is read through it. Each dbt run is a separate process with its own
+# instance, so an unset memory_limit means every one of them claims ~80% of the
+# box and the kernel kills a run instead of DuckDB spilling to disk.
+x-engine-env: &engine-env
+  # Empty derives a per-run share of this container's memory (see
+  # dbt-runner/app/core/duckdb_resources.py). Set e.g. 24GB to pin it.
+  DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-}
+  # 0 lets DuckDB use every core. It multiplies with `threads` in profiles.yml,
+  # which is dbt's model concurrency.
+  DUCKDB_THREADS: ${DUCKDB_THREADS:-0}
+  # Spill lives on the storage volume, not next to the project's .duckdb file:
+  # the project volume is not the one sized for data.
+  DUCKDB_TEMP_DIR: ${DUCKDB_TEMP_DIR:-/data/storage/duckdb-tmp}
+  DUCKDB_MAX_TEMP_DIRECTORY_SIZE: ${DUCKDB_MAX_TEMP_DIRECTORY_SIZE:-}
+  # false trades row order for a large drop in peak memory on big scans. Unset
+  # keeps DuckDB's default, because changing it reorders model output.
+  DUCKDB_PRESERVE_INSERTION_ORDER: ${DUCKDB_PRESERVE_INSERTION_ORDER:-}
+
 # Ingest / DuckLake lakehouse. The catalog defaults to the application database
 # under a per-project metadata schema; point LAKE_CATALOG_URL at its own database
 # to keep it separate. Data files live on the shared storage volume.
@@ -27,6 +46,11 @@ x-ingest-env: &ingest-env
   INGEST_ALLOW_PRIVATE_HOSTS: ${INGEST_ALLOW_PRIVATE_HOSTS:-false}
   INGEST_SUBPROCESS_TIMEOUT: ${INGEST_SUBPROCESS_TIMEOUT:-3600}
   INGEST_RUN_LOG_MAX_CHARS: ${INGEST_RUN_LOG_MAX_CHARS:-262144}
+  # Publishing lake marts as Iceberg, for engines that cannot read DuckLake.
+  # The catalog falls back to LAKE_CATALOG_URL then DATABASE_URL. The warehouse
+  # must stay outside LAKE_DATA_DIR - the lake's orphan cleanup scans that tree.
+  ICEBERG_CATALOG_URL: ${ICEBERG_CATALOG_URL:-}
+  ICEBERG_WAREHOUSE_DIR: ${ICEBERG_WAREHOUSE_DIR:-/data/storage/iceberg}
 
 # Scheduler: cron for dbt runs, plus the housekeeping nothing else owns.
 # Leadership is a Redis key, so this is safe with several runner workers or
@@ -138,10 +162,13 @@ services:
     container_name: dbt-craft-runner
     restart: unless-stopped
     environment:
-      <<: [*shared-env, *auth-env, *ingest-env, *scheduler-env]
+      <<: [*shared-env, *auth-env, *engine-env, *ingest-env, *scheduler-env]
       WORKSPACE_DIR: /tmp/dbt-projects
       REDIS_URL: redis://redis:6379/0
-      MAX_CONCURRENT_DBT_RUNS: ${MAX_CONCURRENT_DBT_RUNS:-10}
+      # Each concurrent run is a DuckDB process holding its own memory share, so
+      # raising this shrinks every run. Three heavy runs already saturate one
+      # node's disk bandwidth; raise it only for many small projects.
+      MAX_CONCURRENT_DBT_RUNS: ${MAX_CONCURRENT_DBT_RUNS:-3}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://127.0.0.1:3000"]}
       DBT_RUNNER_UVICORN_WORKERS: ${DBT_RUNNER_UVICORN_WORKERS:-1}
       # dbt installs packages into the project dir by default. Projects authored
@@ -163,6 +190,10 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+    # 0 is unlimited, so the container reads the host's RAM and the derived
+    # per-run DuckDB share is a share of the whole machine. Set this on a box
+    # shared with anything else - the share is then derived from this ceiling.
+    mem_limit: ${DBT_RUNNER_MEM_LIMIT:-0}
     networks: [dbt-craft-network]
 
   frontend:

@@ -44,7 +44,7 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   `src/app/(auth)/` is `/login` and `/logout`. One root layout, in
   `src/app/layout.tsx`.
 - The sidebar carries the five *workspace* sections only. `/orchestrate` hosts
-  Runs and Schedules, `/data` hosts Connections and Sources, each as a tab whose
+  Runs and Schedules, `/data` hosts Connections, Sources and Lakehouse, each as a tab whose
   id is in the query string (`?tab=schedules`) so the retired paths can redirect
   into them — those redirects live in `next.config.ts` and are covered by a
   test. `/settings` deliberately has **no** sidebar slot; it is reached from the
@@ -77,6 +77,29 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 - Frontend consumes via `fetch` + `ReadableStream` (`useDbtRunStream`) and
   `EventSource` (`useFileWatcher`).
 
+### Query engine
+- **DuckDB is the query engine**, and the only one this application runs itself:
+  `dbt-duckdb` executes models, and the DuckLake lakehouse is read through the
+  same engine. `postgresql`, `oracle`, `dremio` and `spark` are pass-throughs -
+  dbt pushes SQL to a warehouse someone else operates.
+- Single-node is not the same as small. A query over a few TB of Parquet reads
+  the columns and partitions it needs, so what bounds it is disk throughput and
+  the partition layout, not the engine. Put the lake on local NVMe.
+- Every dbt run is a separate process with its own DuckDB instance, so DuckDB's
+  own defaults are wrong here: unbounded it takes ~80% of visible memory, and
+  `MAX_CONCURRENT_DBT_RUNS` of those over-commit the box until the kernel kills
+  one mid-run instead of DuckDB spilling. `app/core/duckdb_resources.py` derives
+  a per-run share from the container's cgroup limit divided by that concurrency,
+  and `DuckDBAdapter.generate_profiles_yml` renders it as a `settings:` block.
+  Raising the concurrency shrinks every run's memory - the two cannot be tuned
+  apart.
+- Adapters import nothing from `app`, so the numbers are computed in
+  `duckdb_resources` and passed in as adapter config. `_apply_duckdb_resources`
+  in `dbt_service.py` is the one call site every generated profile passes.
+- Spill goes to `DUCKDB_TEMP_DIR` (per project), not DuckDB's default of
+  `<db file>.tmp`: that path is inside the dbt project volume, which is not the
+  volume sized for data.
+
 ### Ingest (dlt) and the lakehouse
 - `POST /sse/ingest/{source_id}` runs one load and streams it. dlt executes in a
   subprocess (`python -m ingest.runner`) whose configuration arrives on **stdin**,
@@ -92,10 +115,53 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   layout and is shared with dbt profile generation.
 - Ingest counts against the same `global_run_semaphore()` as dbt runs, and takes
   the `dbt_run` file lock when (and only when) it writes a DuckDB file.
+- An ingest source may carry `partition_by` (a column, or
+  `year|month|day|hour(column)`). It becomes DuckLake `SET PARTITIONED BY` DDL,
+  so it is an expression rather than a bound parameter and is validated on both
+  sides - `lakehouse.partition_expression` is the enforcing one. Applied after
+  the load, because the table does not exist before it, which means the first
+  load's files stay unpartitioned until maintenance merges them.
 - Each load writes an `ingest_runs` row. Row counts come from the runner's
   `row_counts` field (`ingest/runner.py`); logs are a capped tail
   (`INGEST_RUN_LOG_MAX_CHARS`), because dlt is chatty and unbounded log text is
   what makes a history table the reason Postgres grows.
+
+### Publishing the lake as Iceberg
+- `POST /lake/iceberg/{project_id}` (`app/routers/lake.py`) replaces a project's
+  Iceberg tables from one of its lake schemas. This is the way *out* of DuckLake:
+  dbt keeps building marts in the lake, and everything that is not DuckDB - Spark,
+  Trino, Athena - reads the Iceberg copy.
+- **The Parquet is copied, not registered in place.** Registering the lake's own
+  files costs no rewrite, but `merge_adjacent_files` then `cleanup_old_files`
+  rewrites and deletes them, and DuckLake cannot see an Iceberg table pointing at
+  them - the published table fails with `FileNotFoundError`. Two catalogs each
+  running their own garbage collector cannot share files
+  (`tests/test_iceberg_publish.py` proves it both ways). Copying is affordable
+  because marts are aggregates.
+- `ICEBERG_WAREHOUSE_DIR` must stay **outside** `lakehouse.data_dir()`, for the
+  same reason in reverse: `ducklake_delete_orphaned_files` scans the lake's
+  DATA_PATH and would find these copies unreferenced.
+- A schedule may carry `publishSchema`: the scheduler publishes that lake schema
+  after the run, and `RunScheduler._publish_iceberg` owns the whole decision -
+  it returns early unless the schedule asked for it *and* the run succeeded, so
+  no caller can forget the guard. A publish failure is logged, never raised: the
+  run did succeed and the models are in the lake, so failing it would be a lie.
+- A re-publish after an append copies only the new files; a rebuilt table (dbt's
+  `table` materialization) or one whose files maintenance rewrote is fully
+  replaced, because a file set that is not a superset of what was published has
+  no honest delta. Unchanged means zero copying.
+- The catalog is a pyiceberg `SqlCatalog`, i.e. an Iceberg **JDBC** catalog, so
+  Trino (`iceberg.catalog.type=jdbc`) and Spark read it with no extra service.
+  `iceberg.CATALOG_NAME` is part of pyiceberg's table key - a table written under
+  one catalog name is invisible under another, so everything opens the catalog
+  through `iceberg.catalog()`.
+- **dbt cannot write Iceberg directly, verified.** DuckDB does write Iceberg
+  through a REST catalog (`CREATE TABLE`/`INSERT`/`UPDATE`/`DELETE` all work), but
+  dbt's `view` materialization hits `Not implemented Error: Create View`, and its
+  `table` materialization hits `This table (x__dbt_tmp) was modified already,
+  can't be renamed!` - DuckDB-Iceberg refuses to rename a table modified inside
+  the same open transaction, which is exactly what dbt does. Only `incremental`
+  works. That is why the lake stays DuckLake and Iceberg is a publish target.
 
 ### Scheduling, notifications and retention
 - `app/services/scheduler.py` is one asyncio poll loop doing three jobs: fire due
@@ -137,8 +203,8 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 
 ### dbt-runner
 - FastAPI + uvicorn, async throughout.
-- Routers: `health, process, dbt, git, files, connection, ingest, project, sse,
-  dremio, client_logs, system`.
+- Routers: `health, process, dbt, git, files, connection, ingest, lake, project,
+  sse, dremio, client_logs, system`.
 - `GET /system/info` is what the Settings page reads. It returns a **hand-picked
   whitelist** of `Settings` fields and must never serialise the settings object:
   that object also holds `app_encryption_key`, which decrypts every stored
@@ -255,6 +321,23 @@ docker compose run --rm db-migrate npx prisma migrate deploy
   Postgres/Dremio/Oracle loads into the lake successfully and then cannot read it
   from dbt. Those projects want the `connection` destination; the lake stays
   readable by engines outside dbt.
+- **An unpartitioned lake table is read in full.** A filter on a date scans every
+  Parquet file unless the ingest source sets `partition_by`. At a few hundred GB
+  that is the whole difference between seconds and minutes, and no engine choice
+  recovers it.
+- Appending loads leave many small Parquet files and a scan pays per file, so
+  `lakehouse.maintain` merges them (`merge_adjacent_files`) *before* expiring
+  snapshots - merging is what makes the old files unreferenced. The other order
+  keeps the small ones another retention window.
+- **The DuckLake catalog defaults to the application database.** It holds a row
+  per Parquet file per snapshot, so past a few hundred GB of lake data it is a
+  hot table competing with every application query. `LAKE_CATALOG_URL` moves it
+  to its own Postgres; the default stays for existing deployments, and startup
+  logs a warning when it is in use.
+- A `duckdb` **file** connection is a development target. DuckDB is single-writer
+  and a warm worker holds the file, so one file serves one project and nothing
+  else can read it while dbt runs. A warehouse-sized deployment wants the
+  DuckLake destination, which many readers can attach at once.
 - The lake attach block is added to profiles.yml **only while the project has an
   ingest source with `destination = 'ducklake'`**. Delete the last one and models
   referencing `lake.*` stop resolving - the attach is gated in

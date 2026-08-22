@@ -62,6 +62,7 @@ const EMPTY = {
   cron: "0 2 * * *",
   isActive: true,
   webhookUrl: "",
+  publishSchema: "",
 }
 
 export default function ScheduleDialog({
@@ -93,6 +94,7 @@ export default function ScheduleDialog({
             cron: existing.cron,
             isActive: existing.isActive,
             webhookUrl: existing.webhookUrl ?? "",
+            publishSchema: existing.publishSchema ?? "",
           }
         : { ...EMPTY, projectId: projects[0]?.id ?? "" },
     )
@@ -158,6 +160,7 @@ export default function ScheduleDialog({
         cron: form.cron.trim(),
         isActive: form.isActive,
         webhookUrl: form.webhookUrl.trim() || null,
+        publishSchema: form.publishSchema.trim() || null,
       }
       if (existing) {
         await updateSchedule(existing.id, payload)
@@ -304,6 +307,22 @@ export default function ScheduleDialog({
             <p className="mt-1 text-xs text-gray-500">
               POSTed a JSON summary when a run of this schedule does not succeed. Slack, Teams and
               Discord incoming webhooks all accept it.
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Publish to Iceberg <span className="font-normal text-gray-400">(optional)</span>
+            </label>
+            <Input
+              value={form.publishSchema}
+              onChange={(event) => setField("publishSchema")(event.target.value)}
+              placeholder="marts"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              After a successful run, copy this lake schema out as Iceberg tables, so engines
+              that cannot read DuckLake see the fresh marts. A run that only appended publishes
+              just the new files; a rebuilt table is replaced.
             </p>
           </div>
 

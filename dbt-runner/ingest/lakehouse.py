@@ -182,11 +182,111 @@ def provision(
     )
 
 
+_PARTITION_FUNCTIONS = ("year", "month", "day", "hour")
+_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_$]{0,62}"
+# Two alternatives rather than an optional paren group: `ts)` matches the
+# optional form and is not a term, and an "is it balanced" check after the fact
+# is a second place to get this wrong.
+_PARTITION_TERM_RE = re.compile(
+    rf"^(?:(?P<fn>[A-Za-z]+)\((?P<fn_column>{_IDENTIFIER})\)|(?P<column>{_IDENTIFIER}))$"
+)
+
+
+def partition_expression(term: str) -> str:
+    """Validate one partition term and return it as SQL.
+
+    `ALTER TABLE ... SET PARTITIONED BY` takes an expression, so this cannot be a
+    bound parameter - it is concatenated into DDL. Only a bare column or one of a
+    fixed set of date-part functions over a bare column is accepted, which is
+    what partitioning a warehouse table actually needs and leaves nothing to
+    inject.
+    """
+    raw = (term or "").strip()
+    match = _PARTITION_TERM_RE.match(raw)
+    if not match:
+        raise LakehouseError(
+            f"invalid partition term '{term}': use a column name, "
+            f"or one of {', '.join(_PARTITION_FUNCTIONS)}(column)"
+        )
+    function = match.group("fn")
+    if function is None:
+        return f'"{match.group("column")}"'
+    if function.lower() not in _PARTITION_FUNCTIONS:
+        raise LakehouseError(
+            f"unsupported partition function '{function}': "
+            f"use one of {', '.join(_PARTITION_FUNCTIONS)}"
+        )
+    return f'{function.lower()}("{match.group("fn_column")}")'
+
+
+def apply_partitioning(
+    *,
+    catalog: str,
+    metadata: str,
+    dataset: str,
+    tables: list[str],
+    partition_by: list[str],
+) -> dict:
+    """Partition a dataset's lake tables, so later scans can prune files.
+
+    Without this a query filtering on a date reads every Parquet file in the
+    table - at a few hundred GB that is the difference between seconds and
+    minutes, and no engine choice fixes it.
+
+    ponytail: DuckLake applies a partition spec to *subsequent* writes, so the
+    first load's files stay unpartitioned until merge_adjacent_files rewrites
+    them. Called after the load rather than before because the table does not
+    exist until then.
+
+    Returns one entry per table so a partial result is visible. Never raises for
+    a single table: a source whose tables do not all share a date column is
+    normal, and a failed partition is not a failed load.
+    """
+    import duckdb
+
+    expressions = [partition_expression(term) for term in partition_by if str(term).strip()]
+    if not expressions:
+        return {}
+
+    results: dict[str, str] = {}
+    connection = duckdb.connect()
+    try:
+        for extension in DUCKDB_EXTENSIONS:
+            connection.execute(f"LOAD {extension}")
+        connection.execute(
+            f"ATTACH IF NOT EXISTS '{attach_string(catalog)}' AS {ATTACH_ALIAS} "
+            f"(METADATA_SCHEMA '{metadata}')"
+        )
+        for table in tables:
+            # dataset and table are validated identifiers upstream (_DATASET_RE,
+            # _TABLE_RE in the ingest router); quoted here as well.
+            target = f'{ATTACH_ALIAS}."{dataset}"."{table}"'
+            try:
+                connection.execute(
+                    f"ALTER TABLE {target} SET PARTITIONED BY ({', '.join(expressions)})"
+                )
+                results[table] = "ok"
+            except Exception as exc:
+                results[table] = f"skipped: {exc}"
+    except Exception as exc:
+        raise LakehouseError(f"could not partition the lakehouse tables: {exc}") from exc
+    finally:
+        connection.close()
+
+    logger.info("Lake partitioning for %s: %s", dataset, results)
+    return results
+
+
 # Maintenance entry points, by the name each DuckLake version exposes. The
 # extension is baked into the image, so which of these exist depends on that
 # build - every step is therefore attempted independently and a missing
 # function is reported, not fatal.
 _MAINTENANCE_STEPS = (
+    # Merge first: appending loads leave many small Parquet files, and a scan
+    # pays per file. Merging is what makes the old ones unreferenced, so snapshot
+    # expiry below can then release them - the other order merges files that are
+    # about to be dropped and keeps the small ones another retention window.
+    ("merge_adjacent_files", "CALL ducklake_merge_adjacent_files('{alias}')"),
     (
         "expire_snapshots",
         "CALL ducklake_expire_snapshots('{alias}', older_than => now() - INTERVAL '{days} days')",

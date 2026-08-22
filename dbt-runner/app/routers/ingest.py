@@ -88,7 +88,7 @@ async def _load_source(
     result = await session.execute(
         text(
             "SELECT s.id, s.name, s.source_type, s.destination, s.dataset, s.tables, "
-            "s.write_disposition, s.primary_key, s.project_id, "
+            "s.write_disposition, s.primary_key, s.partition_by, s.project_id, "
             "p.connection_id AS project_connection_id, "
             "c.connection_type, c.host, c.port, c.database, c.username, "
             "c.password_encrypted, c.extra_config "
@@ -160,6 +160,28 @@ def _validated_dataset(source: Dict[str, Any]) -> str:
     return dataset
 
 
+def _validated_partition_by(raw: Any) -> list[str]:
+    """Validate partition terms before they reach DDL.
+
+    `SET PARTITIONED BY` takes an expression, not a bound parameter, so the terms
+    are checked here as well as in the lakehouse module - this is the boundary the
+    request crosses, and a 400 is more use than a failed load.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="partition_by must be a list")
+    terms = [str(term).strip() for term in raw if str(term).strip()]
+    for term in terms:
+        try:
+            lakehouse.partition_expression(term)
+        except lakehouse.LakehouseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # The raw terms travel on, not the rendered SQL: the runner renders them
+    # against the catalog it attaches, and one renderer is one place to fix.
+    return terms
+
+
 def _pipelines_dir(project_id: str) -> Path:
     """dlt keeps incremental cursors here, so it must survive a container restart.
 
@@ -214,6 +236,13 @@ def _build_job_config(
     if isinstance(primary_key, str):
         primary_key = json.loads(primary_key)
 
+    # Partitioning is a property of the lake's Parquet layout, so it means nothing
+    # for a load into a warehouse that manages its own storage.
+    partition_by = source.get("partition_by") if kind == DESTINATION_LAKEHOUSE else None
+    if isinstance(partition_by, str):
+        partition_by = json.loads(partition_by)
+    partition_by = _validated_partition_by(partition_by)
+
     return {
         "project_id": project_id,
         "pipeline_name": f"ingest_{re.sub(r'[^a-z0-9]', '', str(source['id']).lower())[:24]}",
@@ -221,6 +250,7 @@ def _build_job_config(
         "dataset": dataset,
         "write_disposition": write_disposition,
         "primary_key": primary_key or None,
+        "partition_by": partition_by or None,
         "source": {"type": "sql_database", "url": source_url, "tables": tables},
         "destination": destination,
     }

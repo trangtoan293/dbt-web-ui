@@ -41,6 +41,7 @@ from app.models.docs import DocsGenerateRequest, DocsServeRequest
 from app.services.command import CommandService
 from app.services.dbt_worker import DbtWarmWorkerError, DbtWarmWorkerPool, warm_worker_pool
 from app.services.project import ProjectService
+from app.core import duckdb_resources
 from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
@@ -548,6 +549,9 @@ class DbtService:
                         session, project_id, conn_type, adapter_config
                     )
                 )
+                DbtService._apply_duckdb_resources(
+                    project_id, conn_type, adapter_config
+                )
                 if conn_type == "duckdb" and (
                     adapter_config.get("path") or ""
                 ) not in ("", ":memory:"):
@@ -623,6 +627,26 @@ class DbtService:
                 "Could not regenerate profiles.yml for %s: %s", project_id, exc
             )
             return {}
+
+    @staticmethod
+    def _apply_duckdb_resources(
+        project_id: str, conn_type: str, adapter_config: Dict[str, Any]
+    ) -> None:
+        """Bound the DuckDB engine for this project's profile.
+
+        Every dbt run is its own process with its own DuckDB instance, and DuckDB
+        with no memory_limit takes ~80% of the box: MAX_CONCURRENT_DBT_RUNS of
+        those over-commit it and the kernel kills a run instead of DuckDB
+        spilling. Applied here because this is the one place every generated
+        DuckDB profile passes through.
+
+        A connection that already carries explicit settings is left alone.
+        """
+        if conn_type != "duckdb" or adapter_config.get("settings"):
+            return
+        values = duckdb_resources.profile_settings(project_id)
+        if values:
+            adapter_config["settings"] = values
 
     @staticmethod
     async def _apply_lakehouse_attach(
@@ -2220,7 +2244,9 @@ class DbtService:
         attached. Replace it by attaching a connection in the UI, or edit by hand.
         """
         get_adapter = _load_connection_adapter_factory()
-        target = get_adapter("duckdb", {}).generate_profiles_yml(profile_name)
+        target = get_adapter(
+            "duckdb", {"settings": duckdb_resources.profile_settings()}
+        ).generate_profiles_yml(profile_name)
         return (
             "# Placeholder profile - no connection configured.\n"
             "# Attach a connection in the Develop screen to regenerate this,\n"
