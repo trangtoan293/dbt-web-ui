@@ -164,7 +164,18 @@ class Settings(BaseSettings):
     )
 
     # Concurrency limits
-    max_concurrent_commands_per_project: int = 1
+    # Serialises commands within one project. 1 because a file-backed DuckDB
+    # warehouse is single-writer, so two dbt processes on one project fail on the
+    # file lock. Raise it only where every target is remote (Postgres, Oracle,
+    # Dremio, Spark) or lake-only.
+    max_concurrent_commands_per_project: int = int(
+        os.getenv("MAX_CONCURRENT_COMMANDS_PER_PROJECT", "1")
+    )
+    # Ad-hoc console queries, capped separately from runs so a console stays
+    # usable during a batch. Every slot here is a DuckDB instance that can go
+    # active, so it is added to max_concurrent_dbt_runs when the per-instance
+    # memory limit is derived: raising this shrinks every run and every query.
+    max_concurrent_queries: int = int(os.getenv("MAX_CONCURRENT_QUERIES", "2"))
     # Global limit across all projects. Each concurrent run is a DuckDB process
     # holding its own memory_limit share, so raising this shrinks every run's
     # memory. Three heavy runs already saturate a single node's disk bandwidth.
@@ -174,6 +185,16 @@ class Settings(BaseSettings):
     dbt_warm_worker_timeout: int = int(os.getenv("DBT_WARM_WORKER_TIMEOUT", "120"))
     dbt_warm_worker_recycle_jobs: int = int(os.getenv("DBT_WARM_WORKER_RECYCLE_JOBS", "100"))
     dbt_warm_worker_enabled: bool = os.getenv("DBT_WARM_WORKER_ENABLED", "true").lower() == "true"
+    # A warm worker is a live dbt process holding its project's warehouse open, so
+    # pools must not accumulate: each costs resident memory, a DuckDB file lock,
+    # and - for a project that attaches the lake - a Postgres connection. Pools
+    # are created per project on demand and reclaimed here, idle ones first.
+    dbt_warm_worker_max_projects: int = int(
+        os.getenv("DBT_WARM_WORKER_MAX_PROJECTS", "8")
+    )
+    dbt_warm_worker_idle_seconds: int = int(
+        os.getenv("DBT_WARM_WORKER_IDLE_SECONDS", "900")
+    )
     # Hard ceiling on a single dbt subprocess so a hang can't hold the project lock forever.
     dbt_subprocess_timeout: int = int(os.getenv("DBT_SUBPROCESS_TIMEOUT", "1800"))
 
@@ -183,7 +204,10 @@ class Settings(BaseSettings):
     # Per-line buffer for the warm-worker IPC StreamReader. Must hold a full
     # `dbt show --output json` response line. Default 64 MiB (asyncio default is 64 KiB).
     dbt_warm_worker_stream_limit: int = int(os.getenv("DBT_WARM_WORKER_STREAM_LIMIT", str(64 * 1024 * 1024)))
-    dbt_inline_query_timeout: int = int(os.getenv("DBT_INLINE_QUERY_TIMEOUT", "60"))
+    # Ad-hoc console query timeout. 60s was fine against a small warehouse and is
+    # not against a few TB of Parquet, where a scan that legitimately spills runs
+    # for minutes. MAX_CONCURRENT_QUERIES, not this, is what protects the box.
+    dbt_inline_query_timeout: int = int(os.getenv("DBT_INLINE_QUERY_TIMEOUT", "300"))
 
     class Config:
         env_file = ".env"

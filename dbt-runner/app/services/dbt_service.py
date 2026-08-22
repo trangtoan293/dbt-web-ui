@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.file_lock import AsyncFileLock
-from app.core.global_semaphore import global_run_semaphore
+from app.core.global_semaphore import (
+    global_query_semaphore,
+    global_run_semaphore,
+)
 from app.core.crypto import decrypt_secret_or_plaintext
 from app.exceptions import DbtOperationError
 from app.lineage import get_full_lineage
@@ -287,9 +290,19 @@ class DbtService:
         cancellable: bool = False,
         timeout: Optional[float] = None,
         fallback_on_worker_timeout: bool = True,
+        fallback_lock: Optional[str] = None,
         perf_label: str = "dbt",
     ) -> tuple[int, str, str]:
-        """Run a dbt command through the warm worker, with subprocess fallback."""
+        """Run a dbt command through the warm worker, with subprocess fallback.
+
+        `fallback_lock` names a per-project file lock taken around the *fallback*
+        only. What that lock protects against is two dbt processes opening one
+        DuckDB file, and the warm-worker path cannot do that: a project has one
+        pool, so its jobs queue inside it. Holding the lock across both paths -
+        which is what the query path used to do - added a second serialisation
+        layer and a 30-second failure that the pool's own queue already handles
+        better.
+        """
         if not cmd or cmd[0] != "dbt":
             raise ValueError("_run_dbt_command expects a dbt command")
 
@@ -327,15 +340,46 @@ class DbtService:
                 " ".join(cmd),
                 exc,
             )
-            if cancellable:
-                return await self.command.run_cancellable(
-                    cmd,
-                    project_path,
-                    fallback_process_id or str(project_path),
-                    env=env,
-                    timeout=timeout,
-                )
-            return await self.command.run(cmd, project_path, env=env)
+            if fallback_lock:
+                async with AsyncFileLock.lock(
+                    project_id, fallback_lock, timeout=settings.file_lock_wait_timeout
+                ):
+                    return await self._run_dbt_subprocess(
+                        cmd,
+                        project_path,
+                        fallback_process_id=fallback_process_id,
+                        env=env,
+                        cancellable=cancellable,
+                        timeout=timeout,
+                    )
+            return await self._run_dbt_subprocess(
+                cmd,
+                project_path,
+                fallback_process_id=fallback_process_id,
+                env=env,
+                cancellable=cancellable,
+                timeout=timeout,
+            )
+
+    async def _run_dbt_subprocess(
+        self,
+        cmd: List[str],
+        project_path: Path,
+        *,
+        fallback_process_id: Optional[str],
+        env: Optional[Dict[str, str]],
+        cancellable: bool,
+        timeout: Optional[float],
+    ) -> tuple[int, str, str]:
+        if cancellable:
+            return await self.command.run_cancellable(
+                cmd,
+                project_path,
+                fallback_process_id or str(project_path),
+                env=env,
+                timeout=timeout,
+            )
+        return await self.command.run(cmd, project_path, env=env)
 
     @staticmethod
     async def reconcile_stale_runs(session: AsyncSession) -> int:
@@ -2094,7 +2138,12 @@ class DbtService:
             cmd.extend(["--target", request.target])
         start_time = time.time()
         try:
-            async with AsyncFileLock.lock(request.project_id, "query", timeout=30):
+            # A console query is a DuckDB instance doing work, so it takes a slot
+            # from the global pool the memory limit is derived against. Before
+            # this, it took only a per-project lock: N projects querying at once
+            # meant N unbounded instances. The lock itself now applies to the
+            # subprocess fallback only - see _run_dbt_command.
+            async with global_query_semaphore():
                 returncode, stdout, stderr = await self._run_dbt_command(
                     cmd,
                     project_path,
@@ -2104,6 +2153,7 @@ class DbtService:
                     cancellable=True,
                     timeout=settings.dbt_inline_query_timeout,
                     fallback_on_worker_timeout=False,
+                    fallback_lock="query",
                     perf_label=f"query project_id={request.project_id}",
                 )
                 execution_time = time.time() - start_time

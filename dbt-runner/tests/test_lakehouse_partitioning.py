@@ -69,5 +69,74 @@ class MaintenanceTests(unittest.TestCase):
         )
 
 
+class UnpartitionedReportingTests(unittest.TestCase):
+    """A mart with no partition spec is scanned whole. That must not be silent.
+
+    An ingest source can carry a partition spec; a table dbt built cannot -
+    nothing in this codebase gets to choose its layout. So marts, the most
+    queried tables in the lake, are the ones most likely to be unpartitioned.
+    Maintenance reports them; only the model's author can fix them.
+    """
+
+    def _lake(self, tmp):
+        import duckdb
+
+        connection = duckdb.connect()
+        connection.execute("INSTALL ducklake")
+        connection.execute("LOAD ducklake")
+        connection.execute(
+            f"ATTACH 'ducklake:sqlite:{tmp}/c.sqlite' AS lake (DATA_PATH '{tmp}/data/')"
+        )
+        # Same as lakehouse.provision: without this DuckLake inlines small writes
+        # into the catalog instead of Parquet, so file_count stays 0 and this test
+        # would pass against a table that has no files to be unpartitioned about.
+        connection.execute("CALL lake.set_option('data_inlining_row_limit', 0)")
+        return connection
+
+    def test_a_many_file_table_without_a_partition_spec_is_reported(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._lake(tmp)
+            c.execute("CREATE TABLE lake.wide AS SELECT range AS id FROM range(10)")
+            for start in range(10, 60, 10):
+                c.execute(f"INSERT INTO lake.wide SELECT range FROM range({start}, {start + 10})")
+
+            reported = dict(lakehouse.unpartitioned_tables(c, min_files=2))
+
+            self.assertIn("wide", reported)
+            self.assertGreaterEqual(reported["wide"], 2)
+
+    def test_a_partitioned_table_is_not_reported(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._lake(tmp)
+            c.execute("CREATE TABLE lake.parted AS SELECT range AS id, range%7 AS d FROM range(100)")
+            c.execute('ALTER TABLE lake.parted SET PARTITIONED BY ("d")')
+            c.execute("INSERT INTO lake.parted SELECT range, range%7 FROM range(100, 200)")
+
+            reported = dict(lakehouse.unpartitioned_tables(c, min_files=1))
+
+            self.assertNotIn("parted", reported)
+
+    def test_dbt_backup_tables_are_not_reported(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._lake(tmp)
+            c.execute("CREATE TABLE lake.x__dbt_backup AS SELECT range AS id FROM range(10)")
+            c.execute("INSERT INTO lake.x__dbt_backup SELECT range FROM range(10, 20)")
+
+            self.assertEqual(lakehouse.unpartitioned_tables(c, min_files=1), [])
+
+    def test_a_broken_introspection_returns_empty_rather_than_failing_maintenance(self):
+        class Boom:
+            def execute(self, *_):
+                raise RuntimeError("no such metadata table in this build")
+
+        self.assertEqual(lakehouse.unpartitioned_tables(Boom()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

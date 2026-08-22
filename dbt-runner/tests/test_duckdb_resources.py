@@ -26,6 +26,7 @@ class MemoryLimitTests(unittest.TestCase):
     def test_limit_is_the_container_share_not_the_whole_box(self):
         with (
             patch.object(duckdb_resources.settings, "duckdb_memory_limit", ""),
+            patch.object(duckdb_resources.settings, "max_concurrent_queries", 0),
             patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", 4),
             patch.object(duckdb_resources, "available_memory_bytes", return_value=64 * GIB),
         ):
@@ -40,6 +41,7 @@ class MemoryLimitTests(unittest.TestCase):
         total = 64 * GIB
         with (
             patch.object(duckdb_resources.settings, "duckdb_memory_limit", ""),
+            patch.object(duckdb_resources.settings, "max_concurrent_queries", 0),
             patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", runs),
             patch.object(duckdb_resources, "available_memory_bytes", return_value=total),
         ):
@@ -50,6 +52,7 @@ class MemoryLimitTests(unittest.TestCase):
         # A 200MB share would refuse trivial queries; no limit is better.
         with (
             patch.object(duckdb_resources.settings, "duckdb_memory_limit", ""),
+            patch.object(duckdb_resources.settings, "max_concurrent_queries", 0),
             patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", 3),
             patch.object(duckdb_resources, "available_memory_bytes", return_value=512 * 1024 * 1024),
         ):
@@ -70,6 +73,43 @@ class MemoryLimitTests(unittest.TestCase):
             patch.object(duckdb_resources, "_cgroup_memory_bytes", return_value=None),
         ):
             self.assertEqual(duckdb_resources.available_memory_bytes(), 256 * GIB)
+
+
+class EngineSlotTests(unittest.TestCase):
+    """Console queries must be counted, or the per-instance limit means nothing."""
+
+    def test_queries_count_towards_the_memory_divisor(self):
+        with (
+            patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", 3),
+            patch.object(duckdb_resources.settings, "max_concurrent_queries", 2),
+        ):
+            self.assertEqual(duckdb_resources.concurrent_engine_slots(), 5)
+
+    def test_raising_the_query_cap_shrinks_every_instance(self):
+        # The trade has to be visible: more concurrent consoles means each run
+        # and each query gets less memory, on the same box.
+        def limit(queries):
+            with (
+                patch.object(duckdb_resources.settings, "duckdb_memory_limit", ""),
+                patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", 3),
+                patch.object(duckdb_resources.settings, "max_concurrent_queries", queries),
+                patch.object(duckdb_resources, "available_memory_bytes", return_value=64 * GIB),
+            ):
+                return int(duckdb_resources.memory_limit_per_run().removesuffix("MB"))
+
+        self.assertGreater(limit(0), limit(2))
+        self.assertGreater(limit(2), limit(16))
+
+    def test_every_slot_together_stays_under_the_box(self):
+        runs, queries, total = 3, 2, 64 * GIB
+        with (
+            patch.object(duckdb_resources.settings, "duckdb_memory_limit", ""),
+            patch.object(duckdb_resources.settings, "max_concurrent_dbt_runs", runs),
+            patch.object(duckdb_resources.settings, "max_concurrent_queries", queries),
+            patch.object(duckdb_resources, "available_memory_bytes", return_value=total),
+        ):
+            megabytes = int(duckdb_resources.memory_limit_per_run().removesuffix("MB"))
+        self.assertLess(megabytes * (runs + queries) * 1024 * 1024, total)
 
 
 class SpillDirectoryTests(unittest.TestCase):

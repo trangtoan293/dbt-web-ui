@@ -169,6 +169,15 @@ services:
       # raising this shrinks every run. Three heavy runs already saturate one
       # node's disk bandwidth; raise it only for many small projects.
       MAX_CONCURRENT_DBT_RUNS: ${MAX_CONCURRENT_DBT_RUNS:-3}
+      # Ad-hoc console queries, capped separately so a console stays usable
+      # during a batch. Added to the run cap when the per-instance DuckDB memory
+      # limit is derived, so raising it shrinks every run and every query.
+      MAX_CONCURRENT_QUERIES: ${MAX_CONCURRENT_QUERIES:-2}
+      DBT_INLINE_QUERY_TIMEOUT: ${DBT_INLINE_QUERY_TIMEOUT:-300}
+      # A warm worker is a live dbt process holding its project's warehouse open,
+      # so pools are reclaimed rather than accumulating per project forever.
+      DBT_WARM_WORKER_MAX_PROJECTS: ${DBT_WARM_WORKER_MAX_PROJECTS:-8}
+      DBT_WARM_WORKER_IDLE_SECONDS: ${DBT_WARM_WORKER_IDLE_SECONDS:-900}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://127.0.0.1:3000"]}
       DBT_RUNNER_UVICORN_WORKERS: ${DBT_RUNNER_UVICORN_WORKERS:-1}
       # dbt installs packages into the project dir by default. Projects authored

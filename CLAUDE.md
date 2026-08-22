@@ -92,7 +92,11 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   a per-run share from the container's cgroup limit divided by that concurrency,
   and `DuckDBAdapter.generate_profiles_yml` renders it as a `settings:` block.
   Raising the concurrency shrinks every run's memory - the two cannot be tuned
-  apart.
+  apart. `MAX_CONCURRENT_QUERIES` counts towards it too:
+  `duckdb_resources.concurrent_engine_slots()` is `runs + queries`, because a
+  console query is a DuckDB instance doing work just as a run is. Dividing by
+  runs alone left queries uncounted, so N projects querying at once meant N
+  unbounded instances.
 - Adapters import nothing from `app`, so the numbers are computed in
   `duckdb_resources` and passed in as adapter config. `_apply_duckdb_resources`
   in `dbt_service.py` is the one call site every generated profile passes.
@@ -210,7 +214,22 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   that object also holds `app_encryption_key`, which decrypts every stored
   warehouse password (`tests/test_system_info.py` fails if a secret leaks in).
 - Two layers of run control: a per-project Redis lock and a global Redis
-  semaphore (`MAX_CONCURRENT_DBT_RUNS`, returns HTTP 429 when full).
+  semaphore (`MAX_CONCURRENT_DBT_RUNS`, returns HTTP 429 when full). Ad-hoc
+  console queries take `global_query_semaphore` (`MAX_CONCURRENT_QUERIES`) - a
+  separate pool, so a console stays usable during a batch.
+- The per-project `query` file lock applies to the **subprocess fallback only**
+  (`_run_dbt_command(fallback_lock=...)`). What it protects against is two dbt
+  processes opening one DuckDB file, and the warm-worker path cannot do that: a
+  project has one pool, so its jobs queue inside it. Holding it across both paths
+  added a second serialisation layer and a 30-second failure that the pool's own
+  queue reports better.
+- Warm worker pools are reclaimed, not kept forever: a pool is live dbt processes
+  holding a DuckDB file and, for a lake project, a Postgres connection.
+  `_reclaim_pools` sweeps on the way into `run()` - idle past
+  `DBT_WARM_WORKER_IDLE_SECONDS` first, then least-recently-used past
+  `DBT_WARM_WORKER_MAX_PROJECTS`, and never a pool with a job in flight. When
+  every other pool is busy it goes over the limit rather than refusing the
+  command.
 - Adapters: postgresql, duckdb, dremio, oracle, and spark (spark installs via
   the `INSTALL_DBT_SPARK` build arg). `adapters/__init__.py` is the registry —
   keep it in step with the connection form in `ConnectionDialog.tsx`. Offering a
@@ -321,6 +340,13 @@ docker compose run --rm db-migrate npx prisma migrate deploy
   Postgres/Dremio/Oracle loads into the lake successfully and then cannot read it
   from dbt. Those projects want the `connection` destination; the lake stays
   readable by engines outside dbt.
+- **A dbt-built lake table has no partition spec.** `partition_by` on an ingest
+  source only covers tables the ingest runner writes; dbt creates its own, so
+  nothing here chooses their layout - which makes marts, the most queried tables
+  in the lake, the likeliest to be scanned whole. Maintenance reports them
+  (`lakehouse.unpartitioned_tables`) rather than guessing a column: the fix is a
+  `post_hook` running `ALTER TABLE {{ this }} SET PARTITIONED BY (month(ts))`,
+  and only the model's author knows which column its filters use.
 - **An unpartitioned lake table is read in full.** A filter on a date scans every
   Parquet file unless the ingest source sets `partition_by`. At a few hundred GB
   that is the whole difference between seconds and minutes, and no engine choice

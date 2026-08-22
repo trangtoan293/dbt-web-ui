@@ -299,6 +299,49 @@ _MAINTENANCE_STEPS = (
 )
 
 
+# A table with many files and no partition spec is read in full on every query
+# that filters it. Reported rather than fixed: only the person who wrote the
+# model knows which column the filters use, and guessing wrong costs a rewrite.
+_UNPARTITIONED_MIN_FILES = 4
+
+_UNPARTITIONED_QUERY = """
+SELECT t.table_name, i.file_count
+FROM ducklake_table_info('{alias}') i
+JOIN __ducklake_metadata_{alias}.ducklake_table t ON t.table_id = i.table_id
+LEFT JOIN (
+    SELECT DISTINCT table_id
+    FROM __ducklake_metadata_{alias}.ducklake_partition_info
+    WHERE end_snapshot IS NULL
+) p ON p.table_id = i.table_id
+WHERE p.table_id IS NULL
+  AND i.file_count >= {min_files}
+  AND t.table_name NOT LIKE '%__dbt_backup'
+ORDER BY i.file_count DESC
+"""
+
+
+def unpartitioned_tables(connection, *, min_files: int = _UNPARTITIONED_MIN_FILES) -> list:
+    """Lake tables with no partition spec, worst first.
+
+    Ingest sources can carry a partition spec; a table dbt built cannot - dbt
+    creates it, so nothing in this codebase gets to choose its layout. The result
+    is that marts, the most-queried tables in the lake, are the ones most likely
+    to be scanned whole. Surfacing them is the honest half of the fix: the other
+    half is a `post_hook` in the model, which only its author can write.
+
+    Returns [(table_name, file_count)]. Never raises: the query reads DuckLake's
+    internal metadata tables, whose names depend on the extension version.
+    """
+    try:
+        rows = connection.execute(
+            _UNPARTITIONED_QUERY.format(alias=ATTACH_ALIAS, min_files=int(min_files))
+        ).fetchall()
+        return [(str(name), int(count)) for name, count in rows]
+    except Exception as exc:
+        logger.debug("Could not list unpartitioned lake tables: %s", exc)
+        return []
+
+
 def maintain(project_id: str, *, retention_days: int) -> dict:
     """Expire old snapshots, drop dbt's backup tables, and delete dead files.
 
@@ -354,6 +397,21 @@ def maintain(project_id: str, *, retention_days: int) -> dict:
                 results[name] = "ok"
             except Exception as exc:
                 results[name] = f"skipped: {exc}"
+
+        # After merging: a table that still has many files is one whose scans
+        # cannot be pruned, and compaction will not fix that.
+        unpartitioned = unpartitioned_tables(connection)
+        if unpartitioned:
+            results["unpartitioned"] = ", ".join(
+                f"{table} ({files} files)" for table, files in unpartitioned[:10]
+            )
+            logger.warning(
+                "Lake tables with no partition spec in project %s: %s. A query "
+                "filtering these reads every file. Add a partition spec - for a "
+                "dbt model, a post_hook running ALTER TABLE ... SET PARTITIONED BY.",
+                project_id,
+                results["unpartitioned"],
+            )
     except Exception as exc:
         raise LakehouseError(f"could not maintain the lakehouse: {exc}") from exc
     finally:

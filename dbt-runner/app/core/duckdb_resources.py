@@ -25,8 +25,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Headroom left to everything else in the container: uvicorn, the scheduler, the
-# warm workers, and an ingest subprocess that may be running alongside a dbt run.
+# Headroom left to everything else in the container: uvicorn, the scheduler, and
+# the resident memory of warm workers parked between jobs - bounded by
+# DBT_WARM_WORKER_MAX_PROJECTS, or they grow with every project ever touched.
 _MEMORY_HEADROOM = 0.75
 
 # Below this a limit is worse than none: DuckDB would refuse to run even trivial
@@ -78,12 +79,36 @@ def available_memory_bytes() -> Optional[int]:
     return host
 
 
+def concurrent_engine_slots() -> int:
+    """How many DuckDB instances may be doing work at once.
+
+    Runs, ingest loads and console queries are what put a DuckDB instance to
+    work, and each is capped by a Redis semaphore. Warm workers are *not*
+    counted: a warm worker is a parked dbt process, and the moment it does
+    anything it does it as a run or as a query, so it already holds one of these
+    slots. What a parked worker costs is resident memory - that is what the
+    headroom above is for, and what the pool's idle eviction bounds.
+
+    Dividing by runs alone, which is what this did first, left console queries
+    uncounted: an inline query took only a per-project lock, so N projects
+    querying at once meant N instances each entitled to a full run's share, and
+    the per-instance limit stopped bounding the machine.
+    """
+    return max(1, settings.max_concurrent_dbt_runs) + max(
+        0, settings.max_concurrent_queries
+    )
+
+
 def memory_limit_per_run() -> Optional[str]:
-    """DuckDB `memory_limit` for one dbt run, as a value DuckDB parses.
+    """DuckDB `memory_limit` for one engine slot, as a value DuckDB parses.
 
     An explicit DUCKDB_MEMORY_LIMIT wins. Otherwise the container's memory is
-    split between the runs that are allowed to be in flight at once, so the
-    concurrency ceiling and the memory ceiling cannot disagree.
+    split between the slots that may be in flight at once, so the concurrency
+    ceilings and the memory ceiling cannot disagree.
+
+    One value for runs and queries alike: they share profiles.yml, so there is
+    nowhere to render two different limits without two writers racing on one
+    file.
     """
     configured = (settings.duckdb_memory_limit or "").strip()
     if configured:
@@ -94,8 +119,8 @@ def memory_limit_per_run() -> Optional[str]:
         logger.debug("Could not determine available memory; leaving DuckDB unbounded")
         return None
 
-    runs = max(1, settings.max_concurrent_dbt_runs)
-    megabytes = int(total * _MEMORY_HEADROOM / runs / (1024 * 1024))
+    slots = concurrent_engine_slots()
+    megabytes = int(total * _MEMORY_HEADROOM / slots / (1024 * 1024))
     if megabytes < _MIN_LIMIT_MB:
         return None
     return f"{megabytes}MB"

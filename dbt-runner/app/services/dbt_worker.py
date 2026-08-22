@@ -178,6 +178,18 @@ class _ProjectWorkerPool:
         self._available: asyncio.Queue[DbtWarmWorker] = asyncio.Queue()
         self._start_lock = asyncio.Lock()
         self._started = False
+        # Reclaiming a pool means killing live dbt processes, so it must only
+        # happen when none of them is mid-job. `in_use` is what makes that
+        # checkable; `last_used` is what makes "idle" measurable.
+        self.in_use = 0
+        self.last_used = time.monotonic()
+
+    @property
+    def reclaimable(self) -> bool:
+        return self.in_use == 0
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self.last_used
 
     async def start(self) -> None:
         async with self._start_lock:
@@ -203,22 +215,31 @@ class _ProjectWorkerPool:
 
     async def get(self) -> DbtWarmWorker:
         await self.start()
+        self.in_use += 1
+        self.last_used = time.monotonic()
         try:
             return await asyncio.wait_for(
                 self._available.get(),
                 timeout=settings.file_lock_wait_timeout,
             )
         except asyncio.TimeoutError as exc:
+            # Never left incremented on the failure path, or the pool becomes
+            # permanently unreclaimable and leaks a dbt process for good.
+            self.in_use -= 1
             raise TimeoutError(
                 f"dbt warm worker queue is full for project {self.project_id}"
             ) from exc
 
     async def put(self, worker: DbtWarmWorker, *, recycle: bool = False) -> None:
-        if recycle:
-            await worker.stop()
-            await worker.start()
-            worker.jobs_completed = 0
-        await self._available.put(worker)
+        try:
+            if recycle:
+                await worker.stop()
+                await worker.start()
+                worker.jobs_completed = 0
+            await self._available.put(worker)
+        finally:
+            self.in_use = max(0, self.in_use - 1)
+            self.last_used = time.monotonic()
 
 
 class DbtWarmWorkerPool:
@@ -279,6 +300,67 @@ class DbtWarmWorkerPool:
             self._project_pools[project_id] = pool
         return pool
 
+    async def _reclaim_pools(self, keep: str) -> None:
+        """Stop warm workers for projects that no longer need them.
+
+        A pool is a set of live dbt processes: each holds resident memory, its
+        project's DuckDB file, and a Postgres connection when the project
+        attaches the lake. Pools are created per project on demand and, before
+        this existed, never removed - so a deployment's cost grew with every
+        project anyone had ever previewed, and the per-instance memory limit
+        stopped saying anything about the machine.
+
+        Swept on the way into run() rather than from a background task: the only
+        moment the set of pools changes is when one is taken, so there is nothing
+        for a timer to notice in between, and no extra task to supervise.
+
+        `keep` is the project about to run, which must survive its own sweep.
+        Only reclaimable pools are touched - stopping a pool mid-job would kill
+        the very command that triggered the sweep.
+        """
+        idle_after = max(0, settings.dbt_warm_worker_idle_seconds)
+        if idle_after:
+            for project_id, pool in list(self._project_pools.items()):
+                if (
+                    project_id != keep
+                    and pool.reclaimable
+                    and pool.idle_seconds() >= idle_after
+                ):
+                    self._project_pools.pop(project_id, None)
+                    await pool.stop()
+                    logger.info(
+                        "Reclaimed idle dbt warm workers project_id=%s idle_s=%.0f",
+                        project_id,
+                        pool.idle_seconds(),
+                    )
+
+        limit = max(1, settings.dbt_warm_worker_max_projects)
+        while len(self._project_pools) >= limit:
+            candidates = [
+                (pool.last_used, project_id)
+                for project_id, pool in self._project_pools.items()
+                if project_id != keep and pool.reclaimable
+            ]
+            if not candidates:
+                # Every other pool is busy. Going over the limit beats refusing
+                # the command, and the next sweep will catch up.
+                logger.debug(
+                    "Warm worker pools at %s with none reclaimable; over limit %s",
+                    len(self._project_pools),
+                    limit,
+                )
+                return
+            _, victim = min(candidates)
+            pool = self._project_pools.pop(victim, None)
+            if pool is not None:
+                await pool.stop()
+                logger.info(
+                    "Reclaimed least-recently-used dbt warm workers project_id=%s "
+                    "(limit %s projects)",
+                    victim,
+                    limit,
+                )
+
     async def run(
         self,
         args: List[str],
@@ -300,6 +382,7 @@ class DbtWarmWorkerPool:
         except asyncio.TimeoutError as exc:
             raise TimeoutError("dbt warm worker queue is full") from exc
 
+        await self._reclaim_pools(keep=project_id)
         project_pool = self._pool_for_project(project_id)
         worker: DbtWarmWorker | None = None
         try:
