@@ -59,6 +59,7 @@ function defaultForm() {
     username: "",
     credential: "",
     sslMode: "prefer",
+    schema: "",
   }
 }
 
@@ -135,6 +136,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           username: existing.username,
           credential: "",
           sslMode: "prefer",
+          schema: "",
         })
         setDremio({ ...defaultDremio() })
         setOracle({ ...defaultOracle() })
@@ -147,6 +149,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           username: existing.username,
           credential: "",
           sslMode: existing.sslMode ?? "prefer",
+          schema: (((existing.extraConfig ?? {}) as Record<string, unknown>).schema as string) ?? "",
         })
         if (existing.connectionType === "dremio") {
           const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
@@ -382,6 +385,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           database: form.database,
           username: form.username,
           sslMode: form.sslMode,
+          extraConfig: form.schema ? { schema: form.schema } : {},
         }
         if (form.credential) payload.passwordEncrypted = form.credential
         if (isEdit && existing) {
@@ -530,6 +534,9 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                 </Field>
                 <Field label={isEdit ? "Password (leave blank to keep)" : "Password"}>
                   <Input type="password" value={form.credential} onChange={setF("credential")} placeholder={isEdit ? "••••••••" : ""} />
+                </Field>
+                <Field label="Schema">
+                  <Input value={form.schema} onChange={setF("schema")} placeholder="public" />
                 </Field>
                 <Field label="SSL Mode">
                   <select value={form.sslMode} onChange={setF("sslMode")} className={SELECT_CLS}>

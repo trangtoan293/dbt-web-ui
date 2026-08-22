@@ -6,9 +6,7 @@
  */
 
 import React from 'react';
-import Link from 'next/link';
-import { X, Key, GitBranch, Save, Upload, Database, CheckCircle, FileText } from 'lucide-react';
-import type { Connection } from '@/components-v2/develop/types';
+import { X, Key, GitBranch, Save, Upload, CheckCircle, FileText } from 'lucide-react';
 
 // ==================== NEW FILE DIALOG ====================
 interface NewFileDialogProps {
@@ -243,137 +241,6 @@ export function GitPanelModal({
                         <button onClick={onPush} className="flex-1 px-3 py-2 bg-[#0078D4] text-white rounded flex items-center justify-center gap-2">
                             <Upload className="h-4 w-4" /> Push
                         </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ==================== CONNECTION SELECTOR MODAL ====================
-interface ConnectionSelectorModalProps {
-    isOpen: boolean;
-    connections: Connection[];
-    selectedConnectionId: string | null;
-    actions?: React.ReactNode;
-    onSelectConnection: (id: string) => void;
-    onClose: () => void;
-}
-
-export function ConnectionSelectorModal({
-    isOpen,
-    connections,
-    selectedConnectionId,
-    actions,
-    onSelectConnection,
-    onClose,
-}: ConnectionSelectorModalProps) {
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg w-full max-w-lg shadow-xl">
-                <div className="px-6 py-4 border-b border-[#E6E6E6] flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <Database className="h-5 w-5 text-[#038387]" />
-                        <h2 className="text-lg font-semibold text-[#242424]">Select Connection</h2>
-                    </div>
-                    <button
-                        onClick={onClose}
-                        className="text-[#616161] hover:text-[#242424]"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-                <div className="p-6">
-                    <p className="text-sm text-[#616161] mb-4">
-                        Choose a database connection for this project. The connection will be used for running dbt commands.
-                    </p>
-                    {connections.length === 0 ? (
-                        <div className="text-center py-8">
-                            <Database className="h-12 w-12 text-[#D1D1D1] mx-auto mb-3" />
-                            <p className="text-sm text-[#616161] mb-4">No connections available</p>
-                            <Link
-                                href="/connections"
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-[#0078D4] text-white rounded hover:bg-[#106EBE] text-sm"
-                            >
-                                Create Connection
-                            </Link>
-                        </div>
-                    ) : (
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
-                            {/* None / Disconnect option */}
-                            <button
-                                onClick={() => onSelectConnection('')}
-                                className={`w-full p-3 border rounded-lg text-left flex items-center gap-3 transition-colors ${selectedConnectionId === '' || selectedConnectionId === null
-                                    ? 'border-[#0078D4] bg-[#F0F6FF]'
-                                    : 'border-[#E6E6E6] hover:border-[#0078D4]'
-                                    }`}
-                            >
-                                <span className="flex-shrink-0">
-                                    <X className="h-5 w-5 text-[#616161]" />
-                                </span>
-                                <div className="flex-1">
-                                    <div className="font-medium text-[#242424]">None (Disconnect)</div>
-                                    <div className="text-xs text-[#616161]">
-                                        No connection • Project will not run dbt commands
-                                    </div>
-                                </div>
-                                {(selectedConnectionId === '' || selectedConnectionId === null) && (
-                                    <span className="text-[#0078D4] text-sm font-medium">Active</span>
-                                )}
-                            </button>
-
-                            {/* Existing connections */}
-                            {connections.map((conn: Connection) => {
-                                const isSelected = conn.id === selectedConnectionId;
-                                const typeIcon = conn.type === 'postgresql' ? (
-                                    <Database className="h-5 w-5 text-[#336791]" />
-                                ) : conn.type === 'duckdb' ? (
-                                    <Database className="h-5 w-5 text-[#FFC107]" />
-                                ) : (
-                                    <Database className="h-5 w-5 text-[#0078D4]" />
-                                );
-                                return (
-                                    <button
-                                        key={conn.id}
-                                        onClick={() => onSelectConnection(conn.id)}
-                                        className={`w-full p-3 border rounded-lg text-left flex items-center gap-3 transition-colors ${isSelected
-                                            ? 'border-[#0078D4] bg-[#F0F6FF]'
-                                            : 'border-[#E6E6E6] hover:border-[#0078D4]'
-                                            }`}
-                                    >
-                                        <span className="flex-shrink-0">{typeIcon}</span>
-                                        <div className="flex-1">
-                                            <div className="font-medium text-[#242424]">{conn.name}</div>
-                                            <div className="text-xs text-[#616161]">
-                                                {conn.host}:{conn.port} • {conn.type}
-                                            </div>
-                                        </div>
-                                        {isSelected && (
-                                            <span className="text-[#0078D4] text-sm font-medium">Active</span>
-                                        )}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    )}
-                    <div className="mt-4 pt-4 border-t border-[#E6E6E6] flex items-center justify-between gap-3">
-                        <Link
-                            href="/connections"
-                            className="text-sm text-[#0078D4] hover:underline"
-                        >
-                            Manage Connections →
-                        </Link>
-                        <div className="flex items-center gap-2">
-                            {actions}
-                            <button
-                                onClick={onClose}
-                                className="px-4 py-2 text-sm font-medium text-[#242424] border border-[#D1D1D1] rounded hover:bg-[#F3F2F1]"
-                            >
-                                Close
-                            </button>
-                        </div>
                     </div>
                 </div>
             </div>

@@ -251,6 +251,27 @@ class DbtWarmWorkerPool:
         self._project_pools.clear()
         self._started = False
 
+    async def release_project(self, project_id: str) -> bool:
+        """Stop this project's warm workers and let them restart on demand.
+
+        A warm worker keeps a dbt process alive, and a dbt process on a
+        file-backed DuckDB warehouse keeps that file open. DuckDB is
+        single-writer, so the next `dbt run` fails with "Could not set lock on
+        file" - the first run works, every later one does not.
+
+        Any preview in flight on this project dies with the worker. That is the
+        cheaper end of the trade: the alternative is a run that cannot start.
+        """
+        pool = self._project_pools.pop(project_id, None)
+        if pool is None:
+            return False
+        await pool.stop()
+        logger.info(
+            "Released dbt warm workers for project %s so a run can open its warehouse",
+            project_id,
+        )
+        return True
+
     def _pool_for_project(self, project_id: str) -> _ProjectWorkerPool:
         pool = self._project_pools.get(project_id)
         if pool is None:

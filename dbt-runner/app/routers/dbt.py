@@ -2,7 +2,6 @@
 dbt operations router.
 """
 
-import asyncio
 import json
 import logging
 import shlex
@@ -18,8 +17,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter
-from app.core.auth import require_user, resolve_user_id
-from app.core.db import async_session, get_session
+from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.db import get_session
 from app.core.dependencies import get_dbt_service
 from app.core.file_lock import AsyncFileLock
 from app.models.dbt import (
@@ -33,6 +32,7 @@ from app.models.dbt import (
     DbtIntellisenseResponse,
     DbtIntellisenseSource,
     ExplainRequest,
+    FormatSqlRequest,
     LineageRequest,
     PreviewRequest,
     QueryRequest,
@@ -46,6 +46,9 @@ from app.services.dbt_service import (
 )
 from app.services.command import CommandService
 from app.services.project import ProjectService
+from app.services.run_launcher import launch_dbt_run
+from app.services.scheduler import next_fire_time
+from app.services.sql_format import format_sql
 
 logger = logging.getLogger(__name__)
 
@@ -208,25 +211,8 @@ def _normalize_intellisense(
     )
 
 
-async def _verify_project_ownership(
-    session: AsyncSession, project_id: str, user_id: str
-) -> None:
-    """Raise 404 if project doesn't exist or isn't owned by user_id (Prisma UUID)."""
-    result = await session.execute(
-        text(
-            "SELECT id FROM dbt_projects "
-            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
-            "AND deleted_at IS NULL"
-        ),
-        {"pid": project_id, "uid": user_id},
-    )
-    if not result.first():
-        raise HTTPException(status_code=404, detail="Project not found")
-
-
-def _dbt_command_name(command: str) -> str:
-    parts = shlex.split(command)
-    return parts[0] if parts else "run"
+# Shared with every other router - see app/core/auth.py
+_verify_project_ownership = verify_project_ownership
 
 
 def _serialize_dt(value: Any) -> str | None:
@@ -279,32 +265,6 @@ async def _load_owned_dbt_run(
     return dict(row)
 
 
-async def _run_dbt_in_background(
-    request: DbtCommand, user_id: str, run_id: str, started_at: datetime
-) -> None:
-    try:
-        async with async_session() as session:
-            await DbtService().run_command(
-                request,
-                session=session,
-                user_id=user_id,
-                run_id=run_id,
-                started_at=started_at,
-                persist_start=False,
-            )
-    except Exception as exc:
-        logger.exception("Background dbt run failed: %s", exc)
-        async with async_session() as session:
-            await DbtService._update_run_complete(
-                session,
-                run_id,
-                status="error",
-                started_at=started_at,
-                logs="",
-                error_message=str(exc),
-            )
-
-
 @router.post("/command")
 async def run_dbt_command(
     request: DbtCommand,
@@ -327,27 +287,7 @@ async def start_dbt_run(
     """Start a dbt run asynchronously for external orchestrators."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
     await _verify_project_ownership(session, request.project_id, user_id)
-
-    project_path = await ProjectService().get_or_sync(request.project_id)
-    run_id = str(uuid.uuid4())
-    started_at = datetime.now(timezone.utc)
-    await DbtService._insert_run_start(
-        session,
-        run_id,
-        request.project_id,
-        _dbt_command_name(request.command),
-        request.selector,
-        started_at,
-        project_path,
-    )
-    asyncio.create_task(_run_dbt_in_background(request, user_id, run_id, started_at))
-    return {
-        "id": run_id,
-        "run_id": run_id,
-        "project_id": request.project_id,
-        "status": "running",
-        "started_at": started_at.isoformat(),
-    }
+    return await launch_dbt_run(request, user_id, session=session)
 
 
 @router.get("/runs")
@@ -529,6 +469,49 @@ async def regenerate_profiles(
         {"pid": project_id},
     )
     return {"success": True, "regenerated": bool(has_connection.scalar())}
+
+
+@router.post("/format")
+async def format_model_sql(
+    request: FormatSqlRequest,
+    claims: dict = Depends(require_user),
+):
+    """Pretty-print SQL, leaving Jinja untouched.
+
+    Nothing here reads a project, so there is no ownership check to make - the
+    body is the whole input. Refuses rather than guesses when the round trip
+    cannot be verified; the response says why.
+    """
+    return format_sql(request.sql, request.dialect)
+
+
+@router.get("/cron/preview")
+async def preview_cron(
+    expression: str = Query(..., max_length=200),
+    count: int = Query(5, ge=1, le=20),
+    claims: dict = Depends(require_user),
+):
+    """Validate a cron expression and show when it would next fire (UTC).
+
+    The schedule form calls this, so a typo is caught while saving instead of
+    quietly never running.
+    """
+    from datetime import timedelta
+
+    occurrences: list[str] = []
+    cursor = datetime.now(timezone.utc)
+    for _ in range(count):
+        upcoming = next_fire_time(expression, cursor)
+        if upcoming is None:
+            return {
+                "valid": False,
+                "message": "Not a valid 5-field cron expression",
+                "next_runs": [],
+            }
+        occurrences.append(upcoming.isoformat())
+        # Step past this occurrence; a cron can fire every minute.
+        cursor = upcoming + timedelta(seconds=1)
+    return {"valid": True, "message": None, "next_runs": occurrences}
 
 
 @router.post("/compile")

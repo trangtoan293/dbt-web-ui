@@ -66,6 +66,12 @@ RUN mkdir -p /tmp/dbt-projects /data/storage/dbt-projects && \
 # Switch to non-root user
 USER appuser
 
+# Pre-install the DuckDB extensions ingest and dbt need. INSTALL fetches from
+# the internet on first use, so without this an air-gapped deployment fails on
+# its first load instead of at build time. Extensions land in the user's
+# ~/.duckdb, which is why this runs after USER.
+RUN /app/.venv/bin/python -c "import duckdb; c = duckdb.connect(); [c.execute(f'INSTALL {e}') for e in ('ducklake', 'postgres')]"
+
 # Environment variables
 ENV WORKSPACE_DIR=/tmp/dbt-projects
 ENV PYTHONUNBUFFERED=1

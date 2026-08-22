@@ -40,6 +40,13 @@ dependencies = [
     "redis>=7.1.0",
     "aiofiles>=25.1.0",
     "watchdog>=6.0.0",
+    # Cron parsing for the run scheduler. A correct cron expression parser is
+    # not "a few lines": day-of-month and day-of-week are OR'd, not AND'd, and
+    # ranges, steps and lists all compose. Not worth reimplementing.
+    "croniter>=6.0.0",
+    # Ingest: dlt loads source tables into DuckLake / the project warehouse.
+    # The ducklake extra pulls no pyiceberg - duckdb and pyarrow are already here.
+    "dlt[ducklake]>=1.30.0",
 ]
 
 [project.optional-dependencies]

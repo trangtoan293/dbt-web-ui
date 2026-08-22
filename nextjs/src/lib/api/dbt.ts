@@ -5,9 +5,45 @@
 import { apiClient } from './client';
 
 // Types
+export interface DbtQueryRequest {
+    project_id: string;
+    sql: string;
+    limit?: number;
+    /** profiles.yml output to query. Omitted means the project default. */
+    target?: string;
+    environment_variables?: Record<string, string>;
+}
+
+/** Same shape as a preview: both come from `dbt show`. */
+export interface DbtQueryResponse {
+    success: boolean;
+    data: Record<string, unknown>[];
+    columns: string[];
+    column_types?: Record<string, string>;
+    row_count: number;
+    execution_time?: number;
+    error?: string;
+}
+
+export interface DbtFormatResponse {
+    formatted: boolean;
+    sql: string;
+    /** Why formatting was refused. Null when it succeeded. */
+    reason: string | null;
+}
+
+export interface CronPreviewResponse {
+    valid: boolean;
+    message: string | null;
+    /** ISO timestamps, UTC. */
+    next_runs: string[];
+}
+
 export interface DbtCommandRequest {
     project_id: string;
     command: string;
+    selector?: string;
+    target?: string;
     flags?: string[];
     environment_variables?: Record<string, string>;
 }
@@ -195,6 +231,45 @@ export const dbtApi = {
             flags,
             environment_variables: environmentVariables,
         }),
+
+    /**
+     * Start a run in the background and return its id. Same path the scheduler
+     * uses, so a manual "run now" and a cron fire behave identically.
+     */
+    startRun: (request: DbtCommandRequest) =>
+        apiClient.post<{ id: string; run_id: string; project_id: string; status: string; started_at: string }>(
+            '/dbt/runs',
+            request,
+        ),
+
+    /**
+     * Run a read-only inline SELECT (dbt show --inline), so ad-hoc SQL goes
+     * through the project's own profile and macros.
+     */
+    query: (projectId: string, sql: string, limit: number = 100, target?: string, environmentVariables?: Record<string, string>) =>
+        apiClient.post<DbtQueryResponse>('/dbt/query', {
+            project_id: projectId,
+            sql,
+            limit,
+            target,
+            environment_variables: environmentVariables,
+        }),
+
+    /**
+     * Pretty-print SQL, keeping Jinja intact. Returns formatted:false with a
+     * reason when the round trip cannot be verified - do not overwrite the
+     * editor in that case.
+     */
+    format: (sql: string, dialect?: string) =>
+        apiClient.post<DbtFormatResponse>('/dbt/format', { sql, dialect }),
+
+    /**
+     * Validate a cron expression and preview when it would fire (UTC).
+     */
+    previewCron: (expression: string, count: number = 5) =>
+        apiClient.get<CronPreviewResponse>(
+            `/dbt/cron/preview?expression=${encodeURIComponent(expression)}&count=${count}`,
+        ),
 
     /**
      * Compile a specific model and get SQL

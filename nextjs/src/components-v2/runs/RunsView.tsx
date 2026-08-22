@@ -16,7 +16,6 @@ import {
   Terminal,
   Timer,
 } from "lucide-react"
-import PageHeader from "@/components-v2/layout/PageHeader"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import RunDetail from "@/components-v2/runs/RunDetail"
 import RunStatusBadge from "@/components-v2/runs/RunStatusBadge"
@@ -29,7 +28,7 @@ import { getDbtRunnerUrl } from "@/lib/api/client"
 import { cn } from "@/lib/utils"
 
 const PAGE_SIZES = [10, 25, 50, 100]
-const COMMANDS = ["run", "test", "build", "compile", "docs", "deps", "clean", "seed", "snapshot"]
+const COMMANDS = ["run", "test", "build", "compile", "docs", "deps", "clean", "seed", "snapshot", "source_freshness"]
 const STATUS_OPTIONS = ["running", "error", "success", "cancelled", "pending"]
 const EMPTY_DASHBOARD: RunLogDashboardResponse = {
   items: [],
@@ -105,7 +104,7 @@ function TableSkeleton() {
   )
 }
 
-export default function RunLogsPage() {
+export default function RunsView() {
   const { data: session, status: sessionStatus } = useSession()
   const [dashboard, setDashboard] = useState<RunLogDashboardResponse>(EMPTY_DASHBOARD)
   const [loading, setLoading] = useState(true)
@@ -296,25 +295,18 @@ export default function RunLogsPage() {
   const rowEnd = Math.min(dashboard.pagination.page * dashboard.pagination.pageSize, dashboard.pagination.total)
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-5">
-      <PageHeader
-        eyebrow="Observability"
-        title="dbt runs & logs"
-        description="Monitor invocations, inspect node-level results, and troubleshoot dbt output from one operational view."
-        actions={(
-          <div className="flex items-center gap-2">
-            {dashboard.summary.running > 0 && (
-              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700">
-                <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" /></span>
-                Auto-refresh 5s
-              </span>
-            )}
-            <Button variant="outline" onClick={refreshAll} disabled={refreshing || sessionStatus !== "authenticated"}>
-              <RefreshCw className={cn(refreshing && "animate-spin")} /> Refresh
-            </Button>
-          </div>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {dashboard.summary.running > 0 && (
+          <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700">
+            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" /></span>
+            Auto-refresh 5s
+          </span>
         )}
-      />
+        <Button variant="outline" onClick={refreshAll} disabled={refreshing || sessionStatus !== "authenticated"}>
+          <RefreshCw className={cn(refreshing && "animate-spin")} /> Refresh
+        </Button>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard icon={Activity} label="Invocations" value={dashboard.summary.total.toLocaleString()} note={`${dashboard.summary.running} running · selected time range`} tone="blue" />

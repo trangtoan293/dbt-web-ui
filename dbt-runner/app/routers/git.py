@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id
+from app.core.auth import require_user, resolve_user_id, verify_project_ownership
 from app.core.db import get_session
 from app.core.dependencies import get_git_service
 from app.exceptions import GitOperationError
@@ -41,20 +41,8 @@ def _get_commit_identity(claims: dict) -> tuple[str, str]:
     return name, email
 
 
-async def _verify_project_ownership(
-    session: AsyncSession, project_id: str, user_id: str
-) -> None:
-    """Raise 404 if project doesn't exist or isn't owned by user_id (Prisma UUID)."""
-    result = await session.execute(
-        text(
-            "SELECT id FROM dbt_projects "
-            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
-            "AND deleted_at IS NULL"
-        ),
-        {"pid": project_id, "uid": user_id},
-    )
-    if not result.first():
-        raise HTTPException(status_code=404, detail="Project not found")
+# Shared with every other router - see app/core/auth.py
+_verify_project_ownership = verify_project_ownership
 
 
 @router.post("/clone")

@@ -47,3 +47,49 @@ describe("dbt command args", () => {
     );
   });
 });
+
+describe("buildDbtCommandWithArgs with a target", () => {
+  it("appends the selected target", () => {
+    expect(buildDbtCommandWithArgs("run", "", false, "prod")).toBe("run --target prod")
+  })
+
+  it("appends after extra args, not before them", () => {
+    expect(buildDbtCommandWithArgs("run", "--vars '{}'", false, "prod")).toBe(
+      "run --vars '{}' --target prod",
+    )
+  })
+
+  it("leaves an explicit --target in the command alone", () => {
+    expect(buildDbtCommandWithArgs("run --target staging", "", false, "prod")).toBe(
+      "run --target staging",
+    )
+    expect(buildDbtCommandWithArgs("run -t staging", "", false, "prod")).toBe(
+      "run -t staging",
+    )
+    expect(buildDbtCommandWithArgs("run --target=staging", "", false, "prod")).toBe(
+      "run --target=staging",
+    )
+  })
+
+  it("ignores no target and the default empty values", () => {
+    expect(buildDbtCommandWithArgs("run", "", false)).toBe("run")
+    expect(buildDbtCommandWithArgs("run", "", false, null)).toBe("run")
+    expect(buildDbtCommandWithArgs("run", "", false, "  ")).toBe("run")
+  })
+
+  it("drops a target name that is not a valid identifier", () => {
+    // It would reach the dbt CLI as an argument; a bad name is dropped, not sent.
+    expect(buildDbtCommandWithArgs("run", "", false, "prod; rm -rf /")).toBe("run")
+    expect(buildDbtCommandWithArgs("run", "", false, "PROD")).toBe("run")
+    expect(buildDbtCommandWithArgs("run", "", false, "--profiles-dir")).toBe("run")
+  })
+
+  it("applies to commands that take no extra args", () => {
+    expect(buildDbtCommandWithArgs("test", "--vars x", false, "prod")).toBe(
+      "test --target prod",
+    )
+    expect(buildDbtCommandWithArgs("source freshness", "", false, "prod")).toBe(
+      "source freshness --target prod",
+    )
+  })
+})

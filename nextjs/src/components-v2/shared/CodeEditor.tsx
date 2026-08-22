@@ -4,7 +4,10 @@ import dynamic from "next/dynamic"
 import { useCallback, useRef } from "react"
 import type { editor, languages } from "monaco-editor"
 
-const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false })
+const Editor = dynamic(
+  () => import("@/lib/monaco-loader").then(({ loadMonacoEditor }) => loadMonacoEditor()),
+  { ssr: false }
+)
 
 let completionProviderRegistered = false
 

@@ -64,14 +64,6 @@ describe('Prisma Schema E2E', () => {
     expect(conn.connectionType).toBe('postgresql')
   })
 
-  it('creates todo_list with ownership', async () => {
-    const todo = await prisma.todoList.create({
-      data: { title: 'Test todo', owner: USER_A },
-    })
-    expect(todo.title).toBe('Test todo')
-    expect(todo.done).toBe(false)
-  })
-
   it('enforces foreign key cascade on user delete', async () => {
     const tempUserId = '20000000-0000-0000-0000-000000000001'
     await prisma.user.create({
@@ -99,37 +91,9 @@ describe('Prisma Schema E2E', () => {
     expect(updated.updatedAt.getTime()).toBeGreaterThan(originalUpdatedAt.getTime())
   })
 
-  it('creates dbt_models with GIN indexes', async () => {
-    const project = await prisma.dbtProject.create({
-      data: { name: 'model-test', createdBy: USER_A },
-    })
-    const model = await prisma.dbtModel.create({
-      data: {
-        projectId: project.id,
-        uniqueId: 'model.test.my_model',
-        name: 'my_model',
-        resourceType: 'model',
-        path: 'models/my_model.sql',
-        dependsOn: { nodes: ['model.test.other_model'] },
-        tags: ['daily', 'core'],
-      },
-    })
-    expect(model.dependsOn).toEqual({ nodes: ['model.test.other_model'] })
-    expect(model.tags).toEqual(['daily', 'core'])
-  })
-
   it('creates dbt_run with artifacts', async () => {
     const project = await prisma.dbtProject.create({
       data: { name: 'run-test', createdBy: USER_A },
-    })
-    const model = await prisma.dbtModel.create({
-      data: {
-        projectId: project.id,
-        uniqueId: 'model.test.run_model',
-        name: 'run_model',
-        resourceType: 'model',
-        path: 'models/run_model.sql',
-      },
     })
     const run = await prisma.dbtRun.create({
       data: {
@@ -148,26 +112,12 @@ describe('Prisma Schema E2E', () => {
     const artifact = await prisma.dbtRunArtifact.create({
       data: {
         runId: run.id,
-        modelId: model.id,
-        uniqueId: model.uniqueId,
+        uniqueId: 'model.test.run_model',
         status: 'success',
         executionTime: 5.0,
       },
     })
     expect(artifact.status).toBe('success')
-  })
-
-  it('creates chat conversation with messages', async () => {
-    const project = await prisma.dbtProject.create({
-      data: { name: 'chat-test', createdBy: USER_A },
-    })
-    const conv = await prisma.chatConversation.create({
-      data: { title: 'Test Chat', projectId: project.id, owner: USER_A },
-    })
-    const msg = await prisma.chatMessage.create({
-      data: { conversationId: conv.id, role: 'user', content: 'Hello' },
-    })
-    expect(msg.role).toBe('user')
   })
 
   it('ownership isolation: user B cannot see user A rows', async () => {
@@ -180,49 +130,124 @@ describe('Prisma Schema E2E', () => {
     expect(projectB).toBeNull()
   })
 
-  it('recent_runs view returns results', async () => {
-    const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM recent_runs LIMIT 5`
-    expect(Array.isArray(rows)).toBe(true)
+  it('creates a schedule with the source_freshness command', async () => {
+    // source_freshness was added to the run_command enum for scheduling
+    // `dbt source freshness`; if the enum value is missing this throws.
+    const project = await prisma.dbtProject.create({
+      data: { name: 'sched-test', createdBy: USER_A },
+    })
+    const schedule = await prisma.dbtSchedule.create({
+      data: {
+        projectId: project.id,
+        name: 'nightly',
+        command: 'source_freshness',
+        cron: '0 2 * * *',
+        createdBy: USER_A,
+      },
+    })
+    expect(schedule.command).toBe('source_freshness')
+    expect(schedule.isActive).toBe(true)
+    // Left unarmed on creation, so saving a schedule never fires it immediately.
+    expect(schedule.nextRunAt).toBeNull()
   })
 
-  it('get_upstream_models returns dependency chain', async () => {
+  it('enforces one schedule name per project', async () => {
     const project = await prisma.dbtProject.create({
-      data: { name: 'lineage-test', createdBy: USER_A },
+      data: { name: 'sched-unique', createdBy: USER_A },
     })
-    await prisma.dbtModel.createMany({
-      data: [
-        { projectId: project.id, uniqueId: 'model.lineage.base', name: 'base', resourceType: 'model', path: 'base.sql' },
-        { projectId: project.id, uniqueId: 'model.lineage.intermediate', name: 'intermediate', resourceType: 'model', path: 'int.sql',
-          dependsOn: { nodes: ['model.lineage.base'] } },
-        { projectId: project.id, uniqueId: 'model.lineage.target', name: 'target', resourceType: 'model', path: 'target.sql',
-          dependsOn: { nodes: ['model.lineage.intermediate'] } },
-      ],
-    })
-    const upstream = await prisma.$queryRaw<{ unique_id: string; level: number }[]>`
-      SELECT * FROM get_upstream_models('model.lineage.target', ${project.id}::uuid)
-    `
-    expect(upstream.length).toBe(2)
-    expect(upstream.map(u => u.unique_id).sort()).toEqual(['model.lineage.base', 'model.lineage.intermediate'])
+    const data = {
+      projectId: project.id,
+      name: 'nightly',
+      cron: '0 2 * * *',
+      createdBy: USER_A,
+    }
+    await prisma.dbtSchedule.create({ data })
+    await expect(prisma.dbtSchedule.create({ data })).rejects.toThrow()
   })
 
-  it('get_downstream_models returns dependent chain', async () => {
+  it('creates a named project target', async () => {
     const project = await prisma.dbtProject.create({
-      data: { name: 'lineage-down-test', createdBy: USER_A },
+      data: { name: 'target-test', createdBy: USER_A },
     })
-    await prisma.dbtModel.createMany({
-      data: [
-        { projectId: project.id, uniqueId: 'model.lineage.base', name: 'base', resourceType: 'model', path: 'base.sql' },
-        { projectId: project.id, uniqueId: 'model.lineage.intermediate', name: 'intermediate', resourceType: 'model', path: 'int.sql',
-          dependsOn: { nodes: ['model.lineage.base'] } },
-        { projectId: project.id, uniqueId: 'model.lineage.target', name: 'target', resourceType: 'model', path: 'target.sql',
-          dependsOn: { nodes: ['model.lineage.intermediate'] } },
-      ],
+    const connection = await prisma.connection.create({
+      data: {
+        name: 'prod-wh',
+        connectionType: 'postgresql',
+        host: 'prod-db',
+        port: 5432,
+        database: 'prodwh',
+        username: 'u',
+        createdBy: USER_A,
+      },
     })
-    const downstream = await prisma.$queryRaw<{ unique_id: string; level: number }[]>`
-      SELECT * FROM get_downstream_models('model.lineage.base', ${project.id}::uuid)
-    `
-    expect(downstream.length).toBe(2)
-    expect(downstream.map(d => d.unique_id).sort()).toEqual(['model.lineage.intermediate', 'model.lineage.target'])
+    const target = await prisma.projectTarget.create({
+      data: { projectId: project.id, name: 'prod', connectionId: connection.id },
+    })
+    expect(target.name).toBe('prod')
+  })
+
+  it('refuses to delete a connection a target still points at', async () => {
+    // RESTRICT, not CASCADE: losing a target silently would leave the project
+    // rendering a profile that no longer has the output its runs name.
+    const project = await prisma.dbtProject.create({
+      data: { name: 'target-restrict', createdBy: USER_A },
+    })
+    const connection = await prisma.connection.create({
+      data: {
+        name: 'restrict-wh',
+        connectionType: 'postgresql',
+        host: 'db',
+        port: 5432,
+        database: 'wh',
+        username: 'u',
+        createdBy: USER_A,
+      },
+    })
+    await prisma.projectTarget.create({
+      data: { projectId: project.id, name: 'prod', connectionId: connection.id },
+    })
+    await expect(prisma.connection.delete({ where: { id: connection.id } })).rejects.toThrow()
+  })
+
+  it('creates an ingest run and cascades it with its source', async () => {
+    const project = await prisma.dbtProject.create({
+      data: { name: 'ingest-run-test', createdBy: USER_A },
+    })
+    const connection = await prisma.connection.create({
+      data: {
+        name: 'ingest-src',
+        connectionType: 'postgresql',
+        host: 'src-db',
+        port: 5432,
+        database: 'crm',
+        username: 'u',
+        createdBy: USER_A,
+      },
+    })
+    const source = await prisma.ingestSource.create({
+      data: {
+        projectId: project.id,
+        sourceConnectionId: connection.id,
+        name: 'CRM sync',
+        dataset: 'raw_crm',
+        tables: ['customers'],
+        createdBy: USER_A,
+      },
+    })
+    const run = await prisma.ingestRun.create({
+      data: {
+        sourceId: source.id,
+        projectId: project.id,
+        status: 'success',
+        startedAt: new Date(),
+        rowsLoaded: 10,
+        tables: { customers: 10 },
+      },
+    })
+    expect(run.rowsLoaded).toBe(10)
+
+    await prisma.ingestSource.delete({ where: { id: source.id } })
+    expect(await prisma.ingestRun.findUnique({ where: { id: run.id } })).toBeNull()
   })
 
   it('updated_at trigger fires on dremio_source update', async () => {

@@ -3,6 +3,7 @@ Connection and profiles router.
 """
 
 import logging
+from typing import Any, Dict
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter, list_adapters
 from app.core.db import get_session
+from app.core.host_guard import HostNotAllowed, assert_host_allowed
 from app.core.dependencies import get_project_service
 from app.models.connection import (
     ConnectionSchemaRequest,
@@ -24,6 +26,30 @@ from app.services.project import ProjectService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Connections"])
+
+# DuckDB is a local file and Spark is reached through its own session config, so
+# neither carries a network host to check.
+_HOSTLESS_TYPES = {"duckdb", "spark"}
+
+
+def _assert_target_allowed(conn_type: str, config: Dict[str, Any]) -> None:
+    """Refuse connections aimed at this deployment's own infrastructure.
+
+    Without this, a user can point a connection at the application's Postgres,
+    attach it to a project, and read every other user's encrypted warehouse
+    credentials out of the `connections` table through ordinary dbt queries.
+    """
+    if conn_type in _HOSTLESS_TYPES:
+        return
+    host = str((config or {}).get("host") or "").strip()
+    if not host:
+        return
+    raw_port = (config or {}).get("port")
+    try:
+        port = int(raw_port) if raw_port else None
+    except (TypeError, ValueError):
+        port = None
+    assert_host_allowed(host, port)
 
 
 @router.get("/connection/usage/{connection_id}")
@@ -40,26 +66,55 @@ async def get_connection_usage(
             f"[CONNECTION USAGE CHECK] Checking usage for connection_id: {connection_id}"
         )
 
-        # Parameterized query; cast to uuid since dremio_source_id is a UUID column.
+        # Both columns matter: a warehouse connection is attached through
+        # connection_id, a legacy Dremio source through dremio_source_id.
+        # Checking only the latter reported every warehouse connection as unused.
         result = await session.execute(
             text(
-                "SELECT id, name, description, dremio_source_id "
+                "SELECT id, name, description, connection_id, dremio_source_id "
                 "FROM dbt_projects "
-                "WHERE dremio_source_id = CAST(:cid AS uuid) "
+                "WHERE (connection_id = CAST(:cid AS uuid) "
+                "       OR dremio_source_id = CAST(:cid AS uuid)) "
                 "AND deleted_at IS NULL"
             ),
             {"cid": connection_id},
         )
         projects = [dict(row) for row in result.mappings().all()]
 
+        # Ingest sources read through a connection and the foreign key is
+        # RESTRICT, so deleting one they use fails at the database. Report them
+        # so the UI can say which, rather than surfacing a constraint error.
+        sources: list[dict] = []
+        exists = await session.execute(
+            text("SELECT to_regclass('ingest_sources') IS NOT NULL")
+        )
+        if exists.scalar():
+            source_rows = await session.execute(
+                text(
+                    "SELECT s.id, s.name, s.dataset, p.name AS project_name "
+                    "FROM ingest_sources s "
+                    "JOIN dbt_projects p ON p.id = s.project_id "
+                    "WHERE s.source_connection_id = CAST(:cid AS uuid)"
+                ),
+                {"cid": connection_id},
+            )
+            sources = [dict(row) for row in source_rows.mappings().all()]
+
         logger.info(
-            f"[CONNECTION USAGE CHECK] Found {len(projects)} projects using connection {connection_id}"
+            "[CONNECTION USAGE CHECK] connection %s used by %d project(s), %d ingest source(s)",
+            connection_id,
+            len(projects),
+            len(sources),
         )
 
         return {
-            "in_use": len(projects) > 0,
+            "in_use": bool(projects or sources),
             "project_count": len(projects),
             "projects": projects,
+            "ingest_source_count": len(sources),
+            "ingest_sources": sources,
+            # Deleting is refused by the database while an ingest source reads it.
+            "blocked": bool(sources),
         }
     except Exception as e:
         logger.error(f"Error checking connection usage: {e}")
@@ -81,6 +136,11 @@ async def test_connection(request: ConnectionTestRequest):
     logger.debug(f"[CONNECTION TEST] type={request.type}, name={request.name}")
 
     try:
+        _assert_target_allowed(request.type, request.config)
+    except HostNotAllowed as e:
+        return {"success": False, "message": str(e)}
+
+    try:
         adapter = get_adapter(request.type, request.config)
         result = await adapter.test_connection()
         return result
@@ -96,6 +156,11 @@ async def extract_connection_schema(request: ConnectionSchemaRequest):
     Extract schema (tables, views, columns) from any connection type.
     Returns the complete schema metadata for the database.
     """
+    try:
+        _assert_target_allowed(request.type, request.config)
+    except HostNotAllowed as e:
+        return {"success": False, "message": str(e), "schema": None}
+
     try:
         adapter = get_adapter(request.type, request.config)
         schema = await adapter.extract_schema()
@@ -217,6 +282,11 @@ async def generate_profiles_v2(
 async def test_dremio_connection(request: DremioTestRequest):
     """Test connection to Dremio using REST API (legacy endpoint)."""
     import httpx
+
+    try:
+        assert_host_allowed(request.host, request.port)
+    except HostNotAllowed as e:
+        return {"success": False, "message": str(e)}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

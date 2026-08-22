@@ -13,5 +13,4 @@ export {
     RenameDialog,
     GitCredDialog,
     GitPanelModal,
-    ConnectionSelectorModal,
 } from './Dialogs';

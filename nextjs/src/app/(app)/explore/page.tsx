@@ -2,13 +2,16 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { AlertCircle, ExternalLink, FileText, Loader2, RefreshCw, Search } from "lucide-react"
+import { AlertCircle, Boxes, ExternalLink, FileText, Loader2, RefreshCw, Search, Terminal } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Card, CardContent } from "@/components-v2/ui/card"
 import { Input } from "@/components-v2/ui/input"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import { dbtApi } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import PageHeader from "@/components-v2/layout/PageHeader"
+import CatalogBrowser from "@/components-v2/explore/CatalogBrowser"
+import SqlConsole from "@/components-v2/explore/SqlConsole"
 
 type Project = {
   id: string
@@ -21,6 +24,13 @@ type Project = {
 }
 
 type DocsStatus = "idle" | "checking" | "ready" | "missing" | "error" | "generating"
+type ExploreView = "docs" | "sql" | "catalog"
+
+const VIEWS: { id: ExploreView; label: string; icon: React.ElementType }[] = [
+  { id: "docs", label: "Docs", icon: FileText },
+  { id: "catalog", label: "Catalog", icon: Boxes },
+  { id: "sql", label: "SQL", icon: Terminal },
+]
 
 export default function ExplorePage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -31,6 +41,7 @@ export default function ExplorePage() {
   const [docsStatus, setDocsStatus] = useState<DocsStatus>("idle")
   const [docsError, setDocsError] = useState<string | null>(null)
   const [docsUrl, setDocsUrl] = useState<string | null>(null)
+  const [view, setView] = useState<ExploreView>("docs")
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -122,12 +133,12 @@ export default function ExplorePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Explore</h1>
-          <p className="mt-1 text-sm text-gray-500">Browse documentation and model lineage</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
+      <PageHeader
+        title="Explore"
+        description="Browse documentation and model lineage"
+        actions={
+          view !== "docs" ? undefined : (
+          <>
           <Button variant="outline" onClick={() => selectedProject && checkDocs(selectedProject.id)} disabled={!selectedProject || busy}>
             <RefreshCw className={cn(busy && "animate-spin")} />
             Refresh
@@ -144,8 +155,10 @@ export default function ExplorePage() {
               </a>
             </Button>
           )}
-        </div>
-      </div>
+          </>
+          )
+        }
+      />
 
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
         <Card className="min-h-0 overflow-hidden">
@@ -214,26 +227,65 @@ export default function ExplorePage() {
 
         <Card className="min-h-[34rem] overflow-hidden">
           <CardContent className="flex h-full min-h-0 flex-col p-0">
-            <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-200 px-4">
+            <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-gray-200 px-4">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-gray-900">{selectedProject?.name || "Data Explorer"}</p>
                 <p className="text-xs text-gray-500">
-                  {docsStatus === "ready" && "dbt documentation is available"}
-                  {docsStatus === "missing" && "No generated docs found"}
-                  {docsStatus === "checking" && "Checking documentation"}
-                  {docsStatus === "generating" && "Generating documentation"}
-                  {docsStatus === "error" && "Documentation failed to load"}
-                  {docsStatus === "idle" && "Select a project"}
+                  {view === "sql" && "Ad-hoc read-only SQL through this project's dbt profile"}
+                  {view === "catalog" && "Models, sources and columns from the project manifest"}
+                  {view === "docs" && docsStatus === "ready" && "dbt documentation is available"}
+                  {view === "docs" && docsStatus === "missing" && "No generated docs found"}
+                  {view === "docs" && docsStatus === "checking" && "Checking documentation"}
+                  {view === "docs" && docsStatus === "generating" && "Generating documentation"}
+                  {view === "docs" && docsStatus === "error" && "Documentation failed to load"}
+                  {view === "docs" && docsStatus === "idle" && "Select a project"}
                 </p>
               </div>
-              {selectedProject && (
-                <Button variant="ghost" size="sm" asChild>
-                  <Link href={`/develop/${selectedProject.id}`}>Develop</Link>
-                </Button>
-              )}
+              <div className="flex shrink-0 items-center gap-1">
+                <div className="flex rounded-lg border border-gray-200 p-0.5">
+                  {VIEWS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setView(item.id)}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                        view === item.id
+                          ? "bg-[#0078D4] text-white"
+                          : "text-gray-600 hover:bg-gray-100"
+                      )}
+                    >
+                      <item.icon className="h-3.5 w-3.5" />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                {selectedProject && (
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link href={`/develop/${selectedProject.id}`}>Develop</Link>
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 bg-white">
+              {view === "sql" && selectedProject && (
+                <SqlConsole projectId={selectedProject.id} projectName={selectedProject.name} />
+              )}
+              {view === "catalog" && selectedProject && (
+                <CatalogBrowser projectId={selectedProject.id} />
+              )}
+              {view !== "docs" && !selectedProject && (
+                <div className="flex h-full min-h-[34rem] items-center justify-center p-6">
+                  <EmptyState
+                    icon={FileText}
+                    title="No project selected"
+                    description="Pick a dbt project on the left."
+                  />
+                </div>
+              )}
+              {view === "docs" && (
+              <>
               {docsUrl && docsStatus === "ready" ? (
                 <iframe
                   key={docsUrl}
@@ -270,6 +322,8 @@ export default function ExplorePage() {
                     />
                   )}
                 </div>
+              )}
+              </>
               )}
             </div>
           </CardContent>

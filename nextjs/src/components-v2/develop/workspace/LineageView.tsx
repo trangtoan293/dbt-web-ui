@@ -11,7 +11,9 @@ import {
     RefreshCw,
     ZoomIn,
     ZoomOut,
-    Maximize2
+    Maximize2,
+    Columns3,
+    Search
 } from 'lucide-react';
 
 // Types
@@ -85,7 +87,27 @@ export default function LineageView({
     const containerRef = useRef<HTMLDivElement>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-    void columnLineage;
+    const [showColumns, setShowColumns] = useState(true);
+    const [columnFilter, setColumnFilter] = useState('');
+
+    // Column-level lineage: which upstream column each output column came from.
+    // /dbt/lineage already returns it; this panel is what makes it visible.
+    const columnEntries = useMemo(
+        () => Object.entries(columnLineage ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+        [columnLineage]
+    );
+
+    const filteredColumnEntries = useMemo(() => {
+        const needle = columnFilter.trim().toLowerCase();
+        if (!needle) return columnEntries;
+        return columnEntries.filter(([column, sources]) =>
+            column.toLowerCase().includes(needle) ||
+            sources.some(source =>
+                source.column.toLowerCase().includes(needle) ||
+                source.table.toLowerCase().includes(needle)
+            )
+        );
+    }, [columnEntries, columnFilter]);
 
     const visibleNodes = useMemo(() => {
         if (traceMode === 'all') return nodes;
@@ -395,6 +417,16 @@ export default function LineageView({
                 </div>
 
                 <div className="flex items-center gap-1">
+                    {columnEntries.length > 0 && (
+                        <button
+                            onClick={() => setShowColumns(open => !open)}
+                            className={`flex items-center gap-1 px-2 py-1 mr-1 text-xs rounded ${showColumns ? 'bg-[#0078D4] text-white' : 'text-[#616161] hover:bg-[#E6E6E6]'}`}
+                            title="Show which upstream column each output column comes from"
+                        >
+                            <Columns3 className="w-3.5 h-3.5" />
+                            Columns ({columnEntries.length})
+                        </button>
+                    )}
                     {(['all', 'backward', 'forward'] as TraceMode[]).map(mode => (
                         <button
                             key={mode}
@@ -423,7 +455,8 @@ export default function LineageView({
                 </div>
             </div>
 
-            {/* SVG Canvas */}
+            {/* Canvas + column lineage panel */}
+            <div className="flex-1 flex min-h-0">
             <div
                 className="flex-1 overflow-hidden bg-[#FAF9F8]"
                 style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
@@ -483,6 +516,58 @@ export default function LineageView({
                 </svg>
             </div>
 
+            {showColumns && columnEntries.length > 0 && (
+                <aside className="w-72 shrink-0 overflow-auto border-l border-[#E6E6E6] bg-white">
+                    <div className="sticky top-0 border-b border-[#E6E6E6] bg-white px-3 py-2">
+                        <p className="text-xs font-medium text-[#242424]">Column lineage</p>
+                        <div className="relative mt-1.5">
+                            <Search className="pointer-events-none absolute left-2 top-1.5 h-3.5 w-3.5 text-[#A0A0A0]" />
+                            <input
+                                value={columnFilter}
+                                onChange={event => setColumnFilter(event.target.value)}
+                                placeholder="Filter columns"
+                                className="h-7 w-full rounded border border-[#E6E6E6] pl-7 pr-2 text-xs focus:border-[#0078D4] focus:outline-none"
+                            />
+                        </div>
+                    </div>
+                    {filteredColumnEntries.length === 0 ? (
+                        <p className="px-3 py-2 text-xs text-[#616161]">No column matches.</p>
+                    ) : (
+                        <ul className="divide-y divide-[#F3F2F1]">
+                            {filteredColumnEntries.map(([column, sources]) => (
+                                <li key={column} className="px-3 py-2">
+                                    <p className="font-mono text-xs text-[#242424]">{column}</p>
+                                    {sources.length === 0 ? (
+                                        <p className="mt-0.5 text-[11px] text-[#A0A0A0]">
+                                            no upstream column resolved
+                                        </p>
+                                    ) : (
+                                        <ul className="mt-1 space-y-1">
+                                            {sources.map((source, index) => (
+                                                <li key={`${source.table}.${source.column}.${index}`}>
+                                                    <p className="font-mono text-[11px] text-[#616161]">
+                                                        ← {source.table}.{source.column}
+                                                    </p>
+                                                    {source.expression && (
+                                                        <p
+                                                            className="truncate font-mono text-[11px] text-[#A0A0A0]"
+                                                            title={source.expression}
+                                                        >
+                                                            {source.expression}
+                                                        </p>
+                                                    )}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </aside>
+            )}
+            </div>
+
             {/* Legend */}
             <div className="flex items-center justify-between px-3 py-2 border-t border-[#E6E6E6] bg-[#FAF9F8] text-xs">
                 <div className="flex items-center gap-4 text-[#616161]">
@@ -503,7 +588,11 @@ export default function LineageView({
                         Current
                     </div>
                 </div>
-                <span className="text-[#64748b]">Table level only · use Backward/Forward to trace related models and sources</span>
+                <span className="text-[#64748b]">
+                    {columnEntries.length > 0
+                        ? 'Graph is table level; the Columns panel resolves each output column to its upstream column'
+                        : 'Table level only · use Backward/Forward to trace related models and sources'}
+                </span>
             </div>
         </div>
     );

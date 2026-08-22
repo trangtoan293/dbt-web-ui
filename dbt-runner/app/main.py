@@ -21,6 +21,7 @@ from app.core.session_middleware import SessionMiddleware
 from app.exceptions import DbtRunnerException
 from app.services.dbt_service import DbtService
 from app.services.dbt_worker import warm_worker_pool
+from app.services.scheduler import run_scheduler
 
 # Import all routers
 from app.routers import (
@@ -31,9 +32,11 @@ from app.routers import (
     files_router,
     git_router,
     health_router,
+    ingest_router,
     process_router,
     project_router,
     sse_router,
+    system_router,
 )
 
 # Setup logging
@@ -151,9 +154,11 @@ def create_app() -> FastAPI:
     app.include_router(git_router)
     app.include_router(files_router)
     app.include_router(connection_router)
+    app.include_router(ingest_router)
     app.include_router(project_router)
     app.include_router(sse_router)
     app.include_router(dremio_router)
+    app.include_router(system_router)
 
     # Startup event
     @app.on_event("startup")
@@ -262,10 +267,20 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to start dbt warm worker pool: {e}")
 
+        # === Scheduler: cron runs, history retention, lake maintenance ===
+        # Leader-elected through Redis, so starting it in every worker is safe.
+        try:
+            await run_scheduler.start()
+        except Exception as e:
+            logger.warning(f"Failed to start scheduler: {e}")
+
     # Shutdown event
     @app.on_event("shutdown")
     async def shutdown_event():
         logger.info("Shutting down dbt-runner service...")
+
+        # Stop the scheduler before Redis closes - it releases its leader lease.
+        await run_scheduler.stop()
 
         # Stop warm dbt workers before closing shared resources
         await warm_worker_pool.stop()

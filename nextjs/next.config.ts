@@ -50,6 +50,17 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+
+  // Runs+Schedules merged into /orchestrate and Connections+Sources into /data.
+  // The old paths stay linkable so existing bookmarks land on the right tab.
+  async redirects() {
+    return [
+      { source: "/runs", destination: "/orchestrate", permanent: false },
+      { source: "/schedules", destination: "/orchestrate?tab=schedules", permanent: false },
+      { source: "/connections", destination: "/data", permanent: false },
+      { source: "/sources", destination: "/data?tab=sources", permanent: false },
+    ];
+  },
 };
 
 export default nextConfig;
