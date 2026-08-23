@@ -113,13 +113,31 @@ class EngineSlotTests(unittest.TestCase):
 
 
 class SpillDirectoryTests(unittest.TestCase):
+    # A project id reaches here from a request path, and it becomes a directory
+    # name, so only the UUID the database stores is accepted as one.
+    PROJECT_ID = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+
     def test_spill_is_per_project_under_storage(self):
         with (
             patch.object(duckdb_resources.settings, "duckdb_temp_dir", ""),
             patch.object(duckdb_resources.settings, "storage_dir", "/data/storage"),
         ):
-            path = duckdb_resources.temp_directory("proj-1")
-        self.assertEqual(path, "/data/storage/duckdb-tmp/proj-1")
+            path = duckdb_resources.temp_directory(self.PROJECT_ID)
+        self.assertEqual(path, f"/data/storage/duckdb-tmp/{self.PROJECT_ID}")
+
+    def test_a_project_id_that_is_not_a_uuid_cannot_choose_the_directory(self):
+        # Without this the segment is joined as given, and "../../etc" walks out
+        # of the volume the spill is supposed to stay on.
+        with (
+            patch.object(duckdb_resources.settings, "duckdb_temp_dir", ""),
+            patch.object(duckdb_resources.settings, "storage_dir", "/data/storage"),
+        ):
+            for hostile in ("../../etc", "/etc/passwd", "proj-1", "", None):
+                with self.subTest(project_id=hostile):
+                    self.assertEqual(
+                        duckdb_resources.temp_directory(hostile),
+                        "/data/storage/duckdb-tmp",
+                    )
 
     def test_directory_is_created_because_duckdb_will_not(self):
         # DuckDB does not create a missing temp_directory; it fails the first
