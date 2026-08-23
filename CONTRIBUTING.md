@@ -76,6 +76,13 @@ The trailer must use your real name and an email address you control:
 Signed-off-by: Your Name <you@example.com>
 ```
 
+Forgetting `-s` is the usual reason a pull request is turned away, so enable the
+hook that adds the trailer for you — once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 If a pull request contains commits without this trailer, amend or rebase those
 commits before merge. Do not sign off code copied from a source whose license is
 unknown or incompatible.

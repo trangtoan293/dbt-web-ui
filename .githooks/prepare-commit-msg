@@ -1,0 +1,9 @@
+#!/bin/sh
+# Add the DCO Signed-off-by trailer every commit needs, so a PR is never turned
+# away by the DCO check for a trailer `git commit -s` would have added anyway.
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# interpret-trailers is what `git commit -s` uses, and --if-exists doNothing
+# keeps an amend or a rebase --signoff from stacking a second copy.
+git interpret-trailers --in-place --if-exists doNothing \
+  --trailer "Signed-off-by: $(git config user.name) <$(git config user.email)>" "$1"
