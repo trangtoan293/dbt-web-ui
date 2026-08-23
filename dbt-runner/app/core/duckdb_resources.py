@@ -18,6 +18,7 @@ import nothing from `app`, so the numbers are computed here and passed in.
 
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -126,6 +127,17 @@ def memory_limit_per_run() -> Optional[str]:
     return f"{megabytes}MB"
 
 
+def _safe_project_segment(project_id: Optional[str]) -> Optional[str]:
+    if not project_id:
+        return None
+    candidate = str(project_id).strip()
+    try:
+        return str(uuid.UUID(candidate))
+    except (ValueError, AttributeError, TypeError):
+        logger.warning("Invalid project_id for DuckDB temp directory: %r", project_id)
+        return None
+
+
 def temp_directory(project_id: Optional[str] = None) -> str:
     """Spill directory, on the volume sized for data.
 
@@ -134,7 +146,8 @@ def temp_directory(project_id: Optional[str] = None) -> str:
     a DuckDB file, so it is the unit that owns the spill too.
     """
     base = settings.duckdb_temp_dir or str(Path(settings.storage_dir) / "duckdb-tmp")
-    return str(Path(base) / str(project_id)) if project_id else base
+    safe_project_id = _safe_project_segment(project_id)
+    return str(Path(base) / safe_project_id) if safe_project_id else base
 
 
 def profile_settings(project_id: Optional[str] = None) -> Dict[str, Any]:
