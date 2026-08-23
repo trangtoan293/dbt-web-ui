@@ -15,7 +15,6 @@
 
 ## Checklist
 - [ ] No secrets in the diff
-- [ ] Every commit has a `Signed-off-by` DCO trailer
 - [ ] Database migrations are backward-compatible or the rollout is documented
 - [ ] Security impact was considered and sensitive boundaries have regression tests
 - [ ] Docs updated (if user-facing)

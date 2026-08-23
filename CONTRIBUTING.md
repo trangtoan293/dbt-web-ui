@@ -57,36 +57,6 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `build`, `chore`, `perf`, `ci`
 - Don't commit secrets or `.env` files.
 - Add or update tests for behavior changes.
 
-## Developer Certificate of Origin
-
-This project uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/)
-instead of a contributor license agreement. Every commit must include a
-`Signed-off-by` trailer certifying that you have the right to submit the work
-under this project's license.
-
-Create a signed-off commit with:
-
-```bash
-git commit -s -m "feat: describe the change"
-```
-
-The trailer must use your real name and an email address you control:
-
-```text
-Signed-off-by: Your Name <you@example.com>
-```
-
-Forgetting `-s` is the usual reason a pull request is turned away, so enable the
-hook that adds the trailer for you — once per clone:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-If a pull request contains commits without this trailer, amend or rebase those
-commits before merge. Do not sign off code copied from a source whose license is
-unknown or incompatible.
-
 ## Reporting issues
 
 Open an issue with steps to reproduce, expected vs. actual behavior, and your
