@@ -331,6 +331,10 @@ export async function createProjectTarget(data: Record<string, unknown>) {
   return apiFetch<ProjectTargetRow>('/api/targets', { method: 'POST', body: JSON.stringify(data) })
 }
 
+export async function updateProjectTarget(data: Record<string, unknown> & { id: string }) {
+  return apiFetch<ProjectTargetRow>('/api/targets', { method: 'PATCH', body: JSON.stringify(data) })
+}
+
 export async function deleteProjectTarget(id: string) {
   return apiFetch(`/api/targets?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

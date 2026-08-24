@@ -8,6 +8,7 @@ import {
   createProjectTarget,
   deleteProjectTarget,
   getProjectTargets,
+  updateProjectTarget,
   type ProjectTargetRow,
 } from "@/lib/api-client"
 import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog"
@@ -81,6 +82,27 @@ export default function TargetsPanel({
     }
   }
 
+  /** Repoint an existing target at another connection. */
+  async function retarget(target: ProjectTargetRow, nextConnectionId: string) {
+    if (!nextConnectionId || nextConnectionId === target.connectionId) return
+    setBusy(true)
+    setError(null)
+    try {
+      await updateProjectTarget({
+        id: target.id,
+        projectId,
+        name: target.name,
+        connectionId: nextConnectionId,
+      })
+      await load()
+      onChanged?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update target")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function removeTarget(id: string) {
     setBusy(true)
     setError(null)
@@ -126,21 +148,38 @@ export default function TargetsPanel({
         {targets.map((target) => (
           <div
             key={target.id}
-            className="flex items-center justify-between border-t border-gray-100 px-3 py-2 text-sm"
+            className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-2 text-sm"
           >
             <span className="font-mono text-xs text-gray-900">{target.name}</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">{target.connection?.name ?? "connection"}</span>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => removeTarget(target.id)}
-                className="text-gray-400 hover:text-red-600 disabled:opacity-50"
-                title={`Remove target ${target.name}`}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
+            <select
+              aria-label={`Connection for target ${target.name}`}
+              value={target.connectionId}
+              onChange={(event) => retarget(target, event.target.value)}
+              disabled={disabled || busy}
+              className="h-8 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 text-xs disabled:opacity-50"
+            >
+              {/* A connection the user can no longer see would otherwise render
+                  as the first option, silently repointing the target on save. */}
+              {!targetConnections.some((row) => row.id === target.connectionId) && (
+                <option value={target.connectionId}>
+                  {target.connection?.name ?? "unknown connection"}
+                </option>
+              )}
+              {targetConnections.map((connection) => (
+                <option key={connection.id} value={connection.id}>
+                  {connection.name} ({connection.type})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => removeTarget(target.id)}
+              className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+              title={`Remove target ${target.name}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         ))}
       </div>
