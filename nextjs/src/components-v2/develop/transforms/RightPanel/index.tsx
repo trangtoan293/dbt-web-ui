@@ -6,7 +6,7 @@
  */
 
 import React, { useState } from 'react';
-import { Play, CheckCircle, RefreshCw, Database, Save, Terminal, BookOpen, Package, Sprout, FileText, Plug, Trash2, Clock } from 'lucide-react';
+import { Play, CheckCircle, RefreshCw, Database, Save, Terminal, BookOpen, Package, Sprout, FileText, Plug, Trash2, Clock, Bot } from 'lucide-react';
 import DbtIcon from '@/components-v2/icons/assets/DbtIcon';
 import type { Connection } from '@/components-v2/develop/types';
 
@@ -26,6 +26,9 @@ interface RightPanelProps {
     onOpenSettings: () => void;
     onOpenDangerZone?: () => void;
     deleteProjectLabel?: string;
+    /** Omitted when the deployment runs no assistant: no dead entry point. */
+    onToggleAssistant?: () => void;
+    assistantOpen?: boolean;
 }
 
 export default function RightPanel({
@@ -43,6 +46,8 @@ export default function RightPanel({
     onOpenSettings,
     onOpenDangerZone,
     deleteProjectLabel = 'Delete Project',
+    onToggleAssistant,
+    assistantOpen = false,
 }: RightPanelProps) {
     const [dbtMenuOpen, setDbtMenuOpen] = useState(false);
 
@@ -194,6 +199,17 @@ export default function RightPanel({
             </div>
 
             {/* Quick action buttons */}
+            {onToggleAssistant && (
+                <button
+                    onClick={onToggleAssistant}
+                    className={`p-2 hover:bg-[#F3F2F1] rounded transition-colors border ${assistantOpen ? 'bg-[#E6E6E6] border-[#0078D4]' : 'border-[#E6E6E6] hover:border-[#0078D4]'}`}
+                    title="dbt assistant"
+                    aria-pressed={assistantOpen}
+                >
+                    <Bot className="h-5 w-5 text-[#0078D4]" />
+                </button>
+            )}
+
             {/* View Docs Button */}
             <button
                 onClick={onOpenDocs}

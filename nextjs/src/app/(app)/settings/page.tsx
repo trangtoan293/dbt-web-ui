@@ -5,6 +5,7 @@ import { AlertCircle, Check, Copy, Loader2, ShieldCheck } from "lucide-react"
 import { useGlobal } from "@/lib/context/GlobalContext"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components-v2/ui/card"
 import PageHeader from "@/components-v2/layout/PageHeader"
+import AssistantProvidersCard from "@/components-v2/settings/AssistantProvidersCard"
 import { getSystemInfo, type SystemInfo } from "@/lib/api-client"
 
 function formatSeconds(seconds: number): string {
@@ -110,6 +111,8 @@ export default function SettingsPage(): React.ReactElement {
           {user?.id && <CopyableId value={user.id} />}
         </CardContent>
       </Card>
+
+      <AssistantProvidersCard />
 
       <Card>
         <CardHeader>
