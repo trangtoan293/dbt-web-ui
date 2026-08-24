@@ -33,16 +33,28 @@ interface Draft {
   defaultModel: string
   apiKey: string
   isDefault: boolean
+  /** A route the installed catalog does not list, typed in by hand. */
+  custom: boolean
 }
 
 const EMPTY: Draft = {
   route: "", label: "", apiKeyEnv: "", api: "", baseUrl: "",
-  models: "", defaultModel: "", apiKey: "", isDefault: false,
+  models: "", defaultModel: "", apiKey: "", isDefault: false, custom: false,
 }
+
+const CUSTOM = "__custom__"
+
+const SELECT_CLASS = "mt-1 h-9 w-full rounded-md border border-gray-200 bg-white px-2 text-xs"
 
 function defaultApiKeyEnv(route: string): string {
   const cleaned = route.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
   return cleaned ? `${cleaned.toUpperCase()}_API_KEY` : ""
+}
+
+/** Follow the route, unless the reference was typed in by hand. */
+function nextApiKeyEnv(draft: Draft, route: string): string {
+  const derived = defaultApiKeyEnv(draft.route)
+  return draft.apiKeyEnv && draft.apiKeyEnv !== derived ? draft.apiKeyEnv : defaultApiKeyEnv(route)
 }
 
 /**
@@ -190,6 +202,7 @@ export default function AssistantProvidersCard() {
                       models: provider.models.map((model) => model.id).join(", "),
                       defaultModel: provider.defaultModel ?? "",
                       isDefault: provider.isDefault,
+                      custom: !catalogRoutes.includes(provider.route),
                     })}
                   >
                     Edit
@@ -218,20 +231,38 @@ export default function AssistantProvidersCard() {
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="text-xs text-gray-600">
                 Provider id
-                <Input
-                  className="mt-1"
-                  list="assistant-catalog-routes"
-                  placeholder="deepseek, openai, anthropic, my-gateway…"
-                  value={draft.route}
-                  onChange={(event) => setDraft({
-                    ...draft,
-                    route: event.target.value,
-                    apiKeyEnv: draft.apiKeyEnv || defaultApiKeyEnv(event.target.value),
-                  })}
-                />
-                <datalist id="assistant-catalog-routes">
-                  {catalogRoutes.map((route) => <option key={route} value={route} />)}
-                </datalist>
+                <select
+                  className={SELECT_CLASS}
+                  value={draft.custom ? CUSTOM : draft.route}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    const route = value === CUSTOM ? "" : value
+                    setDraft({
+                      ...draft,
+                      route,
+                      custom: value === CUSTOM,
+                      apiKeyEnv: nextApiKeyEnv(draft, route),
+                    })
+                  }}
+                >
+                  <option value="">Select a provider</option>
+                  {catalogRoutes.map((route) => (
+                    <option key={route} value={route}>{route}</option>
+                  ))}
+                  <option value={CUSTOM}>Other gateway…</option>
+                </select>
+                {draft.custom && (
+                  <Input
+                    className="mt-1 font-mono"
+                    placeholder="my-gateway"
+                    value={draft.route}
+                    onChange={(event) => setDraft({
+                      ...draft,
+                      route: event.target.value,
+                      apiKeyEnv: nextApiKeyEnv(draft, event.target.value),
+                    })}
+                  />
+                )}
               </label>
               <label className="text-xs text-gray-600">
                 Credential reference
@@ -267,7 +298,7 @@ export default function AssistantProvidersCard() {
               <label className="text-xs text-gray-600">
                 Protocol {isCatalog && <span className="text-gray-400">(optional)</span>}
                 <select
-                  className="mt-1 h-9 w-full rounded-md border border-gray-200 bg-white px-2 text-xs"
+                  className={SELECT_CLASS}
                   value={draft.api}
                   onChange={(event) => setDraft({ ...draft, api: event.target.value })}
                 >

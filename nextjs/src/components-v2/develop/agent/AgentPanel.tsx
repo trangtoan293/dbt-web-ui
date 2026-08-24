@@ -12,6 +12,7 @@ import {
 } from "@/lib/hooks/useAgentStream"
 import type { AgentHealth } from "@/lib/hooks/useAgentAvailability"
 import { Button } from "@/components-v2/ui/button"
+import Markdown from "./Markdown"
 
 interface AgentPanelProps {
   projectId: string
@@ -221,9 +222,15 @@ export default function AgentPanel({
           ) : (
             <div
               key={index}
-              className={`whitespace-pre-wrap rounded-md px-3 py-2 text-xs leading-relaxed ${BUBBLE_STYLES[message.role]}`}
+              className={`overflow-hidden rounded-md px-3 py-2 text-xs leading-relaxed ${BUBBLE_STYLES[message.role]}`}
             >
-              {message.text}
+              {message.role === "assistant" ? (
+                <Markdown text={message.text} />
+              ) : (
+                // A prompt, a reasoning trace and an error are what the user or
+                // the runtime wrote: show them verbatim.
+                <span className="whitespace-pre-wrap">{message.text}</span>
+              )}
               {message.streaming && (
                 <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-gray-400 align-text-bottom" />
               )}
