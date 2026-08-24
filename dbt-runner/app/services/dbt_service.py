@@ -2479,6 +2479,12 @@ class DbtService:
 
         if request.select:
             cmd.extend(["--select", request.select])
+        # docs generate reads the warehouse catalog, so it documents whichever
+        # target it ran against.
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {"success": False, "message": str(exc), "error": str(exc)}
 
         returncode, stdout, stderr = await self._run_dbt_command(
             cmd,

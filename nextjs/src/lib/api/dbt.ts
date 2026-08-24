@@ -347,10 +347,11 @@ export const dbtApi = {
     /**
      * Generate dbt documentation (catalog.json, manifest.json)
      */
-    generateDocs: (projectId: string, select?: string) =>
+    generateDocs: (projectId: string, select?: string, target?: string) =>
         apiClient.post<DocsGenerateResponse>('/dbt/docs/generate', {
             project_id: projectId,
             select,
+            target,
         }),
 
     /**

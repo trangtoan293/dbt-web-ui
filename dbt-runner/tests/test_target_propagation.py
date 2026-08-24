@@ -44,7 +44,17 @@ class RequestsCarryTarget(unittest.TestCase):
             QueryRequest,
         )
 
-        for model in (CompileRequest, ExplainRequest, PreviewRequest, QueryRequest):
+        from app.models.docs import DocsGenerateRequest
+
+        for model in (
+            CompileRequest,
+            ExplainRequest,
+            PreviewRequest,
+            QueryRequest,
+            # docs generate reads the warehouse catalog: it documents whichever
+            # target it ran against.
+            DocsGenerateRequest,
+        ):
             with self.subTest(model=model.__name__):
                 self.assertIn("target", model.model_fields)
 

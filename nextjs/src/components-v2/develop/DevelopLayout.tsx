@@ -1016,7 +1016,10 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setIsCommandRunning(true);
     const extraArgs = buildDbtAdditionalArgs("show", dbtCommandArgs, dbtFullRefresh);
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
-    setTerminalOutput((prev) => [...prev, `$ dbt show --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
+    // Through the same builder the run path uses, so the echoed line carries
+    // --target. Without it the terminal said `dbt show --select x` while the
+    // request ran on prod, and nothing on screen could tell them apart.
+    setTerminalOutput((prev) => [...prev, `$ dbt ${buildDbtCommandWithArgs(`show --select ${targetFile.split("/").pop()?.replace(".sql", "")}`, dbtCommandArgs, dbtFullRefresh, dbtTarget)}`]);
     try {
       const data = await dbtApi.preview(projectId, targetFile, 100, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setQueryLoading(false);
@@ -1076,7 +1079,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setCompiledError(null);
     const extraArgs = buildDbtAdditionalArgs("compile", dbtCommandArgs, dbtFullRefresh);
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
-    setTerminalOutput((prev) => [...prev, `$ dbt compile --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
+    setTerminalOutput((prev) => [...prev, `$ dbt ${buildDbtCommandWithArgs(`compile --select ${targetFile.split("/").pop()?.replace(".sql", "")}`, dbtCommandArgs, dbtFullRefresh, dbtTarget)}`]);
     try {
       const data = await dbtApi.compile(projectId, targetFile, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setCompiledLoading(false);
@@ -1699,7 +1702,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setTerminalTab("logs");
     setTerminalOutput((prev) => [...prev, "$ dbt docs generate", "Generating documentation..."]);
     try {
-      const result = await dbtApi.generateDocs(projectId);
+      const result = await dbtApi.generateDocs(projectId, undefined, dbtTarget);
       if (result.success) {
         const lines = result.stdout?.split("\n").filter((l: string) => l.trim()) || [];
         setTerminalOutput((prev) => [...prev, ...lines, "✅ Documentation generated"]);
@@ -1716,7 +1719,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setTerminalOutput((prev) => [...prev, "$ dbt docs generate", "Generating..."]);
     const docsWindow = window.open("about:blank", "_blank");
     try {
-      const result = await dbtApi.generateDocs(projectId);
+      const result = await dbtApi.generateDocs(projectId, undefined, dbtTarget);
       if (result.success) {
         setTerminalOutput((prev) => [...prev, "✅ Opening docs..."]);
         await refreshDbtIntellisense();
