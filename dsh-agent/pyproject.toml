@@ -1,0 +1,38 @@
+[project]
+name = "dsh-agent"
+version = "0.1.0"
+description = "DeepSeek Harness agent sessions for dbt-craft projects"
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "dbt-craft contributors" }]
+license = "MIT"
+dependencies = [
+    "fastapi>=0.125.0",
+    "uvicorn[standard]>=0.38.0",
+    "pydantic>=2.12.5",
+    "httpx>=0.28.1",
+    # The MCP server the harness connects to. Hand-rolling the handshake would
+    # be a second implementation of a spec the reference library already tracks.
+    "mcp>=2.0.0",
+    # Session logs are zstd frames written by the harness. Reading them is how
+    # the panel shows a conversation's history.
+    "zstandard>=0.23.0",
+    # Per-session provider overlays and the harness UI's settings document are
+    # YAML the harness reads back.
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# plugins/dsh-session-resume/test_resume.py is an end-to-end script needing a
+# real dsh installation and a profile, not a unit test; it is run by hand and by
+# CI with DSH_HOME set. See its module docstring.
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app", "dbt_mcp"]
