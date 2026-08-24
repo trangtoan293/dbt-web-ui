@@ -24,7 +24,8 @@ class DuckDBAdapter(BaseAdapter):
         "path": "/path/to/database.duckdb",  # or ":memory:"
         "schema": "main",                     # optional, default "main"
         "extensions": ["httpfs", "parquet"], # optional extensions to load
-        "threads": 4                          # optional, for profiles.yml
+        "threads": 4,                         # optional, dbt model concurrency
+        "settings": {"memory_limit": "8GB"}   # optional, DuckDB engine limits
     }
     """
     
@@ -295,18 +296,12 @@ class DuckDBAdapter(BaseAdapter):
                 extensions_yaml += f"        - {ext}\n"
 
         # Attached databases (a DuckLake catalog, for projects with ingest
-        # sources). Rendered via yaml so nested option dicts stay valid.
-        attach = self.config.get("attach") or []
-        attach_yaml = ""
-        if attach:
-            import yaml
-
-            dumped = yaml.safe_dump(
-                {"attach": attach}, default_flow_style=False, sort_keys=False
-            )
-            attach_yaml = "\n" + "\n".join(
-                f"      {line}" for line in dumped.rstrip().splitlines()
-            )
+        # sources) and engine settings (memory_limit, temp_directory, ...).
+        # Rendered via yaml so nested dicts stay valid.
+        attach_yaml = self._nested_block("attach", self.config.get("attach") or [])
+        # Engine limits are passed in, not read from application config here:
+        # adapters import nothing from `app`. See app/core/duckdb_resources.py.
+        settings_yaml = self._nested_block("settings", self.config.get("settings") or {})
 
         database = self.config.get("database")
         database_yaml = f"\n      database: {database}" if database else ""
@@ -317,6 +312,24 @@ class DuckDBAdapter(BaseAdapter):
       type: duckdb
       path: '{db_path}'{database_yaml}
       schema: {schema}
-      threads: {threads}{extensions_yaml.rstrip()}{attach_yaml}
+      threads: {threads}{extensions_yaml.rstrip()}{settings_yaml}{attach_yaml}
   target: {target}
 """
+
+    @staticmethod
+    def _nested_block(key: str, value) -> str:
+        """Render one nested profiles.yml key, indented under the target.
+
+        Empty renders nothing: an empty `settings:` or `attach:` key is not the
+        same as an absent one to dbt-duckdb.
+        """
+        if not value:
+            return ""
+        import yaml
+
+        dumped = yaml.safe_dump(
+            {key: value}, default_flow_style=False, sort_keys=False
+        )
+        return "\n" + "\n".join(
+            f"      {line}" for line in dumped.rstrip().splitlines()
+        )

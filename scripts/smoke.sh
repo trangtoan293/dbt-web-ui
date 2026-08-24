@@ -102,8 +102,18 @@ for p in /v2/app /workflows /docs /v2/app/storage /auth/register /api/todos; do
 done
 
 head_ "6b. Authenticated pages render"
-for path in / /develop /runs /explore /connections /settings; do
+# The five workspace sections plus /settings. Runs, Schedules, Connections and
+# Sources are tabs of these, not pages of their own.
+for path in / /develop /orchestrate /explore /data /settings; do
   check "GET $path" "200" "$(code -b "$JAR" "$FE$path")"
+done
+
+head_ "6c. Retired paths still redirect into the section that absorbed them"
+# next.config.ts owns the rules and a unit test owns their contents; this only
+# proves the built image applies them, so an old bookmark is a redirect (307)
+# and not a 404.
+for p in /runs /schedules /connections /sources; do
+  check "$p redirects" "307" "$(code -b "$JAR" "$FE$p")"
 done
 
 # ---------------------------------------------------------------- authenticated API + DB write

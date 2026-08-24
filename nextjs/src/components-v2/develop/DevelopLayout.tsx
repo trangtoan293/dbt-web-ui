@@ -32,6 +32,7 @@ import {
   type FileWatcherEvent,
 } from "@/lib/hooks";
 import { useDbtRunStream } from "@/lib/hooks/useDbtRunStream";
+import { useAgentAvailability } from "@/lib/hooks/useAgentAvailability";
 
 import {
   FileExplorer,
@@ -40,6 +41,7 @@ import {
   RightPanel,
 } from "@/components-v2/develop/transforms";
 import { formatFile } from "@/components-v2/develop/workspace/CodeEditor";
+import AgentPanel from "@/components-v2/develop/agent/AgentPanel";
 import SourceControlPanel from "@/components-v2/develop/workspace/SourceControlPanel";
 import CommitHistory from "@/components-v2/develop/workspace/CommitHistory";
 import { GitCredentialDialog } from "@/components-v2/develop/git";
@@ -203,6 +205,8 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   const [terminalTab, setTerminalTab] = useState<TerminalTabType>(
     restoredSession.terminalTab === "queryPlan" ? "results" : restoredSession.terminalTab ?? "logs"
   );
+  const agent = useAgentAvailability();
+  const [agentOpen, setAgentOpen] = useState(false);
   const [queryPanelView, setQueryPanelView] = useState<QueryPanelView>(
     restoredSession.queryPanelView ?? (restoredSession.terminalTab === "queryPlan" ? "plan" : "results")
   );
@@ -726,12 +730,33 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   }, []);
 
   // ---- File Watcher ----
+  /**
+   * Reload every already-expanded directory on the way to a changed path.
+   *
+   * The file endpoint returns one level, so refreshing the root alone leaves an
+   * expanded folder showing the children it was loaded with - which is why a file
+   * written into `models/marts` (by the assistant, by git, by anything outside
+   * this tab) only appeared after collapsing and expanding it again.
+   */
+  const refreshAncestors = (path: string | undefined) => {
+    if (!path) return;
+    const parts = path.replace(/^\/+/, "").split("/");
+    // Drop the entry itself; what changed is its parent's listing.
+    parts.pop();
+    let prefix = "";
+    for (const part of parts) {
+      prefix = prefix ? `${prefix}/${part}` : part;
+      if (loadedChildren[prefix] !== undefined) void handleLoadChildren(prefix);
+    }
+  };
+
   const handleFileWatcherEvent = (event: FileWatcherEvent) => {
     switch (event.type) {
       case "created":
       case "deleted":
       case "moved":
         loadFileTree();
+        refreshAncestors(event.path);
         loadGitStatus();
         scheduleIntellisenseRefresh(event.path);
         break;
@@ -1959,6 +1984,18 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           />
         </div>
 
+        {/* The dbt assistant, opened from the rail on the right. */}
+        {agentOpen && agent.available && (
+          <AgentPanel
+            projectId={project.id}
+            health={agent.health}
+            userKeySet={agent.userKeySet}
+            activeFilePath={activeTabPath}
+            onOpenFile={handleFileSelect}
+            onClose={() => setAgentOpen(false)}
+          />
+        )}
+
         {/* Right-side quick actions */}
         <RightPanel
           terminalOpen={terminalOpen}
@@ -1981,6 +2018,8 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
             openSettings("danger");
           }}
           deleteProjectLabel={project.deleted_at ? "Delete Permanently" : "Delete Project"}
+          onToggleAssistant={agent.available ? () => setAgentOpen((open) => !open) : undefined}
+          assistantOpen={agentOpen}
         />
       </div>
 

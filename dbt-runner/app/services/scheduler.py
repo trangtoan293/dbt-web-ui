@@ -34,7 +34,7 @@ from app.core.redis_client import get_redis
 from app.models.dbt import DbtCommand
 from app.services.notify import post_run_notification
 from app.services.run_launcher import launch_dbt_run
-from ingest import lakehouse
+from ingest import iceberg, lakehouse
 
 logger = logging.getLogger(__name__)
 
@@ -185,8 +185,8 @@ class RunScheduler:
                 text(
                     """
                     SELECT s.id, s.project_id, s.name, s.command, s.selector,
-                           s.target, s.cron, s.webhook_url, s.next_run_at,
-                           s.created_by
+                           s.target, s.cron, s.webhook_url, s.publish_schema,
+                           s.next_run_at, s.created_by
                     FROM dbt_schedules s
                     JOIN dbt_projects p ON p.id = s.project_id
                     WHERE s.is_active = true
@@ -266,6 +266,7 @@ class RunScheduler:
                 await post_run_notification(
                     schedule["webhook_url"], run, schedule["name"]
                 )
+            await self._publish_iceberg(schedule, run)
 
         async with async_session() as session:
             started = await launch_dbt_run(
@@ -294,6 +295,41 @@ class RunScheduler:
             upcoming,
         )
         return True
+
+    @staticmethod
+    async def _publish_iceberg(schedule: Dict[str, Any], run: Dict[str, Any]) -> None:
+        """Bring the project's Iceberg tables in step after a successful run.
+
+        Does nothing unless the schedule asked for it *and* the run succeeded:
+        publishing the output of a failed run hands external readers a
+        half-built mart layer. The check lives here rather than at the call
+        site so it travels with the thing it guards.
+
+        Failure here is logged, never raised. The dbt run has already been
+        recorded as successful, and it *was* - the models are in the lake. A
+        failed publish means the Iceberg copy is stale, which is the next run's
+        problem, not a reason to report the run as broken.
+        """
+        if not schedule.get("publish_schema") or run.get("status") != "success":
+            return
+        schema = str(schedule["publish_schema"])
+        try:
+            result = await asyncio.to_thread(
+                iceberg.publish, str(schedule["project_id"]), schema=schema
+            )
+            logger.info(
+                "Schedule '%s' published %s to Iceberg: %s",
+                schedule["name"],
+                schema,
+                result.get("published"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Schedule '%s' ran but could not publish %s to Iceberg: %s",
+                schedule["name"],
+                schema,
+                exc,
+            )
 
     @staticmethod
     async def _record_outcome(schedule_id: str, run: Dict[str, Any]) -> None:

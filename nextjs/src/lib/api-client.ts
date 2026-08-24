@@ -118,6 +118,7 @@ export interface IngestSourceRow {
   destination: 'connection' | 'ducklake'
   writeDisposition: string
   primaryKey?: string[] | null
+  partitionBy?: string[] | null
   sourceConnection?: { id: string; name: string; connectionType: string } | null
 }
 
@@ -132,6 +133,32 @@ export async function createIngestSource(data: Record<string, unknown>) {
 
 export async function updateIngestSource(id: string, data: Record<string, unknown>) {
   return apiFetch('/api/ingest', { method: 'PATCH', body: JSON.stringify({ id, ...data }) })
+}
+
+// --- Iceberg publish ------------------------------------------------------
+// The lake lives in dbt-runner, so publishing goes through the proxy rather than
+// Prisma: nothing about it is application state.
+
+export interface IcebergPublishResult {
+  success: boolean
+  schema: string
+  namespace?: string
+  warehouse?: string
+  /** One entry per table: "full: N file(s)", "incremental: +N file(s)", "unchanged". */
+  published: Record<string, string>
+}
+
+export async function getIcebergMeta() {
+  return apiFetch<{ configured: boolean; lakehouse_configured: boolean }>(
+    '/api/dbt-runner/lake/iceberg/meta',
+  )
+}
+
+export async function publishIceberg(projectId: string, schema: string, tables?: string[]) {
+  return apiFetch<IcebergPublishResult>(`/api/dbt-runner/lake/iceberg/${projectId}`, {
+    method: 'POST',
+    body: JSON.stringify({ schema, ...(tables?.length ? { tables } : {}) }),
+  })
 }
 
 export async function deleteIngestSource(id: string) {
@@ -258,6 +285,7 @@ export interface ScheduleRow {
   cron: string
   isActive: boolean
   webhookUrl: string | null
+  publishSchema: string | null
   lastRunAt: string | null
   lastRunId: string | null
   lastStatus: string | null

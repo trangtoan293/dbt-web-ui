@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # across two systems, and the metadata-only migration path to Iceberg is
     # unavailable. 0 = always write Parquet.
     lake_inline_row_limit: int = int(os.getenv("LAKE_INLINE_ROW_LIMIT", "0"))
+    # Iceberg publish target. The catalog defaults to wherever the DuckLake
+    # catalog lives, so the lakehouse keeps one metadata store. The warehouse is
+    # deliberately *not* under LAKE_DATA_DIR: the lake's orphan cleanup scans that
+    # tree and would find these published copies unreferenced.
+    iceberg_catalog_url: str = os.getenv("ICEBERG_CATALOG_URL", "")
+    iceberg_warehouse_dir: str = os.getenv("ICEBERG_WAREHOUSE_DIR", "")
+
     # Private/RFC1918 targets are refused by default. On-prem deployments whose
     # warehouses live on the LAN must opt in; own-infrastructure and link-local
     # targets stay blocked either way (see app/core/host_guard.py).
@@ -125,14 +132,69 @@ class Settings(BaseSettings):
     )
 
 
+    # === DuckDB engine resources ===
+    # DuckDB is the query engine (dbt-duckdb, and the DuckLake lakehouse reads
+    # through it too). Each dbt run is a separate process with its own DuckDB
+    # instance, so these bound one run, not the deployment. See
+    # app/core/duckdb_resources.py for why an unset limit is not a safe default.
+    #
+    # Empty = derive a per-run share of this container's memory. Set an explicit
+    # value ("24GB") to override.
+    duckdb_memory_limit: str = os.getenv("DUCKDB_MEMORY_LIMIT", "")
+    # 0 = DuckDB uses every core. The `threads` key in profiles.yml is dbt's model
+    # concurrency and multiplies with this, so cap it when several runs share a box.
+    duckdb_threads: int = int(os.getenv("DUCKDB_THREADS", "0"))
+    # Spill directory. DuckDB defaults to `<db file>.tmp`, i.e. inside the dbt
+    # project volume, which is not the volume sized for data: one large aggregate
+    # fills it and the run dies on "No space left on device". Empty =
+    # STORAGE_DIR/duckdb-tmp.
+    duckdb_temp_dir: str = os.getenv("DUCKDB_TEMP_DIR", "")
+    # Cap on spill ("200GB"). Empty leaves DuckDB's own default (90% of free disk).
+    duckdb_max_temp_size: str = os.getenv("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "")
+    # "false" lets DuckDB drop row order on large scans and writes, which cuts peak
+    # memory substantially at TB scale. Empty leaves DuckDB's own default (true),
+    # because switching it on behalf of a project reorders its model output.
+    #
+    # A str, not a bool: docker-compose passes this as an empty string when unset
+    # and pydantic-settings refuses to parse "" as a boolean, which would stop the
+    # container from starting at all. Interpreted in
+    # app/core/duckdb_resources.profile_settings().
+    duckdb_preserve_insertion_order: str = os.getenv(
+        "DUCKDB_PRESERVE_INSERTION_ORDER", ""
+    )
+
     # Concurrency limits
-    max_concurrent_commands_per_project: int = 1
-    max_concurrent_dbt_runs: int = 10  # global limit across all projects
+    # Serialises commands within one project. 1 because a file-backed DuckDB
+    # warehouse is single-writer, so two dbt processes on one project fail on the
+    # file lock. Raise it only where every target is remote (Postgres, Oracle,
+    # Dremio, Spark) or lake-only.
+    max_concurrent_commands_per_project: int = int(
+        os.getenv("MAX_CONCURRENT_COMMANDS_PER_PROJECT", "1")
+    )
+    # Ad-hoc console queries, capped separately from runs so a console stays
+    # usable during a batch. Every slot here is a DuckDB instance that can go
+    # active, so it is added to max_concurrent_dbt_runs when the per-instance
+    # memory limit is derived: raising this shrinks every run and every query.
+    max_concurrent_queries: int = int(os.getenv("MAX_CONCURRENT_QUERIES", "2"))
+    # Global limit across all projects. Each concurrent run is a DuckDB process
+    # holding its own memory_limit share, so raising this shrinks every run's
+    # memory. Three heavy runs already saturate a single node's disk bandwidth.
+    max_concurrent_dbt_runs: int = int(os.getenv("MAX_CONCURRENT_DBT_RUNS", "3"))
     dbt_warm_worker_count: int = int(os.getenv("DBT_WARM_WORKER_COUNT", "1"))
     dbt_warm_worker_queue_size: int = int(os.getenv("DBT_WARM_WORKER_QUEUE_SIZE", "100"))
     dbt_warm_worker_timeout: int = int(os.getenv("DBT_WARM_WORKER_TIMEOUT", "120"))
     dbt_warm_worker_recycle_jobs: int = int(os.getenv("DBT_WARM_WORKER_RECYCLE_JOBS", "100"))
     dbt_warm_worker_enabled: bool = os.getenv("DBT_WARM_WORKER_ENABLED", "true").lower() == "true"
+    # A warm worker is a live dbt process holding its project's warehouse open, so
+    # pools must not accumulate: each costs resident memory, a DuckDB file lock,
+    # and - for a project that attaches the lake - a Postgres connection. Pools
+    # are created per project on demand and reclaimed here, idle ones first.
+    dbt_warm_worker_max_projects: int = int(
+        os.getenv("DBT_WARM_WORKER_MAX_PROJECTS", "8")
+    )
+    dbt_warm_worker_idle_seconds: int = int(
+        os.getenv("DBT_WARM_WORKER_IDLE_SECONDS", "900")
+    )
     # Hard ceiling on a single dbt subprocess so a hang can't hold the project lock forever.
     dbt_subprocess_timeout: int = int(os.getenv("DBT_SUBPROCESS_TIMEOUT", "1800"))
 
@@ -142,7 +204,10 @@ class Settings(BaseSettings):
     # Per-line buffer for the warm-worker IPC StreamReader. Must hold a full
     # `dbt show --output json` response line. Default 64 MiB (asyncio default is 64 KiB).
     dbt_warm_worker_stream_limit: int = int(os.getenv("DBT_WARM_WORKER_STREAM_LIMIT", str(64 * 1024 * 1024)))
-    dbt_inline_query_timeout: int = int(os.getenv("DBT_INLINE_QUERY_TIMEOUT", "60"))
+    # Ad-hoc console query timeout. 60s was fine against a small warehouse and is
+    # not against a few TB of Parquet, where a scan that legitimately spills runs
+    # for minutes. MAX_CONCURRENT_QUERIES, not this, is what protects the box.
+    dbt_inline_query_timeout: int = int(os.getenv("DBT_INLINE_QUERY_TIMEOUT", "300"))
 
     class Config:
         env_file = ".env"

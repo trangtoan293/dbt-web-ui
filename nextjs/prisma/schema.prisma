@@ -21,8 +21,57 @@ model User {
   dbtEnvironmentVariables DbtEnvironmentVariable[]
   ingestSources           IngestSource[]
   schedules               DbtSchedule[]
+  aiCredentials           AiCredential[]
+  aiProviders             AiProvider[]
 
   @@map("users")
+}
+
+/// One model credential the user entered in Settings, keyed by the reference a
+/// provider route names (`apiKeyEnv`), which is how the harness resolves it.
+/// Encrypted with APP_ENCRYPTION_KEY like every other stored secret, and never
+/// returned to the browser: reads report only whether one exists.
+model AiCredential {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  /// Credential reference, e.g. DEEPSEEK_API_KEY or OPENAI_API_KEY.
+  credentialName  String   @default("DEEPSEEK_API_KEY") @map("credential_name") @db.Text
+  provider        String   @default("deepseek-official") @db.Text
+  apiKeyEncrypted String   @map("api_key_encrypted") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, credentialName])
+  @@map("ai_credentials")
+}
+
+/// A model provider route, in the shape the harness's own adapter takes
+/// (`llm-pi-ai`): a catalog route needs nothing but a credential reference,
+/// while a gateway pi-ai does not ship declares its protocol, endpoint and
+/// models. Kept separate from the credential exactly as the harness keeps
+/// settings separate from its credential store - no secret is stored here.
+model AiProvider {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  /// pi-ai route key: "openai", "anthropic", "deepseek", or a declared name.
+  route        String   @db.Text
+  label        String?  @db.Text
+  /// The credential this route resolves per request.
+  apiKeyEnv    String   @map("api_key_env") @db.Text
+  /// Wire protocol; required only for a route pi-ai ships no catalog for.
+  api          String?  @db.Text
+  baseUrl      String?  @map("base_url") @db.Text
+  /// [{ id, name?, contextWindow?, maxTokens? }]. Replaces the route's catalog.
+  models       Json?    @db.JsonB
+  defaultModel String?  @map("default_model") @db.Text
+  isDefault    Boolean  @default(false) @map("is_default")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, route])
+  @@map("ai_providers")
 }
 
 model DremioSource {
@@ -193,6 +242,10 @@ model IngestSource {
   writeDisposition   String            @default("append") @map("write_disposition") @db.Text
   /// Required for writeDisposition = merge.
   primaryKey         Json?             @map("primary_key") @db.JsonB
+  /// DuckLake partition terms applied to every table this source writes: a
+  /// column name, or year/month/day/hour(column). Without one, a filter on a
+  /// date scans every Parquet file in the table. Lakehouse destination only.
+  partitionBy        Json?             @map("partition_by") @db.JsonB
   isActive           Boolean           @default(true) @map("is_active")
   createdBy          String            @map("created_by") @db.Uuid
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz()
@@ -278,6 +331,10 @@ model DbtSchedule {
   /// incoming webhooks all accept it. Validated through host_guard before use:
   /// a user-supplied URL the server fetches is an SSRF hole otherwise.
   webhookUrl String?    @map("webhook_url") @db.Text
+  /// Lake schema published as Iceberg after a successful run, so engines that
+  /// cannot read DuckLake see the fresh marts. Null disables it. Validated
+  /// against ^[A-Za-z_][A-Za-z0-9_$]{0,62}$ - it becomes a SQL identifier.
+  publishSchema String? @map("publish_schema") @db.Text
   lastRunAt  DateTime?  @map("last_run_at") @db.Timestamptz()
   lastRunId  String?    @map("last_run_id") @db.Uuid
   lastStatus String?    @map("last_status") @db.Text

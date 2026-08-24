@@ -23,6 +23,41 @@ from app.services.dbt_service import DbtService
 from app.services.dbt_worker import warm_worker_pool
 from app.services.scheduler import run_scheduler
 
+
+def _log_engine_configuration() -> None:
+    """Report how DuckDB is bounded, and warn about the two defaults that bite.
+
+    Both are correct for a laptop and wrong for a warehouse, and neither fails
+    loudly: an unbounded engine looks fine until a run is OOM-killed, and a
+    catalog inside the application database looks fine until it is the largest
+    table there. Logged at startup because that is the only moment an operator
+    is reading.
+    """
+    from app.core import duckdb_resources
+    from ingest import lakehouse
+
+    limit = duckdb_resources.memory_limit_per_run()
+    logger.info(
+        "DuckDB engine: memory_limit=%s per run, max_concurrent_runs=%s, spill=%s",
+        limit or "unbounded (could not size this container)",
+        settings.max_concurrent_dbt_runs,
+        duckdb_resources.temp_directory(),
+    )
+    if not limit:
+        logger.warning(
+            "DuckDB has no memory limit: a run may be OOM-killed instead of "
+            "spilling to disk. Set DUCKDB_MEMORY_LIMIT."
+        )
+
+    if lakehouse.is_configured() and not settings.lake_catalog_url:
+        logger.warning(
+            "DuckLake catalog is the application database. Fine to start with; "
+            "past a few hundred GB of lake data the catalog holds a row per "
+            "Parquet file per snapshot and competes with application queries. "
+            "Set LAKE_CATALOG_URL to give it its own Postgres."
+        )
+
+
 # Import all routers
 from app.routers import (
     client_logs_router,
@@ -33,6 +68,7 @@ from app.routers import (
     git_router,
     health_router,
     ingest_router,
+    lake_router,
     process_router,
     project_router,
     sse_router,
@@ -155,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(files_router)
     app.include_router(connection_router)
     app.include_router(ingest_router)
+    app.include_router(lake_router)
     app.include_router(project_router)
     app.include_router(sse_router)
     app.include_router(dremio_router)
@@ -266,6 +303,9 @@ def create_app() -> FastAPI:
             await warm_worker_pool.start()
         except Exception as e:
             logger.warning(f"Failed to start dbt warm worker pool: {e}")
+
+        # === Query engine and lakehouse sizing ===
+        _log_engine_configuration()
 
         # === Scheduler: cron runs, history retention, lake maintenance ===
         # Leader-elected through Redis, so starting it in every worker is safe.

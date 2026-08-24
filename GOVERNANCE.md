@@ -6,7 +6,7 @@ community is small.
 ## Roles
 
 - **Contributors** submit issues, discussions, reviews, documentation, and code
-  under the DCO process in [CONTRIBUTING.md](CONTRIBUTING.md).
+  under the terms in [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Maintainers** triage work, review and merge pull requests, manage releases,
   and enforce the Code of Conduct and security policy.
 - **Code owners** are listed in [`.github/CODEOWNERS`](.github/CODEOWNERS).

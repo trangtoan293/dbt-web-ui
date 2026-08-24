@@ -140,3 +140,40 @@ def test_ingest_writes_parquet_rather_than_inlining_into_the_catalog(
 
     parquet = list((tmp_path / "lake").rglob("*.parquet"))
     assert parquet, f"no Parquet written - data was inlined into the catalog\n{output}"
+
+
+def test_partitioning_is_applied_and_the_table_still_reads(tmp_path, source_db):
+    """`SET PARTITIONED BY` must work against the DuckLake baked into the image.
+
+    Which `ducklake_*` features exist depends on the extension version pinned at
+    build time, and an unpartitioned lake table is read in full on every query -
+    so this is checked end to end rather than by rendering the DDL.
+    """
+    import duckdb
+
+    catalog = tmp_path / "catalog.sqlite"
+    config = _ducklake_config(tmp_path, source_db, catalog)
+    config["partition_by"] = ["id"]
+
+    code, result, output = _run_job(config, Path(__file__).resolve().parents[1])
+    assert code == 0, output
+    assert result["row_counts"]["customers"] == 4, output
+    assert "partitioning: {'customers': 'ok'}" in output, (
+        f"partitioning did not apply\n{output}"
+    )
+
+    # A second load writes under the spec, and the table must still read back:
+    # a partition spec the data does not satisfy is worse than none.
+    code, result, output = _run_job(config, Path(__file__).resolve().parents[1])
+    assert code == 0, output
+
+    connection = duckdb.connect()
+    connection.execute("INSTALL ducklake")
+    connection.execute("LOAD ducklake")
+    connection.execute(
+        f"ATTACH 'ducklake:sqlite:{catalog}' AS lake "
+        f"(DATA_PATH '{tmp_path / 'lake'}/', METADATA_SCHEMA 'main')"
+    )
+    assert connection.execute(
+        "SELECT count(*) FROM lake.raw_test.customers"
+    ).fetchone()[0] == 8, output

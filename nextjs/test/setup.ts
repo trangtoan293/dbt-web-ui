@@ -30,6 +30,8 @@ beforeEach(async () => {
   await prisma.dbtProject.deleteMany()
   await prisma.dremioSource.deleteMany()
   await prisma.connection.deleteMany()
+  await prisma.aiProvider.deleteMany()
+  await prisma.aiCredential.deleteMany()
   await prisma.user.deleteMany()
 
   // Always recreate test users

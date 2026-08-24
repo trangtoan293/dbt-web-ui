@@ -22,6 +22,16 @@ export function getDbtRunnerUrl(): string {
     return process.env.DBT_RUNNER_URL || 'http://localhost:8080';
 }
 
+// Same shape as getDbtRunnerUrl: an internal service address nobody configures.
+// A deployment that does not want the assistant sets AGENT_URL empty, and the
+// proxy route then answers 503, which is what hides the panel.
+export function getAgentUrl(): string {
+    if (typeof window !== 'undefined') {
+        return '/api/agent';
+    }
+    return process.env.AGENT_URL ?? 'http://dsh-agent:8090';
+}
+
 // Session ID management - persists across tabs
 const SESSION_STORAGE_KEY = 'dbt-session-id';
 

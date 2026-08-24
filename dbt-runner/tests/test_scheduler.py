@@ -103,5 +103,45 @@ class PruneTest(unittest.IsolatedAsyncioTestCase):
         lake.maintain.assert_not_called()
 
 
+class IcebergPublishOnScheduleTest(unittest.IsolatedAsyncioTestCase):
+    """Publishing after a scheduled run, and the two ways it must not misfire."""
+
+    SCHEDULE = {
+        "id": "s1",
+        "name": "nightly",
+        "project_id": "3f8b1c2d-0000-4000-8000-abcdefabcdef",
+        "publish_schema": "marts",
+    }
+
+    async def test_successful_run_publishes_the_named_schema(self):
+        with patch("app.services.scheduler.iceberg") as ice:
+            ice.publish.return_value = {"published": {"orders": "incremental: +1 file(s)"}}
+            await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "success"})
+        ice.publish.assert_called_once()
+        self.assertEqual(ice.publish.call_args.kwargs["schema"], "marts")
+
+    async def test_a_failed_run_publishes_nothing(self):
+        # Publishing a failed run's output hands external readers a half-built
+        # mart layer, and they cannot tell.
+        with patch("app.services.scheduler.iceberg") as ice:
+            await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "error"})
+        ice.publish.assert_not_called()
+
+    async def test_a_schedule_without_publish_schema_publishes_nothing(self):
+        with patch("app.services.scheduler.iceberg") as ice:
+            await RunScheduler._publish_iceberg(
+                {**self.SCHEDULE, "publish_schema": None}, {"status": "success"}
+            )
+        ice.publish.assert_not_called()
+
+    async def test_a_publish_failure_does_not_raise(self):
+        # The dbt run already succeeded and the models are in the lake. A stale
+        # Iceberg copy is the next run's problem, not a reason to report the run
+        # as broken - raising here would do exactly that.
+        with patch("app.services.scheduler.iceberg") as ice:
+            ice.publish.side_effect = RuntimeError("catalog unreachable")
+            await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "success"})
+
+
 if __name__ == "__main__":
     unittest.main()

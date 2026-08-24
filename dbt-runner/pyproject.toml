@@ -44,8 +44,13 @@ dependencies = [
     # not "a few lines": day-of-month and day-of-week are OR'd, not AND'd, and
     # ranges, steps and lists all compose. Not worth reimplementing.
     "croniter>=6.0.0",
+    # Publishing lake marts as Iceberg, so engines that are not DuckDB can read
+    # them. Pure Python plus one Rust wheel - no JVM, unlike dbt-spark, which is
+    # why this is a plain dependency and not an extra.
+    "pyiceberg[sql-postgres,pyarrow]>=0.11.1",
     # Ingest: dlt loads source tables into DuckLake / the project warehouse.
-    # The ducklake extra pulls no pyiceberg - duckdb and pyarrow are already here.
+    # The ducklake extra needs no pyiceberg of its own - duckdb and pyarrow are
+    # already here, and the Iceberg publisher above brings pyiceberg.
     "dlt[ducklake]>=1.30.0",
 ]
 

@@ -182,11 +182,111 @@ def provision(
     )
 
 
+_PARTITION_FUNCTIONS = ("year", "month", "day", "hour")
+_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_$]{0,62}"
+# Two alternatives rather than an optional paren group: `ts)` matches the
+# optional form and is not a term, and an "is it balanced" check after the fact
+# is a second place to get this wrong.
+_PARTITION_TERM_RE = re.compile(
+    rf"^(?:(?P<fn>[A-Za-z]+)\((?P<fn_column>{_IDENTIFIER})\)|(?P<column>{_IDENTIFIER}))$"
+)
+
+
+def partition_expression(term: str) -> str:
+    """Validate one partition term and return it as SQL.
+
+    `ALTER TABLE ... SET PARTITIONED BY` takes an expression, so this cannot be a
+    bound parameter - it is concatenated into DDL. Only a bare column or one of a
+    fixed set of date-part functions over a bare column is accepted, which is
+    what partitioning a warehouse table actually needs and leaves nothing to
+    inject.
+    """
+    raw = (term or "").strip()
+    match = _PARTITION_TERM_RE.match(raw)
+    if not match:
+        raise LakehouseError(
+            f"invalid partition term '{term}': use a column name, "
+            f"or one of {', '.join(_PARTITION_FUNCTIONS)}(column)"
+        )
+    function = match.group("fn")
+    if function is None:
+        return f'"{match.group("column")}"'
+    if function.lower() not in _PARTITION_FUNCTIONS:
+        raise LakehouseError(
+            f"unsupported partition function '{function}': "
+            f"use one of {', '.join(_PARTITION_FUNCTIONS)}"
+        )
+    return f'{function.lower()}("{match.group("fn_column")}")'
+
+
+def apply_partitioning(
+    *,
+    catalog: str,
+    metadata: str,
+    dataset: str,
+    tables: list[str],
+    partition_by: list[str],
+) -> dict:
+    """Partition a dataset's lake tables, so later scans can prune files.
+
+    Without this a query filtering on a date reads every Parquet file in the
+    table - at a few hundred GB that is the difference between seconds and
+    minutes, and no engine choice fixes it.
+
+    ponytail: DuckLake applies a partition spec to *subsequent* writes, so the
+    first load's files stay unpartitioned until merge_adjacent_files rewrites
+    them. Called after the load rather than before because the table does not
+    exist until then.
+
+    Returns one entry per table so a partial result is visible. Never raises for
+    a single table: a source whose tables do not all share a date column is
+    normal, and a failed partition is not a failed load.
+    """
+    import duckdb
+
+    expressions = [partition_expression(term) for term in partition_by if str(term).strip()]
+    if not expressions:
+        return {}
+
+    results: dict[str, str] = {}
+    connection = duckdb.connect()
+    try:
+        for extension in DUCKDB_EXTENSIONS:
+            connection.execute(f"LOAD {extension}")
+        connection.execute(
+            f"ATTACH IF NOT EXISTS '{attach_string(catalog)}' AS {ATTACH_ALIAS} "
+            f"(METADATA_SCHEMA '{metadata}')"
+        )
+        for table in tables:
+            # dataset and table are validated identifiers upstream (_DATASET_RE,
+            # _TABLE_RE in the ingest router); quoted here as well.
+            target = f'{ATTACH_ALIAS}."{dataset}"."{table}"'
+            try:
+                connection.execute(
+                    f"ALTER TABLE {target} SET PARTITIONED BY ({', '.join(expressions)})"
+                )
+                results[table] = "ok"
+            except Exception as exc:
+                results[table] = f"skipped: {exc}"
+    except Exception as exc:
+        raise LakehouseError(f"could not partition the lakehouse tables: {exc}") from exc
+    finally:
+        connection.close()
+
+    logger.info("Lake partitioning for %s: %s", dataset, results)
+    return results
+
+
 # Maintenance entry points, by the name each DuckLake version exposes. The
 # extension is baked into the image, so which of these exist depends on that
 # build - every step is therefore attempted independently and a missing
 # function is reported, not fatal.
 _MAINTENANCE_STEPS = (
+    # Merge first: appending loads leave many small Parquet files, and a scan
+    # pays per file. Merging is what makes the old ones unreferenced, so snapshot
+    # expiry below can then release them - the other order merges files that are
+    # about to be dropped and keeps the small ones another retention window.
+    ("merge_adjacent_files", "CALL ducklake_merge_adjacent_files('{alias}')"),
     (
         "expire_snapshots",
         "CALL ducklake_expire_snapshots('{alias}', older_than => now() - INTERVAL '{days} days')",
@@ -197,6 +297,49 @@ _MAINTENANCE_STEPS = (
         "CALL ducklake_delete_orphaned_files('{alias}', older_than => now() - INTERVAL '{days} days')",
     ),
 )
+
+
+# A table with many files and no partition spec is read in full on every query
+# that filters it. Reported rather than fixed: only the person who wrote the
+# model knows which column the filters use, and guessing wrong costs a rewrite.
+_UNPARTITIONED_MIN_FILES = 4
+
+_UNPARTITIONED_QUERY = """
+SELECT t.table_name, i.file_count
+FROM ducklake_table_info('{alias}') i
+JOIN __ducklake_metadata_{alias}.ducklake_table t ON t.table_id = i.table_id
+LEFT JOIN (
+    SELECT DISTINCT table_id
+    FROM __ducklake_metadata_{alias}.ducklake_partition_info
+    WHERE end_snapshot IS NULL
+) p ON p.table_id = i.table_id
+WHERE p.table_id IS NULL
+  AND i.file_count >= {min_files}
+  AND t.table_name NOT LIKE '%__dbt_backup'
+ORDER BY i.file_count DESC
+"""
+
+
+def unpartitioned_tables(connection, *, min_files: int = _UNPARTITIONED_MIN_FILES) -> list:
+    """Lake tables with no partition spec, worst first.
+
+    Ingest sources can carry a partition spec; a table dbt built cannot - dbt
+    creates it, so nothing in this codebase gets to choose its layout. The result
+    is that marts, the most-queried tables in the lake, are the ones most likely
+    to be scanned whole. Surfacing them is the honest half of the fix: the other
+    half is a `post_hook` in the model, which only its author can write.
+
+    Returns [(table_name, file_count)]. Never raises: the query reads DuckLake's
+    internal metadata tables, whose names depend on the extension version.
+    """
+    try:
+        rows = connection.execute(
+            _UNPARTITIONED_QUERY.format(alias=ATTACH_ALIAS, min_files=int(min_files))
+        ).fetchall()
+        return [(str(name), int(count)) for name, count in rows]
+    except Exception as exc:
+        logger.debug("Could not list unpartitioned lake tables: %s", exc)
+        return []
 
 
 def maintain(project_id: str, *, retention_days: int) -> dict:
@@ -254,6 +397,21 @@ def maintain(project_id: str, *, retention_days: int) -> dict:
                 results[name] = "ok"
             except Exception as exc:
                 results[name] = f"skipped: {exc}"
+
+        # After merging: a table that still has many files is one whose scans
+        # cannot be pruned, and compaction will not fix that.
+        unpartitioned = unpartitioned_tables(connection)
+        if unpartitioned:
+            results["unpartitioned"] = ", ".join(
+                f"{table} ({files} files)" for table, files in unpartitioned[:10]
+            )
+            logger.warning(
+                "Lake tables with no partition spec in project %s: %s. A query "
+                "filtering these reads every file. Add a partition spec - for a "
+                "dbt model, a post_hook running ALTER TABLE ... SET PARTITIONED BY.",
+                project_id,
+                results["unpartitioned"],
+            )
     except Exception as exc:
         raise LakehouseError(f"could not maintain the lakehouse: {exc}") from exc
     finally:

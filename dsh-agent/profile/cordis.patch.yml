@@ -1,0 +1,82 @@
+# dbt-craft's profile layer, applied over @deepseek-ai/dsh-base (76 rows: fs +
+# glob/grep, spill, sandbox, skills, plan mode, compaction, subagents, todo).
+# A patch replaces a row's whole config - there is no deep merge - so every
+# override below restates the fields it keeps.
+
+- insert:
+    # ctx.agents.create() fails on a session id that already has a log on disk,
+    # and the SDK transport only ever creates. Without this, killing a process
+    # (the only way to stop a turn) loses the conversation for good.
+    - id: session-resume
+      name: dsh-session-resume
+
+    # The stdio JSON-RPC transport dsh-agent drives. Stdout is the protocol.
+    - id: jsonrpc
+      name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+
+    # dbt execution goes through dbt-runner, never through the agent's own
+    # shell: DuckDB is single-writer, a warm worker holds the project's file,
+    # and per-run memory is derived from MAX_CONCURRENT_DBT_RUNS.
+    - id: mcp-dbt
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: dbt
+        transport: stdio
+        command: /opt/venv/bin/python
+        args: ['-m', 'dbt_mcp']
+        cwd: /app
+        # A dbt run is minutes; the default 60s would abort every real run.
+        toolCallTimeoutMs: 1800000
+        # Refuse to start without the dbt tools. The default is to activate with
+        # none and log it - and this composition has no logger row, so the agent
+        # would silently lose every dbt capability with nothing to read.
+        failOnStartupError: true
+        # stdio env is scrubbed, so the shim's inputs are passed explicitly.
+        env:
+          DBT_RUNNER_URL: !!js process.env.DBT_RUNNER_URL ?? ''
+          DBT_RUNNER_TOKEN_FILE: !!js process.env.DBT_RUNNER_TOKEN_FILE ?? ''
+          DBT_PROJECT_ID: !!js process.env.DBT_PROJECT_ID ?? ''
+          DBT_MCP_READY_FILE: !!js process.env.DBT_MCP_READY_FILE ?? ''
+
+# Sessions belong to the project, not to the shared harness home.
+- id: session-persistence-jsonl
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? dshHomePath('sessions')
+    # Compression stays at the harness's default (zstd). Switching it makes the
+    # backend refuse a root that already holds logs in the other encoding, which
+    # would abandon every existing conversation; app/sessions.py decodes instead.
+
+# base ships an empty persona; the mode bundles are what normally set it.
+- id: system-prompt
+  config:
+    persona: |
+      You are the dbt assistant inside dbt-craft, working in one dbt project
+      whose directory is your working directory.
+
+      Run dbt only through the dbt tools (mcp__dbt__run_dbt,
+      mcp__dbt__compile_model, mcp__dbt__query). Never invoke the dbt CLI from
+      the shell: the warehouse file is held open by a worker process and runs
+      are memory-budgeted per project, so a shell dbt either fails on a lock or
+      over-commits the box.
+
+      Read before you edit, and prefer selecting the models you changed
+      (run_dbt with a selector) over running the whole project.
+
+      Put new files where this project already puts them: read dbt_project.yml
+      for `model-paths` and look at the directories that exist before creating
+      one. A new folder layout is a decision for the project's owner, not a side
+      effect of adding a model.
+
+      Models materialise into the lakehouse only when they target it
+      (`+database: lake` in dbt_project.yml, or config(database='lake') on the
+      model). Without it dbt writes to the project's local DuckDB file while
+      reading the lake, which looks like the marts silently went missing.
+
+      A project's own conventions live in its AGENTS.md or CLAUDE.md; they
+      outrank this note.
+
+# No internet in an on-premise deployment, and nothing here needs it.
+- id: web-search-deepseek
+  disabled: true
+- id: tool-web
+  disabled: true
