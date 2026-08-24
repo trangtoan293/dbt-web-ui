@@ -923,6 +923,17 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           console.error("Failed to regenerate profiles.yml:", regenError);
         }
       }
+      // The project connection *is* target dev. Leaving a different target
+      // selected means the connection just chosen is not the one commands use,
+      // and nothing on screen would say so - the toolbar keeps its target
+      // across reloads, so it can have been prod since another day.
+      if (dbtTarget !== DEFAULT_DBT_TARGET) {
+        setDbtTarget(DEFAULT_DBT_TARGET);
+        setTerminalOutput((prev) => [
+          ...prev,
+          `Target switched to ${DEFAULT_DBT_TARGET} (project connection); it was ${dbtTarget}.`,
+        ]);
+      }
       setTerminalOutput((prev) => [...prev, connectionId ? "✅ Connection updated" : "✅ Connection disconnected"]);
     } catch (error) {
       console.error("Error updating connection:", error);
