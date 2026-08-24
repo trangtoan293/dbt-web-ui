@@ -70,6 +70,21 @@ x-scheduler-env: &scheduler-env
   # without expiry the storage volume only grows. 0 disables lake maintenance.
   LAKE_SNAPSHOT_RETENTION_DAYS: ${LAKE_SNAPSHOT_RETENTION_DAYS:-7}
 
+# The dbt assistant. A harness session is a long-lived Node process holding a
+# model context, so sessions are capped and idle ones are reclaimed - the same
+# reason dbt-runner reclaims warm worker pools. Raising the cap costs memory in
+# the dsh-agent container only; dbt execution still goes through dbt-runner and
+# its own run semaphore.
+x-agent-env: &agent-env
+  AGENT_MAX_SESSIONS: ${AGENT_MAX_SESSIONS:-4}
+  AGENT_IDLE_SECONDS: ${AGENT_IDLE_SECONDS:-900}
+  AGENT_PROMPT_TIMEOUT: ${AGENT_PROMPT_TIMEOUT:-600}
+  # How long a starting session waits for its dbt tools to be discovered before
+  # going ahead without them.
+  AGENT_MCP_READY_TIMEOUT: ${AGENT_MCP_READY_TIMEOUT:-30}
+  AGENT_PROVIDER: ${AGENT_PROVIDER:-deepseek-official}
+  AGENT_MODEL: ${AGENT_MODEL:-deepseek-v4-flash}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -205,6 +220,102 @@ services:
     mem_limit: ${DBT_RUNNER_MEM_LIMIT:-0}
     networks: [dbt-craft-network]
 
+  dsh-agent:
+    build:
+      context: ./dsh-agent
+      dockerfile: Dockerfile
+    container_name: dbt-craft-agent
+    restart: unless-stopped
+    environment:
+      # Deliberately NOT *shared-env: this service never touches the database
+      # (authorization is delegated to dbt-runner) and never decrypts a stored
+      # credential, so it gets neither DATABASE_URL nor APP_ENCRYPTION_KEY.
+      <<: *agent-env
+      STORAGE_DIR: /data/storage
+      # NOT /tmp/dbt-projects as in dbt-runner: the harness sandbox grants the
+      # session's own directory plus /tmp, so projects under /tmp would be
+      # writable across projects. Same volume, different mount point.
+      WORKSPACE_DIR: /workspace/dbt-projects
+      DBT_RUNNER_URL: http://dbt-runner:8080
+      # The model endpoint. The harness also reads $DSH_HOME/.credentials.yaml,
+      # but an operator-supplied variable outranks it, which is what a container
+      # deployment wants.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      AGENT_CORS_ORIGINS: ${AGENT_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Optional link to the harness's own richer UI, shown in the panel header.
+      # There is no container for it on purpose: `dsh web` refuses to bind
+      # 0.0.0.0 because that would publish remote code execution to the network.
+      # Run `npx @deepseek-ai/dsh web` where loopback is the right boundary and
+      # point this at it.
+      AGENT_WEB_URL: ${AGENT_WEB_URL-http://localhost:${AGENT_WEB_PORT:-3082}}
+      AGENT_WEB_PROBE_URL: ${AGENT_WEB_PROBE_URL-http://dsh-web:3080}
+      # Where that UI keeps its credential store, on the shared volume: a user
+      # who entered a key in Settings should not enter it again there. Only
+      # honoured with AUTH_DISABLED - see dsh-agent/app/harness_ui.py.
+      AGENT_WEB_HOME: /data/storage/agent/dsh-web-home
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-8090}:8090"
+    volumes:
+      # The same project checkouts dbt-runner mounts: the agent edits the files
+      # the IDE is showing, and the file-watch SSE pushes its edits to the editor.
+      # Mounted outside /tmp - see WORKSPACE_DIR above.
+      - dbt-projects:/workspace/dbt-projects
+      # Session logs, under agent/<project_id>/sessions.
+      - storage-data:/data/storage
+    depends_on:
+      dbt-runner:
+        condition: service_healthy
+    # A session is roughly 150-200MB of Node plus its context. Left unset on a
+    # shared box the container can starve dbt-runner, whose DuckDB share is
+    # derived from ITS cgroup limit and cannot see this one.
+    mem_limit: ${AGENT_MEM_LIMIT:-0}
+    networks: [dbt-craft-network]
+
+  # The harness's own web UI: the full DeepSeek Harness surface (session list,
+  # plan mode, permission prompts, its own settings) over the same project
+  # files. Optional, and OFF by default:
+  #
+  #   docker compose --profile dsh-web up -d dsh-web
+  #
+  # It has NO AUTHENTICATION of its own and can run code in every project on the
+  # volume, which is why `dsh web` refuses to bind 0.0.0.0 upstream. The port is
+  # published on loopback only; reach it from elsewhere through an SSH tunnel,
+  # never by publishing it. socat bridges the container's own loopback because
+  # docker cannot publish a loopback-bound port.
+  dsh-web:
+    profiles: [dsh-web]
+    build:
+      context: ./dsh-agent
+      dockerfile: Dockerfile
+    container_name: dbt-craft-agent-web
+    restart: unless-stopped
+    working_dir: /workspace/dbt-projects
+    command:
+      - sh
+      - -c
+      - >-
+        dsh web --port 3081 --no-open &
+        exec socat TCP-LISTEN:3080,fork,reuseaddr TCP:127.0.0.1:3081
+    environment:
+      # On the shared volume so dsh-agent can hand it the providers and keys the
+      # user already configured in Settings (single-user deployments only).
+      DSH_HOME: /data/storage/agent/dsh-web-home
+      # Deliberately NO DEEPSEEK_* here. The harness ranks the inherited
+      # environment above its own credential file, and compose writes an empty
+      # string for an unset variable - which would outrank the file and read as
+      # "configured with nothing", leaving this UI asking for a key it has.
+    ports:
+      # 3082, not 3080: a `dsh web` run by hand on the machine takes 3080, and
+      # that one sees the developer's own directories rather than the project
+      # volume this container mounts.
+      - "127.0.0.1:${AGENT_WEB_PORT:-3082}:3080"
+    volumes:
+      - dbt-projects:/workspace/dbt-projects
+      - storage-data:/data/storage
+    networks: [dbt-craft-network]
+
   frontend:
     build:
       context: ./nextjs
@@ -226,6 +337,10 @@ services:
       # Internal address of the backend. The browser never uses it — it calls
       # the /api/dbt-runner proxy, which forwards here over the compose network.
       DBT_RUNNER_URL: http://dbt-runner:8080
+      # Internal address of the assistant, like DBT_RUNNER_URL above. The
+      # browser never uses it - it calls the /api/agent proxy, which forwards
+      # here over the compose network. Set it empty to hide the panel.
+      AGENT_URL: ${AGENT_URL-http://dsh-agent:8090}
       NEXT_PUBLIC_PRODUCT_NAME: ${NEXT_PUBLIC_PRODUCT_NAME:-dbt-craft}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
@@ -233,6 +348,8 @@ services:
       db-migrate:
         condition: service_completed_successfully
       dbt-runner:
+        condition: service_healthy
+      dsh-agent:
         condition: service_healthy
     volumes:
       - storage-data:/data/storage

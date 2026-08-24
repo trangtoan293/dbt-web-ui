@@ -20,7 +20,13 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
 │       ├── routers/     # API route handlers
 │       ├── services/    # business logic
 │       └── core/        # config, OIDC JWT middleware
-└── docker-compose.yml   # postgres, redis, db-migrate, dbt-runner, frontend
+├── dsh-agent/           # the dbt assistant (optional service)
+│   ├── app/             # FastAPI: one harness session per project, over SSE
+│   ├── dbt_mcp/         # MCP server exposing dbt-runner to the agent
+│   ├── profile/         # DeepSeek Harness profile patch layer
+│   └── plugins/         # dsh-session-resume
+└── docker-compose.yml   # postgres, redis, db-migrate, dbt-runner, frontend,
+                         # dsh-agent (profile: agent)
 ```
 
 ## Key technical decisions
@@ -166,6 +172,91 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   can't be renamed!` - DuckDB-Iceberg refuses to rename a table modified inside
   the same open transaction, which is exactly what dbt does. Only `incremental`
   works. That is why the lake stays DuckLake and Iceberg is a publish target.
+
+### The dbt assistant (dsh-agent)
+- Part of the stack: `docker compose up -d` starts it, and the frontend's
+  `AGENT_URL` defaults to the compose service exactly as `DBT_RUNNER_URL` does -
+  an internal address is not user configuration. Setting `AGENT_URL` **empty**
+  turns the feature off: the proxy answers 503 and the panel hides itself.
+- **Model providers belong to the user, configured in Settings, and follow the
+  harness's own model.** `ai_providers` holds one row per route in the exact
+  shape `llm-pi-ai` takes (a catalog route needs only a credential reference; a
+  gateway pi-ai does not ship declares `api`, `baseURL` and `models`), and
+  `ai_credentials` holds the secrets keyed by that reference - the same
+  settings/credentials split the harness keeps. Any provider is therefore
+  configuration, not a code change.
+- Reads are write-only to the browser: `GET /api/ai-providers` reports each
+  route and whether a key is stored for it, never the key.
+- The configuration reaches the agent in exactly one place: the `/api/agent`
+  proxy route resolves it server-side (`src/lib/ai-providers.ts`) and attaches
+  `X-Model-Providers` (the adapter dict) and `X-Model-Credentials` (the secrets),
+  base64-encoded, plus the chosen route and model. The browser never holds a
+  secret, dsh-agent still has no database access, and the proxy **sets** those
+  headers so a client cannot choose them.
+- dsh-agent turns the dict into a **per-session Cordis patch overlay**
+  (`--patch`) and the secrets into that process's environment, then initializes
+  on the chosen route. Per session, not per home: one user's routes never reach
+  another's process.
+- Both are fixed at spawn, so a change restarts the session -
+  `SessionRegistry.acquire` compares `ModelConfig.fingerprint`, which hashes the
+  secrets rather than holding them. The conversation survives in the session log.
+- A deployment-wide `DEEPSEEK_API_KEY` remains a fallback for users who
+  configured nothing; `GET /health` reports whether that fallback exists, and the
+  panel points at Settings when neither is present.
+- **The harness's own UI gets the same configuration**, mirrored into its
+  `settings.yaml` (routes, merged with what that UI stored itself) and
+  `.credentials.yaml` (secrets) - but only with `AUTH_DISABLED`, since that
+  surface has no authentication and its documents are shared. Do not pass it
+  `DEEPSEEK_*` variables: the harness ranks the inherited environment above its
+  own credential file, and compose writes an empty string for an unset variable,
+  which reads as "configured with nothing" and leaves that UI asking for a key it
+  already has.
+- **Its own container on purpose.** dbt-runner divides *its* cgroup limit among
+  DuckDB runs; a harness session is a long-lived Node process with a model
+  context, and spending memory dbt-runner cannot see breaks that arithmetic.
+- The harness is **not vendored**. `dsh-agent/profile/cordis.patch.yml` is a
+  patch layer over the shipped `@deepseek-ai/dsh-base` bundle. A patch replaces
+  a row's whole `config` - there is no deep merge - and
+  `dsh --profile dbtcraft --dump-config` is run during the image build so a
+  patch naming a row that does not exist fails the build, not the first request.
+- **The agent edits files directly but never runs dbt itself.** Files come from
+  the harness's own fs tools, fenced to the project directory. dbt goes through
+  the `dbt` MCP server, which calls dbt-runner: DuckDB is single-writer, a warm
+  worker holds the project's file open, and per-run memory is budgeted, so a
+  shell `dbt run` would either fail on the lock or over-commit the box. Going
+  through dbt-runner also puts the run in History like any other.
+- Authorization is **delegated**: `app/authz.py` asks dbt-runner for something
+  project-scoped with the caller's own bearer. This service never gets
+  `DATABASE_URL` or `APP_ENCRYPTION_KEY`, so a second copy of ownership rules
+  cannot drift from the first.
+- The MCP shim reads its bearer from a file on every call, not from its
+  environment: it is spawned once per session while the token expires during it.
+- **The SDK wire has no cancel and no session close**, so Stop kills the process
+  and one session is one process. That is only survivable because
+  `plugins/dsh-session-resume` routes a persisted session id to
+  `ctx.agents.resume()` - `dsh-sdk-jsonrpc-server` only ever calls `create()`,
+  which fails on a session that already has a log on disk and silently drops the
+  prompt. The same plugin refuses an id persisted under another working
+  directory, because the id arrives from an out-of-process caller.
+- Sessions are capped and reclaimed (`AGENT_MAX_SESSIONS`,
+  `AGENT_IDLE_SECONDS`), idle first, then least recently used, never a busy one -
+  the same shape as `warm_worker_pool`.
+- **The agent container mounts the projects volume outside `/tmp`**
+  (`/workspace/dbt-projects`, not dbt-runner's `/tmp/dbt-projects`). The harness
+  sandbox's `workspace-write` mode grants the session's own directory *plus*
+  `/tmp`, so projects under `/tmp` would be writable from every other project's
+  session. Verified both ways.
+- **A file the agent creates is mode 0600, and that is the harness's choice**
+  (`fs-local` opens a new file `0o600` and preserves an existing file's mode when
+  replacing it). It works here only because dsh-agent and dbt-runner share uid
+  1000, which is why the agent container reuses that uid rather than creating one.
+  Changing the umask does not move it - the mode is explicit in the harness.
+- **Sandbox modes fence writes, not reads.** A session cannot write outside its
+  project, but it can read another project's files: one container serves every
+  project, and dbt-runner shares its uid so file permissions cannot separate
+  them either. That is why the assistant is off by default. See
+  `dsh-agent/README.md` for the two ways to close it (a container per project, or
+  a mount namespace per session).
 
 ### Scheduling, notifications and retention
 - `app/services/scheduler.py` is one asyncio poll loop doing three jobs: fire due
@@ -370,6 +461,34 @@ docker compose run --rm db-migrate npx prisma migrate deploy
   `DbtService._apply_lakehouse_attach` so projects that never ingest do not pay
   for a Postgres connection on every dbt invocation.
 
+- **dsh-agent: the first prompt must wait for the MCP tools.** The harness
+  answers `initialize` as soon as its JSON-RPC plugin activates, before its MCP
+  client has discovered anything, and a turn assembled in that window is offered
+  no dbt tools with nothing logged. The shim writes a readiness file when it
+  serves `tools/list`; `HarnessSession.start()` waits for it. Related: the
+  harness's stderr must be drained in chunks, because the MCP child inherits it
+  and an unread pipe blocks that child - which looks exactly like the race.
+- **dsh-agent drops empty environment values before spawning the harness.**
+  Compose writes `""` for optional variables and the DeepSeek adapter took an
+  empty `DEEPSEEK_BASE_URL` at face value, failing every request with
+  `request to  failed`.
+- **dsh-agent: stdout is the JSON-RPC protocol.** A composition row that logs to
+  stdout makes every frame unparseable. Diagnostics go to stderr.
+- **dsh-agent's image must run install scripts.** npm defers them by default in
+  recent versions, which leaves `koffi` without its native module and the harness
+  then fails to load `subprocess-local` and `sandbox-local`. koffi ships source
+  only, so the Dockerfile compiles it in a builder stage. A composition can also
+  answer `initialize` and exit 0 on an immediate `shutdown` while entries behind
+  it failed - which is why startup boots the profile and waits before reporting
+  healthy, and why a health check must not just initialize and shut down.
+- `@deepseek-ai/dsh` is a **developer preview**: pin the version, and run
+  `dsh-agent/plugins/dsh-session-resume/test_resume.py` after every upgrade. The
+  whole integration rests on `ctx.agents.create/resume`,
+  `ctx.sessionPersistence.list()` and a three-method JSON-RPC wire.
+- `dsh plugin --profile <name> add` needs `-w`: `dsh` writes a
+  `pnpm-workspace.yaml` into the profile directory, making it a workspace root
+  that pnpm refuses to add to implicitly.
+
 ## What NOT to do
 
 - Don't hardcode secrets — use `.env`, never committed.
@@ -383,3 +502,6 @@ docker compose run --rm db-migrate npx prisma migrate deploy
 - Don't skip `app/core/host_guard.py` on any endpoint that connects to a
   user-supplied host. Without it a user can point a connection at the application
   database and read every other user's encrypted credentials.
+- Don't give dsh-agent database access or let it run dbt from its own shell. Both
+  exist as one call into dbt-runner, which already enforces ownership, the run
+  lock and the run semaphore.
