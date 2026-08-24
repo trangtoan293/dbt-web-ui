@@ -11,6 +11,8 @@ interface CheckResult {
   condition_1_has_connection: boolean
   condition_2_profile_names_match: boolean
   condition_3_session_passed: boolean
+  condition_4_lake_reference_usable?: boolean
+  lake_references?: string[]
   connection_type: string | null
   connection_id: string | null
   dremio_source_id: string | null
@@ -116,6 +118,15 @@ export default function ConnectionCheckDialog({ projectId }: Props) {
                   ok={result.condition_3_session_passed}
                   label="Session passed (HTTP path)"
                   detail="Always true for HTTP API calls. The streaming terminal also regenerates."
+                />
+                <Condition
+                  ok={result.condition_4_lake_reference_usable !== false}
+                  label="Project files name a database this warehouse has"
+                  detail={
+                    result.condition_4_lake_reference_usable === false
+                      ? `${(result.lake_references ?? []).join(", ")} pin database "lake", the DuckLake catalog. Only a duckdb connection can attach it, so every model will fail against a ${result.connection_type ?? "non-duckdb"} connection.`
+                      : "No file pins the DuckLake catalog on a warehouse that cannot attach it."
+                  }
                 />
               </div>
 

@@ -60,7 +60,14 @@ function defaultForm() {
     credential: "",
     sslMode: "prefer",
     schema: "",
+    threads: "",
   }
+}
+
+/** Blank means "let the backend pick" - Dremio defaults to 1, the rest to 4. */
+const THREADS_HINT: Partial<Record<ConnectionType, string>> = {
+  dremio: "1 by default. A coordinator with a large catalog answers every dbt "
+    + "list_relations with a full information_schema scan, so each thread is one more scan.",
 }
 
 function defaultDremio() {
@@ -137,6 +144,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           credential: "",
           sslMode: "prefer",
           schema: "",
+          threads: "",
         })
         setDremio({ ...defaultDremio() })
         setOracle({ ...defaultOracle() })
@@ -150,6 +158,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           credential: "",
           sslMode: existing.sslMode ?? "prefer",
           schema: (((existing.extraConfig ?? {}) as Record<string, unknown>).schema as string) ?? "",
+          threads: String(((existing.extraConfig ?? {}) as Record<string, unknown>).threads ?? ""),
         })
         if (existing.connectionType === "dremio") {
           const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
@@ -268,6 +277,14 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
     if (!nextOpen && isEdit) onClose?.()
   }
 
+  /** Blank stays blank: an unset thread count is the backend's default, not a 0. */
+  function applyThreads(extraConfig: Record<string, unknown>) {
+    const value = Number(form.threads)
+    if (form.threads.trim() && Number.isFinite(value) && value > 0) {
+      extraConfig.threads = value
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
@@ -292,6 +309,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           object_storage_path: dremio.object_storage_path,
         }
         if (dremio.twin_strategy) extraConfig.twin_strategy = dremio.twin_strategy
+        applyThreads(extraConfig)
 
         const payload: Record<string, unknown> = {
           connectionType: "dremio",
@@ -309,6 +327,9 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           await createConnection({ ...payload, passwordEncrypted: form.credential })
         }
       } else if (type === "duckdb") {
+        const extraConfig: Record<string, unknown> = {}
+        applyThreads(extraConfig)
+
         const payload: Record<string, unknown> = {
           connectionType: "duckdb",
           name: form.name,
@@ -316,6 +337,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           port: 0,
           database: form.database,
           username: "",
+          extraConfig,
         }
         if (isEdit && existing) {
           await updateConnection(existing.id, "connection", payload)
@@ -325,6 +347,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
       } else if (type === "oracle") {
         const extraConfig: Record<string, unknown> = {}
         if (oracle.schema) extraConfig.schema = oracle.schema
+        applyThreads(extraConfig)
 
         const payload: Record<string, unknown> = {
           connectionType: "oracle",
@@ -377,6 +400,10 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           await createConnection({ ...payload, passwordEncrypted: form.credential })
         }
       } else {
+        const extraConfig: Record<string, unknown> = {}
+        if (form.schema) extraConfig.schema = form.schema
+        applyThreads(extraConfig)
+
         const payload: Record<string, unknown> = {
           connectionType: "postgresql",
           name: form.name,
@@ -385,7 +412,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           database: form.database,
           username: form.username,
           sslMode: form.sslMode,
-          extraConfig: form.schema ? { schema: form.schema } : {},
+          extraConfig,
         }
         if (form.credential) payload.passwordEncrypted = form.credential
         if (isEdit && existing) {
@@ -507,6 +534,19 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                   <Input value={form.username} onChange={setF("username")} placeholder={type === "dremio" ? "vaultadmin" : type === "oracle" ? "system" : type === "spark" ? "optional user" : "postgres"} required={type !== "spark" || spark.method === "thrift"} />
                 </Field>
               </>
+            )}
+
+            {type !== "spark" && !isDremioSourceEdit && (
+              <Field label="Threads" hint={THREADS_HINT[type] ?? "How many models dbt builds at once. Blank uses the default."}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={form.threads}
+                  onChange={setF("threads")}
+                  placeholder={type === "dremio" ? "1" : "4"}
+                />
+              </Field>
             )}
 
             {isDremioSourceEdit && (
@@ -758,13 +798,14 @@ function ConnectionTypeOption({
   )
 }
 
-function Field({ label, required = false, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, required = false, hint, children }: { label: string; required?: boolean; hint?: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="mb-1 block text-sm font-medium text-gray-700">
         {label}{required && <span className="text-red-500"> *</span>}
       </label>
       {children}
+      {hint && <p className="mt-1 text-xs leading-relaxed text-gray-500">{hint}</p>}
     </div>
   )
 }

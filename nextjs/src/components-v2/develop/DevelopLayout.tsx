@@ -253,7 +253,29 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     clean: true,
     changes: [],
   });
-  const [isCommandRunning, setIsCommandRunning] = useState(false);
+  const [isCommandRunning, setIsCommandRunningState] = useState(false);
+  // State lags a click by a render, and Preview also fires from a keybinding
+  // that no disabled button can stop. The ref is what actually gates a second
+  // command: without it a held Cmd+Enter queues one dbt job per keypress.
+  const commandInFlightRef = useRef(false);
+
+  const setIsCommandRunning = useCallback((running: boolean) => {
+    commandInFlightRef.current = running;
+    setIsCommandRunningState(running);
+  }, []);
+
+  /** True when this command may start; otherwise it says why and refuses. */
+  const claimCommandSlot = useCallback(() => {
+    if (commandInFlightRef.current) {
+      setTerminalOutput((prev) => [
+        ...prev,
+        "A dbt command is already running for this project. Wait for it, or press Stop.",
+      ]);
+      setTerminalOpen(true);
+      return false;
+    }
+    return true;
+  }, []);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(restoredSession.expandedPaths ?? []));
   const [loadedChildren, setLoadedChildren] = useState<Record<string, FileNode[]>>(restoredSession.loadedChildren ?? {});
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
@@ -705,7 +727,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     if (dbtRunStream.isConnected || dbtRunStream.isConnecting) {
       setIsCommandRunning(true);
     }
-  }, [dbtRunStream.isConnected, dbtRunStream.isConnecting]);
+  }, [dbtRunStream.isConnected, dbtRunStream.isConnecting, setIsCommandRunning]);
 
   // ---- Load project + models ----
   useEffect(() => {
@@ -921,6 +943,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleRunDbt = async (command: string) => {
+    if (!claimCommandSlot()) return;
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
     const commandWithArgs = buildDbtCommandWithArgs(command, dbtCommandArgs, dbtFullRefresh, dbtTarget);
     setTerminalOpen(true);
@@ -950,6 +973,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
       return;
     }
     activeDbtCommandRef.current = commandWithArgs;
+    setIsCommandRunning(true);
     setTerminalOutput((prev) => [...prev, "[INFO] Connected via SSE"]);
     dbtRunStream.sendCommand(commandWithArgs, undefined, dbtEnvironment);
   };
@@ -978,6 +1002,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handlePreviewModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setTerminalOutput((prev) => [...prev, "Please select a SQL model file to preview"]);
@@ -993,7 +1018,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
     setTerminalOutput((prev) => [...prev, `$ dbt show --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
     try {
-      const data = await dbtApi.preview(projectId, targetFile, 100, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.preview(projectId, targetFile, 100, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setQueryLoading(false);
       setIsCommandRunning(false);
       if (data.success) {
@@ -1039,6 +1064,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleCompileModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setTerminalOutput((prev) => [...prev, "Please select a SQL model file to compile"]);
@@ -1052,7 +1078,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
     setTerminalOutput((prev) => [...prev, `$ dbt compile --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
     try {
-      const data = await dbtApi.compile(projectId, targetFile, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.compile(projectId, targetFile, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setCompiledLoading(false);
       if (data.success) {
         setCompiledSQL(data.compiled_sql);
@@ -1069,6 +1095,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleExplainModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setQueryPlanError("Please select a SQL model file to explain");
@@ -1094,7 +1121,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
       stageTimer = window.setTimeout(() => {
         setQueryPlanLoadingStage((stage) => (stage === "Compiling model..." ? "Running explain..." : stage));
       }, 500);
-      const data = await dbtApi.explain(projectId, targetFile, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.explain(projectId, targetFile, extraArgs || undefined, dbtEnvironment, dbtTarget);
       if (stageTimer !== undefined) window.clearTimeout(stageTimer);
       setQueryPlanLoading(false);
       setQueryPlanLoadingStage(null);

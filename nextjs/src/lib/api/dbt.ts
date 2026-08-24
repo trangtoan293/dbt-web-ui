@@ -274,35 +274,38 @@ export const dbtApi = {
     /**
      * Compile a specific model and get SQL
      */
-    compile: (projectId: string, modelPath: string, additionalArgs?: string, environmentVariables?: Record<string, string>) =>
+    compile: (projectId: string, modelPath: string, additionalArgs?: string, environmentVariables?: Record<string, string>, target?: string) =>
         apiClient.post<DbtCompileResponse>('/dbt/compile', {
             project_id: projectId,
             model_path: modelPath,
             additional_args: additionalArgs,
             environment_variables: environmentVariables,
+            target,
         }),
 
     /**
      * Preview model data (dbt show)
      */
-    preview: (projectId: string, modelPath: string, limit: number = 100, additionalArgs?: string, environmentVariables?: Record<string, string>) =>
+    preview: (projectId: string, modelPath: string, limit: number = 100, additionalArgs?: string, environmentVariables?: Record<string, string>, target?: string) =>
         apiClient.post<DbtPreviewResponse>('/dbt/preview', {
             project_id: projectId,
             model_path: modelPath,
             limit,
             additional_args: additionalArgs,
             environment_variables: environmentVariables,
+            target,
         }),
 
     /**
      * Explain model query plan without ANALYZE.
      */
-    explain: (projectId: string, modelPath: string, additionalArgs?: string, environmentVariables?: Record<string, string>) =>
+    explain: (projectId: string, modelPath: string, additionalArgs?: string, environmentVariables?: Record<string, string>, target?: string) =>
         apiClient.post<DbtExplainResponse>('/dbt/explain', {
             project_id: projectId,
             model_path: modelPath,
             additional_args: additionalArgs,
             environment_variables: environmentVariables,
+            target,
         }),
 
     /**

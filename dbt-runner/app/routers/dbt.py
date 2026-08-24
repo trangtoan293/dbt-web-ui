@@ -4,6 +4,7 @@ dbt operations router.
 
 import json
 import logging
+import re
 import shlex
 import uuid
 from datetime import datetime, timezone
@@ -49,6 +50,7 @@ from app.services.project import ProjectService
 from app.services.run_launcher import launch_dbt_run
 from app.services.scheduler import next_fire_time
 from app.services.sql_format import format_sql
+from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
 
@@ -677,6 +679,35 @@ async def list_docs_servers(service: DbtService = Depends(get_dbt_service)):
     }
 
 
+# `database: lake` / `+database: lake` on one line, quoted or not. A regex over
+# the text rather than a YAML walk: this is a diagnostic, and the same line
+# shape covers dbt_project.yml, a sources file and a model's own config block.
+_LAKE_DATABASE_RE = re.compile(
+    rf"""^\s*\+?database:\s*['"]?{re.escape(lakehouse.ATTACH_ALIAS)}['"]?\s*$""",
+    re.MULTILINE,
+)
+
+
+def _lake_references(project_path: Path) -> List[str]:
+    """Project files pinning the DuckLake catalog, which only dbt-duckdb attaches.
+
+    A project moved onto Postgres, Dremio, Oracle or Spark keeps these lines, and
+    dbt then asks that warehouse for a catalog named `lake`: every model fails
+    with "not found within 'lake'", which reads as the connection having silently
+    reverted rather than as a project file naming the wrong database.
+    """
+    candidates = [project_path / "dbt_project.yml", *sorted(project_path.glob("models/**/*.yml"))]
+    hits = []
+    for path in candidates:
+        try:
+            content = path.read_text()
+        except OSError:
+            continue
+        if _LAKE_DATABASE_RE.search(content):
+            hits.append(str(path.relative_to(project_path)))
+    return hits
+
+
 @router.get("/check-connection/{project_id}")
 async def check_connection(
     project_id: str,
@@ -699,6 +730,8 @@ async def check_connection(
         "profile_name_in_profiles_yml": None,
         "profiles_yml_preview": None,
         "profiles_yml_on_disk": None,
+        "condition_4_lake_reference_usable": True,
+        "lake_references": [],
         "errors": [],
     }
 
@@ -815,10 +848,24 @@ async def check_connection(
             result["profile_name_in_profiles_yml"] == result["profile_name_in_dbt_project_yml"]
         )
 
+    # --- Condition 4: the project's own files must name a database this
+    # warehouse has. Only dbt-duckdb can attach the DuckLake catalog.
+    lake_refs = _lake_references(project_path)
+    if lake_refs and result["connection_type"] not in (None, "duckdb"):
+        result["condition_4_lake_reference_usable"] = False
+        result["lake_references"] = lake_refs
+        result["errors"].append(
+            f"{', '.join(lake_refs)} pin database '{lakehouse.ATTACH_ALIAS}', the DuckLake "
+            f"catalog. Only a duckdb connection can attach it, so every model will fail "
+            f"against this {result['connection_type']} connection with \"not found within "
+            f"'{lakehouse.ATTACH_ALIAS}'\". Point them at a database this warehouse has."
+        )
+
     result["all_conditions_met"] = (
         result["condition_1_has_connection"]
         and result["condition_2_profile_names_match"]
         and result["condition_3_session_passed"]
+        and result["condition_4_lake_reference_usable"]
     )
 
     return result

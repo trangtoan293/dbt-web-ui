@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("STORAGE_DIR", "/tmp/dbt-craft-test-storage")
@@ -142,6 +142,9 @@ class DbtHeaderCommandEnvironmentTests(unittest.IsolatedAsyncioTestCase):
             project_path = Path(tmp)
             worker_pool = AsyncMock()
             worker_pool.run.side_effect = asyncio.TimeoutError()
+            # A real epoch: _run_dbt_command compares it before and after to tell
+            # a cancelled command from a failed worker.
+            worker_pool.cancellation_epoch = MagicMock(return_value=0)
             command = AsyncMock()
             command.run_cancellable = AsyncMock(return_value=(0, "unexpected", ""))
             service = DbtService(

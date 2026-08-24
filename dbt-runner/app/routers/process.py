@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.core.file_lock import AsyncFileLock
 from app.services.command import CommandService
+from app.services.dbt_worker import warm_worker_pool
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ async def cancel_process(project_id: str):
             if cancelled:
                 logger.info(f"Cancelled process: {pid}")
                 cancelled_any = True
+
+    # CommandService only knows the subprocess fallback. dbt normally runs in
+    # this project's warm worker, and nothing above can reach that process, so
+    # Stop did nothing at all for the common case. Releasing the pool kills the
+    # dbt process holding the job; the pool restarts on the next command.
+    if await warm_worker_pool.release_project(project_id, cancel=True):
+        logger.info("Released warm workers for project %s on cancel", project_id)
+        cancelled_any = True
 
     # Also force release any file locks for this project
     for resource in ["preview", "dbt_run", "compile"]:

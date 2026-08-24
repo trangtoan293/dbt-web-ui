@@ -128,8 +128,46 @@ SPARK_EXTRA_CONFIG_KEYS = {
 }
 
 
+# dbt's own ceiling is a warehouse question, not ours: a Dremio coordinator with
+# a large catalog answers every list_relations with a full information_schema
+# scan, so four of them in parallel is four scans. dbt-dremio's own template
+# ships threads: 1 for that reason.
+DEFAULT_THREADS = {"dremio": 1}
+MAX_THREADS = 32
+
+
+def _threads(extra_cfg: Dict[str, Any], conn_type: str) -> int:
+    """Thread count for a profile output, taken from the connection if it set one."""
+    raw = extra_cfg.pop("threads", None)
+    default = DEFAULT_THREADS.get(conn_type, 4)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, MAX_THREADS))
+
+
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+class InvalidTarget(ValueError):
+    """Raised when a caller names a target that cannot be a profiles.yml key."""
+
+
+def append_target(cmd: List[str], target: Optional[str]) -> List[str]:
+    """Append --target, shape-checked rather than quoted.
+
+    Every path that runs dbt on a chosen environment goes through here. A
+    per-caller append is how preview, compile and explain ended up silently on
+    `dev` while the toolbar said `prod`: the target is a property of the
+    request, not of the run command alone.
+    """
+    if not target:
+        return cmd
+    if not TARGET_NAME_RE.match(target):
+        raise InvalidTarget(f"invalid target name '{target}'")
+    return [*cmd, "--target", target]
 
 
 def build_adapter_config_from_connection_row(
@@ -154,14 +192,14 @@ def build_adapter_config_from_connection_row(
             "password": secret_value,
             "dbname": conn_row["database"],
             "schema": extra_cfg.get("schema") or "public",
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "duckdb":
         return conn_type, {
             "path": conn_row["database"] or "",
             "schema": extra_cfg.get("schema") or "main",
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "oracle":
@@ -174,7 +212,7 @@ def build_adapter_config_from_connection_row(
             "password": secret_value,
             "service": extra_cfg.get("service") or conn_row["database"],
             "schema": extra_cfg.get("schema") or username.upper(),
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "dremio":
@@ -185,7 +223,8 @@ def build_adapter_config_from_connection_row(
             "port": conn_row["port"],
             "user": conn_row["username"],
             "dremio_space": conn_row["database"] or f"@{conn_row['username']}",
-            "threads": 4,
+            # _threads pops, so the spread below cannot put a raw string back.
+            "threads": _threads(extra_cfg, conn_type),
             **extra_cfg,
         }
         if auth_type == "password":
@@ -228,7 +267,7 @@ def build_adapter_config_from_dremio_source_row(
         "user": username,
         "pat": secret_value,
         "dremio_space": src_row["catalog"] or (f"@{username}" if username else "@dremio"),
-        "threads": 4,
+        "threads": DEFAULT_THREADS["dremio"],
     }, True
 
 
@@ -307,6 +346,7 @@ class DbtService:
             raise ValueError("_run_dbt_command expects a dbt command")
 
         start = time.perf_counter()
+        cancel_epoch = self.worker_pool.cancellation_epoch(project_id)
         try:
             returncode, stdout, stderr, queue_wait_ms = await self.worker_pool.run(
                 cmd[1:],
@@ -324,6 +364,12 @@ class DbtService:
             )
             return returncode, stdout, stderr
         except (DbtWarmWorkerError, TimeoutError, asyncio.TimeoutError) as exc:
+            if self.worker_pool.cancellation_epoch(project_id) != cancel_epoch:
+                # Stop killed this project's workers. Falling back would re-run
+                # the whole command as a subprocess, which is how Stop came to
+                # look like it did nothing but add a minute.
+                logger.info("dbt command cancelled for project %s: %s", project_id, " ".join(cmd))
+                return -1, "", "Cancelled by user"
             if isinstance(exc, asyncio.TimeoutError) and not fallback_on_worker_timeout:
                 timeout_seconds = timeout or settings.dbt_warm_worker_timeout
                 logger.warning(
@@ -1330,6 +1376,10 @@ class DbtService:
                 "--select",
                 model_name,
             ]
+            try:
+                cmd = append_target(cmd, request.target)
+            except InvalidTarget as exc:
+                return {"success": False, "model": model_name, "error": str(exc)}
             if request.additional_args:
                 cmd.extend(shlex.split(request.additional_args))
 
@@ -1496,6 +1546,17 @@ class DbtService:
             "--output",
             "json",
         ]
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {
+                "success": False,
+                "model": model_name,
+                "data": [],
+                "columns": [],
+                "row_count": 0,
+                "error": str(exc),
+            }
         if request.additional_args:
             cmd.extend(shlex.split(request.additional_args))
 
@@ -1636,6 +1697,7 @@ class DbtService:
                 model_path=request.model_path,
                 additional_args=request.additional_args,
                 environment_variables=request.environment_variables,
+                target=request.target,
             ),
             session=session,
             user_id=user_id,
@@ -1711,6 +1773,7 @@ class DbtService:
                 sql=explain_sql,
                 limit=1000,
                 environment_variables=request.environment_variables,
+                target=request.target,
             ),
             session=session,
             user_id=user_id,
@@ -2123,19 +2186,16 @@ class DbtService:
             "--profiles-dir",
             str(project_path),
         ]
-        if request.target:
-            # Shape-checked, not quoted: it becomes a CLI argument. Same rule as
-            # run_command - an ad-hoc query must be able to read prod without
-            # being a second way to smuggle arguments into dbt.
-            if not TARGET_NAME_RE.match(request.target):
-                return {
-                    "success": False,
-                    "data": [],
-                    "columns": [],
-                    "row_count": 0,
-                    "error": f"invalid target name '{request.target}'",
-                }
-            cmd.extend(["--target", request.target])
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {
+                "success": False,
+                "data": [],
+                "columns": [],
+                "row_count": 0,
+                "error": str(exc),
+            }
         start_time = time.time()
         try:
             # A console query is a DuckDB instance doing work, so it takes a slot
