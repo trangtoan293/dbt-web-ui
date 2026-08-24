@@ -30,8 +30,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dbtcraft_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -71,11 +71,11 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: '0.11.13'
           enable-cache: true
@@ -93,7 +93,7 @@ jobs:
     name: Compose config validates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate compose file syntax
         run: docker compose config --quiet
         env:
@@ -111,7 +111,7 @@ jobs:
       APP_ENCRYPTION_KEY: ci-app-encryption-key-at-least-32
       AUTH_SECRET: ci-cookie-secret-at-least-32-characters
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build and start a clean stack
         run: docker compose up --detach --build --wait
       - name: Wait for the stack to answer
