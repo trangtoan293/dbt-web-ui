@@ -5,7 +5,6 @@ import { AlertTriangle, Database, KeyRound, Layers, RotateCcw, SlidersHorizontal
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components-v2/ui/dialog"
-import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog"
 import type { Connection } from "@/components-v2/develop/types"
 import { cn } from "@/lib/utils"
 import EnvVarsPanel from "./EnvVarsPanel"
@@ -165,38 +164,18 @@ export default function ProjectSettingsDialog({
                     </Button>
                   </div>
                   {project.description && <p className="text-xs text-gray-500">{project.description}</p>}
-                </section>
-
-                <section className="space-y-2">
-                  <label htmlFor="project-connection" className="text-sm font-medium text-gray-800">
-                    Connection
-                  </label>
                   <p className="text-xs text-gray-500">
-                    The warehouse every dbt command runs against. This is target{" "}
-                    <code className="rounded bg-gray-100 px-1 py-0.5">dev</code>.
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      id="project-connection"
-                      value={activeConnectionId}
-                      onChange={(event) => onSelectConnection(event.target.value)}
-                      disabled={busy || Boolean(project.deleted_at)}
-                      className="h-9 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 text-sm disabled:opacity-50"
+                    The warehouse this project runs against is target{" "}
+                    <code className="rounded bg-gray-100 px-1 py-0.5">dev</code>, on the{" "}
+                    <button
+                      type="button"
+                      onClick={() => setTab("environments")}
+                      className="font-medium text-[#0078D4] underline"
                     >
-                      <option value="">None — dbt commands will not run</option>
-                      {connections.map((connection) => (
-                        <option key={connection.id} value={connection.id}>
-                          {connection.name} ({connection.type})
-                        </option>
-                      ))}
-                    </select>
-                    <ConnectionCheckDialog projectId={project.id} />
-                  </div>
-                  {connections.length === 0 && (
-                    <p className="text-xs text-amber-700">
-                      No connections yet. Create one under Data before running dbt.
-                    </p>
-                  )}
+                      Environments
+                    </button>{" "}
+                    tab with every other target.
+                  </p>
                 </section>
 
                 <section>
@@ -218,7 +197,16 @@ export default function ProjectSettingsDialog({
               </div>
             )}
 
-            {tab === "environments" && <TargetsPanel projectId={project.id} onChanged={onTargetsChanged} />}
+            {tab === "environments" && (
+              <TargetsPanel
+                projectId={project.id}
+                connections={connections}
+                activeConnectionId={activeConnectionId}
+                onSelectConnection={onSelectConnection}
+                disabled={busy || Boolean(project.deleted_at)}
+                onChanged={onTargetsChanged}
+              />
+            )}
 
             {tab === "variables" && (
               <EnvVarsPanel

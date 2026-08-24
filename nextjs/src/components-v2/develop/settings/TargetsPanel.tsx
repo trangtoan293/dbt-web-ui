@@ -7,32 +7,43 @@ import { Input } from "@/components-v2/ui/input"
 import {
   createProjectTarget,
   deleteProjectTarget,
-  getConnections,
   getProjectTargets,
   type ProjectTargetRow,
 } from "@/lib/api-client"
-
-interface ConnectionOption {
-  id: string
-  name: string
-  connectionType: string
-}
+import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog"
+import type { Connection } from "@/components-v2/develop/types"
 
 interface TargetsPanelProps {
   projectId: string
+  /** Every connection the user owns, for both the dev row and a new target. */
+  connections: Connection[]
+  /** The project's own connection, which is target `dev`. */
+  activeConnectionId: string
+  /** Attaches a connection to the project, i.e. redefines `dev`. */
+  onSelectConnection: (connectionId: string) => void
+  disabled?: boolean
   /** Called after a target is added or removed, so the toolbar selector reloads. */
   onChanged?: () => void
 }
 
 /**
- * Manages the project's extra profiles.yml outputs.
+ * Every profiles.yml output this project has, in one list.
  *
- * `dev` is the project's attached connection and is not a row here - changing
- * it means changing the project's connection, which lives on the General tab.
+ * `dev` is the project's own connection rather than a project_targets row, but
+ * that is a storage detail: to the person running dbt it is one more target,
+ * and splitting it into a separate "Connection" control was how someone could
+ * change the connection while every command still ran on a target they had
+ * picked days earlier.
  */
-export default function TargetsPanel({ projectId, onChanged }: TargetsPanelProps): React.ReactElement {
+export default function TargetsPanel({
+  projectId,
+  connections,
+  activeConnectionId,
+  onSelectConnection,
+  disabled = false,
+  onChanged,
+}: TargetsPanelProps): React.ReactElement {
   const [targets, setTargets] = useState<ProjectTargetRow[]>([])
-  const [connections, setConnections] = useState<ConnectionOption[]>([])
   const [name, setName] = useState("")
   const [connectionId, setConnectionId] = useState("")
   const [busy, setBusy] = useState(false)
@@ -50,19 +61,9 @@ export default function TargetsPanel({ projectId, onChanged }: TargetsPanelProps
     load()
   }, [load])
 
-  useEffect(() => {
-    getConnections()
-      .then((rows) =>
-        setConnections(
-          (Array.isArray(rows) ? rows : [])
-            // Dremio sources come back from the same endpoint but are not
-            // connections rows, so they cannot back a target.
-            .filter((row) => row?._sourceTable !== "dremio_source")
-            .map((row) => ({ id: row.id, name: row.name, connectionType: row.connectionType })),
-        ),
-      )
-      .catch(() => setConnections([]))
-  }, [])
+  // A legacy dremio_sources row can back the project's own connection but is
+  // not a connections row, so it cannot back an extra target.
+  const targetConnections = connections.filter((row) => row.sourceTable !== "dremio_source")
 
   async function addTarget() {
     setBusy(true)
@@ -97,15 +98,30 @@ export default function TargetsPanel({ projectId, onChanged }: TargetsPanelProps
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-500">
-        Each target is one profiles.yml output. Use them to run the same models against a second
-        warehouse — <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">dbt run --target prod</code> —
+        Each target is one profiles.yml output, and the toolbar picks which one every dbt command
+        runs against. <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">dev</code> is this
+        project&apos;s own connection; add more to run the same models against a second warehouse
         without a second project.
       </p>
 
       <div className="rounded-md border border-gray-200">
-        <div className="flex items-center justify-between px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
           <span className="font-mono text-xs text-gray-900">dev</span>
-          <span className="text-xs text-gray-500">the project&apos;s connection</span>
+          <select
+            aria-label="Connection for target dev"
+            value={activeConnectionId}
+            onChange={(event) => onSelectConnection(event.target.value)}
+            disabled={disabled}
+            className="h-8 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 text-xs disabled:opacity-50"
+          >
+            <option value="">None — dbt commands will not run</option>
+            {connections.map((connection) => (
+              <option key={connection.id} value={connection.id}>
+                {connection.name} ({connection.type})
+              </option>
+            ))}
+          </select>
+          <ConnectionCheckDialog projectId={projectId} />
         </div>
         {targets.map((target) => (
           <div
@@ -144,9 +160,9 @@ export default function TargetsPanel({ projectId, onChanged }: TargetsPanelProps
           className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm"
         >
           <option value="">Choose a connection</option>
-          {connections.map((connection) => (
+          {targetConnections.map((connection) => (
             <option key={connection.id} value={connection.id}>
-              {connection.name} ({connection.connectionType})
+              {connection.name} ({connection.type})
             </option>
           ))}
         </select>
@@ -154,6 +170,12 @@ export default function TargetsPanel({ projectId, onChanged }: TargetsPanelProps
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
         </Button>
       </div>
+
+      {connections.length === 0 && (
+        <p className="text-xs text-amber-700">
+          No connections yet. Create one under Data before running dbt.
+        </p>
+      )}
 
       <p className="text-xs text-gray-500">
         Lowercase letters, digits and underscores. Each target keeps its credential in its own
