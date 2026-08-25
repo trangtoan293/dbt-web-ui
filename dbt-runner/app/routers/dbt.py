@@ -2,6 +2,7 @@
 dbt operations router.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter
 from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.crypto import decrypt_secret_or_plaintext
 from app.core.db import get_session
 from app.core.dependencies import get_dbt_service
 from app.core.file_lock import AsyncFileLock
@@ -708,6 +710,53 @@ def _lake_references(project_path: Path) -> List[str]:
     return hits
 
 
+async def _check_targets(session: AsyncSession, project_id: str) -> List[Dict[str, Any]]:
+    """Reach every target's warehouse, concurrently, and report each one.
+
+    Checking only the project's own connection answered for `dev` and left every
+    other target unverified, which is the half that is usually wrong: a target
+    is a second warehouse someone configured once and has not run since.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT 'dev' AS name, c.name AS connection_name, c.connection_type, c.host, "
+            "       c.port, c.database, c.username, c.password_encrypted, c.extra_config "
+            "FROM dbt_projects p JOIN connections c ON c.id = p.connection_id "
+            "WHERE p.id = CAST(:pid AS uuid) "
+            "UNION ALL "
+            "SELECT t.name, c.name, c.connection_type, c.host, c.port, c.database, "
+            "       c.username, c.password_encrypted, c.extra_config "
+            "FROM project_targets t JOIN connections c ON c.id = t.connection_id "
+            "WHERE t.project_id = CAST(:pid AS uuid) "
+            "ORDER BY 1"
+        ),
+        {"pid": project_id},
+    )
+
+    async def check(row: Dict[str, Any]) -> Dict[str, Any]:
+        report = {
+            "name": row["name"],
+            "connection_name": row["connection_name"],
+            "connection_type": row["connection_type"],
+        }
+        try:
+            conn_type, config, needs_secret = build_adapter_config_from_connection_row(
+                dict(row), secret_value=None
+            )
+            if needs_secret:
+                config = {
+                    **config,
+                    "password": decrypt_secret_or_plaintext(row["password_encrypted"]),
+                }
+            result = await get_adapter(conn_type, config).test_connection()
+            return {**report, "ok": bool(result.get("success")), "message": result.get("message")}
+        except Exception as exc:
+            return {**report, "ok": False, "message": str(exc)}
+
+    checks = [check(dict(row)) for row in rows.mappings()]
+    return list(await asyncio.gather(*checks)) if checks else []
+
+
 @router.get("/check-connection/{project_id}")
 async def check_connection(
     project_id: str,
@@ -732,6 +781,7 @@ async def check_connection(
         "profiles_yml_on_disk": None,
         "condition_4_lake_reference_usable": True,
         "lake_references": [],
+        "targets": [],
         "errors": [],
     }
 
@@ -860,6 +910,11 @@ async def check_connection(
             f"against this {result['connection_type']} connection with \"not found within "
             f"'{lakehouse.ATTACH_ALIAS}'\". Point them at a database this warehouse has."
         )
+
+    try:
+        result["targets"] = await _check_targets(session, project_id)
+    except Exception as exc:  # a diagnostic must not fail on its own extra check
+        result["errors"].append(f"Could not reach the targets: {exc}")
 
     result["all_conditions_met"] = (
         result["condition_1_has_connection"]

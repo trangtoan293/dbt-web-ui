@@ -6,13 +6,14 @@ import { Button } from "@/components-v2/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components-v2/ui/dialog"
 import { apiClient } from "@/lib/api/client"
 
-interface CheckResult {
+export interface CheckResult {
   all_conditions_met: boolean
   condition_1_has_connection: boolean
   condition_2_profile_names_match: boolean
   condition_3_session_passed: boolean
   condition_4_lake_reference_usable?: boolean
   lake_references?: string[]
+  targets?: { name: string; connection_name: string; connection_type: string; ok: boolean; message?: string | null }[]
   connection_type: string | null
   connection_id: string | null
   dremio_source_id: string | null
@@ -25,9 +26,13 @@ interface CheckResult {
 
 interface Props {
   projectId: string
+  /** Icon only, for a row that already has its own labels. */
+  compact?: boolean
+  /** Handed the per-target results so a caller can show them inline. */
+  onResult?: (result: CheckResult) => void
 }
 
-export default function ConnectionCheckDialog({ projectId }: Props) {
+export default function ConnectionCheckDialog({ projectId, compact = false, onResult }: Props) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CheckResult | null>(null)
@@ -40,6 +45,7 @@ export default function ConnectionCheckDialog({ projectId }: Props) {
     try {
       const data = await apiClient.get<CheckResult>(`/dbt/check-connection/${projectId}`)
       setResult(data)
+      onResult?.(data)
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "Request failed")
     } finally {
@@ -54,9 +60,15 @@ export default function ConnectionCheckDialog({ projectId }: Props) {
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={handleOpen} title="Check connection diagnostic">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleOpen}
+        title="Reach every target's warehouse and check this project's profile"
+        className={compact ? "h-8 px-2" : undefined}
+      >
         <ShieldCheck className="h-4 w-4" />
-        Check Connection
+        {!compact && "Check Connection"}
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -93,6 +105,28 @@ export default function ConnectionCheckDialog({ projectId }: Props) {
                   )}
                 </div>
               </div>
+
+              {result.targets && result.targets.length > 0 && (
+                <div className="rounded-md border border-gray-200">
+                  {result.targets.map((target) => (
+                    <div
+                      key={target.name}
+                      className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-3 py-1.5 text-xs last:border-b-0"
+                    >
+                      {target.ok
+                        ? <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-600" />
+                        : <XCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />}
+                      <span className="font-mono text-gray-900">{target.name}</span>
+                      <span className="text-gray-500">
+                        {target.connection_name} ({target.connection_type})
+                      </span>
+                      <span className={`ml-auto truncate ${target.ok ? "text-gray-500" : "text-red-700"}`}>
+                        {target.message}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* 3 conditions */}
               <div className="space-y-2">

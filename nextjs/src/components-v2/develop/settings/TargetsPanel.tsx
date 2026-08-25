@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useState } from "react"
-import { Loader2, Plus, Trash2 } from "lucide-react"
+import { CheckCircle2, Loader2, Plus, Trash2, XCircle } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
 import {
@@ -49,6 +49,20 @@ export default function TargetsPanel({
   const [connectionId, setConnectionId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Filled by the Check button: one live result per target, keyed by name.
+  const [reachable, setReachable] = useState<Record<string, { ok: boolean; message?: string | null }>>({})
+
+  /** A dot beside a target, once it has been checked. */
+  function Status({ name }: { name: string }): React.ReactElement | null {
+    const status = reachable[name]
+    if (!status) return null
+    const Icon = status.ok ? CheckCircle2 : XCircle
+    return (
+      <span title={status.message ?? (status.ok ? "Reachable" : "Unreachable")}>
+        <Icon className={`h-3.5 w-3.5 shrink-0 ${status.ok ? "text-green-600" : "text-red-600"}`} />
+      </span>
+    )
+  }
 
   const load = useCallback(async () => {
     try {
@@ -129,6 +143,7 @@ export default function TargetsPanel({
       <div className="rounded-md border border-gray-200">
         <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
           <span className="font-mono text-xs text-gray-900">dev</span>
+          <Status name="dev" />
           <select
             aria-label="Connection for target dev"
             value={activeConnectionId}
@@ -143,7 +158,20 @@ export default function TargetsPanel({
               </option>
             ))}
           </select>
-          <ConnectionCheckDialog projectId={projectId} />
+          <ConnectionCheckDialog
+            projectId={projectId}
+            compact
+            onResult={(result) =>
+              setReachable(
+                Object.fromEntries(
+                  (result.targets ?? []).map((target) => [
+                    target.name,
+                    { ok: target.ok, message: target.message },
+                  ]),
+                ),
+              )
+            }
+          />
         </div>
         {targets.map((target) => (
           <div
@@ -151,6 +179,7 @@ export default function TargetsPanel({
             className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-2 text-sm"
           >
             <span className="font-mono text-xs text-gray-900">{target.name}</span>
+            <Status name={target.name} />
             <select
               aria-label={`Connection for target ${target.name}`}
               value={target.connectionId}
