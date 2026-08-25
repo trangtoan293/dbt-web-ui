@@ -1,13 +1,14 @@
 "use client"
 
 import React, { useEffect, useState } from "react"
-import { AlertTriangle, Database, KeyRound, Layers, RotateCcw, SlidersHorizontal, Trash2 } from "lucide-react"
+import { AlertTriangle, Database, KeyRound, Layers, RotateCcw, SlidersHorizontal, Trash2, Waves } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components-v2/ui/dialog"
 import type { Connection } from "@/components-v2/develop/types"
 import { cn } from "@/lib/utils"
 import EnvVarsPanel from "./EnvVarsPanel"
+import LakehousePanel from "./LakehousePanel"
 import TargetsPanel from "./TargetsPanel"
 import type { DbtEnvironmentVariable, ProjectSettingsTab } from "./types"
 
@@ -46,6 +47,7 @@ interface ProjectSettingsDialogProps {
 const TABS: { id: ProjectSettingsTab; label: string; icon: React.ElementType }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "environments", label: "Environments", icon: Layers },
+  { id: "lakehouse", label: "Lakehouse", icon: Waves },
   { id: "variables", label: "Variables", icon: KeyRound },
   { id: "danger", label: "Danger zone", icon: AlertTriangle },
 ]
@@ -203,6 +205,15 @@ export default function ProjectSettingsDialog({
                 connections={connections}
                 activeConnectionId={activeConnectionId}
                 onSelectConnection={onSelectConnection}
+                disabled={busy || Boolean(project.deleted_at)}
+                onChanged={onTargetsChanged}
+              />
+            )}
+
+            {tab === "lakehouse" && (
+              <LakehousePanel
+                projectId={project.id}
+                connections={connections}
                 disabled={busy || Boolean(project.deleted_at)}
                 onChanged={onTargetsChanged}
               />

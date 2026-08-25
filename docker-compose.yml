@@ -41,6 +41,12 @@ x-ingest-env: &ingest-env
   # 0 keeps ingested rows out of the catalog database. Raising it puts data
   # inside Postgres and blocks the metadata-only path to Iceberg.
   LAKE_INLINE_ROW_LIMIT: ${LAKE_INLINE_ROW_LIMIT:-0}
+  # Mount points an *external* lakehouse may keep its Parquet under, comma
+  # separated. Empty means only object storage (s3://, gs://, az://) is accepted:
+  # the path is typed by a user and dbt-runner can write anywhere its uid
+  # reaches. Paths inside LAKE_DATA_DIR are refused either way - that space
+  # belongs to lakehouses created here.
+  LAKE_EXTERNAL_DATA_ROOTS: ${LAKE_EXTERNAL_DATA_ROOTS:-}
   # On-premise warehouses usually sit on a private network, so this must be
   # turned on for them. The deployment's own Postgres and Redis stay blocked.
   INGEST_ALLOW_PRIVATE_HOSTS: ${INGEST_ALLOW_PRIVATE_HOSTS:-false}

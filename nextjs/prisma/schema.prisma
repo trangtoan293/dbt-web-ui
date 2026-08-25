@@ -107,11 +107,16 @@ model DbtProject {
   syncStatus             String?                  @default("not_synced") @map("sync_status") @db.Text
   dremioSourceId         String?                  @map("dremio_source_id") @db.Uuid
   connectionId           String?                  @map("connection_id") @db.Uuid
+  /// The DuckLake catalog this project reads and writes, if any. Separate from
+  /// connectionId because a lake is attached next to the warehouse rather than
+  /// replacing it, and because several projects may share one lake.
+  lakehouseConnectionId  String?                  @map("lakehouse_connection_id") @db.Uuid
   deletedAt              DateTime?                @map("deleted_at") @db.Timestamptz()
   createdBy              String                   @map("created_by") @db.Uuid
   user                   User                     @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   dremioSource           DremioSource?            @relation("DremioSourceProjects", fields: [dremioSourceId], references: [id], onDelete: SetNull)
-  connection             Connection?              @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  connection             Connection?              @relation("ProjectWarehouse", fields: [connectionId], references: [id], onDelete: SetNull)
+  lakehouse              Connection?              @relation("ProjectLakehouse", fields: [lakehouseConnectionId], references: [id], onDelete: SetNull)
   runs                   DbtRun[]
   ingestSources          IngestSource[]
   ingestRuns             IngestRun[]
@@ -260,12 +265,17 @@ model IngestSource {
   @@map("ingest_sources")
 }
 
+/// `ducklake` is not a warehouse: dbt never runs against it. It is a DuckLake
+/// catalog a project attaches *alongside* its warehouse, which is why it is
+/// reached through DbtProject.lakehouseConnectionId and never through
+/// DbtProject.connectionId.
 enum ConnectionType {
   postgresql
   duckdb
   dremio
   oracle
   spark
+  ducklake
 
   @@map("connection_type")
 }
@@ -286,7 +296,8 @@ model Connection {
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
   user              User            @relation(fields: [createdBy], references: [id], onDelete: Cascade)
-  projects          DbtProject[]
+  projects          DbtProject[]    @relation("ProjectWarehouse")
+  lakehouseProjects DbtProject[]    @relation("ProjectLakehouse")
   ingestSources     IngestSource[]
   projectTargets    ProjectTarget[]
 

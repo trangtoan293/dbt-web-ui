@@ -146,8 +146,12 @@ export async function getConnections() {
 }
 
 export async function createConnection(data: {
+  // A lakehouse is created with an explicit id: a managed lake's metadata
+  // schema and data directory are derived from it, so dbt-runner has to be
+  // asked what to store *before* the row exists.
+  id?: string
   name: string
-  connectionType: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark'
+  connectionType: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark' | 'ducklake'
   host: string
   port: number
   database: string
@@ -189,7 +193,7 @@ export async function getDremioSourceById(id: string) {
 export async function updateConnection(
   id: string,
   data: {
-    connectionType?: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark'
+    connectionType?: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark' | 'ducklake'
     name: string
     host: string
     port: number

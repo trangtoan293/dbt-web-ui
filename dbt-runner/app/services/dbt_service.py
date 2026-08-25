@@ -45,6 +45,7 @@ from app.services.command import CommandService
 from app.services.dbt_worker import DbtWarmWorkerError, DbtWarmWorkerPool, warm_worker_pool
 from app.services.project import ProjectService
 from app.core import duckdb_resources
+from app.services.lakes import resolve_project_lake
 from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,17 @@ def build_adapter_config_from_connection_row(
             adapter_config[secret_type] = secret_value
             needs_secret = True
         return conn_type, adapter_config, needs_secret
+
+    if conn_type == "ducklake":
+        # A lakehouse is attached alongside a warehouse, never used as one: dbt
+        # still needs a DuckDB database to open, and DuckLake is reached through
+        # that connection's `attach:` block. Assigning one as a project's
+        # warehouse is a UI mistake, so it gets a message rather than a
+        # ValueError about an unsupported type.
+        raise ValueError(
+            "A lakehouse is not a warehouse. Point the project at a DuckDB "
+            "connection and attach the lakehouse to it in Project Settings."
+        )
 
     # Adding a warehouse means: an adapter in adapters/__init__.py, its dbt
     # plugin in pyproject.toml, and the type in CONNECTION_TYPES on the
@@ -617,6 +629,10 @@ class DbtService:
                 if target["name"] != DEFAULT_TARGET_NAME
             )
 
+            # Once, not once per target: it is a database read, and every target
+            # of a project shares the same lake.
+            lake = await DbtService._resolve_lakehouse(session, project_id)
+
             dbt_env: Dict[str, str] = {}
             outputs: Dict[str, Any] = {}
             default_target: Optional[str] = None
@@ -635,9 +651,7 @@ class DbtService:
                 )
                 dbt_env.update(target_env)
                 dbt_env.update(
-                    await DbtService._apply_lakehouse_attach(
-                        session, project_id, conn_type, adapter_config
-                    )
+                    DbtService._apply_lakehouse_attach(lake, conn_type, adapter_config)
                 )
                 DbtService._apply_duckdb_resources(
                     project_id, conn_type, adapter_config
@@ -681,6 +695,19 @@ class DbtService:
             if not outputs:
                 _fix_in_memory_duckdb_profile(project_path)
                 return {}
+
+            # A lake nobody can attach is a misconfiguration worth naming here:
+            # left alone, every model referencing `lake.*` fails with "not found
+            # within 'lake'", which reads as the connection having reverted.
+            if lake is not None and "duckdb" not in conn_types:
+                raise DbtOperationError(
+                    "profile setup",
+                    "this project has a lakehouse attached, but none of its "
+                    f"targets runs on DuckDB ({', '.join(sorted(set(conn_types)))}). "
+                    "Only DuckDB can read a DuckLake catalog - detach the "
+                    "lakehouse in Project Settings, or give the project a DuckDB "
+                    "connection.",
+                )
 
             # Every path that runs dbt regenerates the profile first, so this is
             # the one place all of them pass through. A warm worker holding the
@@ -739,53 +766,44 @@ class DbtService:
             adapter_config["settings"] = values
 
     @staticmethod
-    async def _apply_lakehouse_attach(
-        session: AsyncSession,
-        project_id: str,
+    async def _resolve_lakehouse(session: AsyncSession, project_id: str):
+        """The lakehouse this project attaches, resolved once per regeneration.
+
+        The lake is whichever `ducklake` connection the project points at, so a
+        project can read a lake it never ingests into - the old gate on having a
+        lakehouse-bound ingest source made "read someone else's lake" impossible
+        to express.
+        """
+        try:
+            return await resolve_project_lake(session, project_id)
+        except lakehouse.LakehouseError as exc:
+            raise DbtOperationError("profile setup", str(exc)) from exc
+
+    @staticmethod
+    def _apply_lakehouse_attach(
+        lake,
         conn_type: str,
         adapter_config: Dict[str, Any],
     ) -> Dict[str, str]:
-        """Attach the project's DuckLake catalog to its dbt profile, if it has one.
+        """Add the lake's `attach:` block to one target, if that target can hold it.
 
-        Only DuckDB projects with a lakehouse-bound ingest source get the attach
-        block: attaching opens a Postgres connection on every dbt invocation, and
-        a project with no ingest source has nothing there to read.
+        Per target, because a project's targets need not share a warehouse: a
+        `dev` on DuckDB reading the lake beside a `prod` on Dremio is an ordinary
+        setup, and only the DuckDB one can attach a DuckLake catalog. A target
+        that cannot is skipped here and reported by the caller, which is the only
+        place that can see whether *any* target took it.
 
         Returns the env carrying the catalog password, so the secret reaches dbt
         through env_var() instead of being written into profiles.yml.
         """
-        if conn_type != "duckdb" or not lakehouse.is_configured():
-            return {}
-
-        # Ask whether the table exists before querying it. A failed statement
-        # aborts the transaction, and rolling this session back would discard the
-        # oidc_sub update resolve_user_id may have made earlier in the request.
-        # The table is absent until the ingest migration is applied, and a dbt run
-        # must not break over a feature the deployment has not enabled yet.
-        exists = await session.execute(
-            text("SELECT to_regclass('ingest_sources') IS NOT NULL")
-        )
-        if not exists.scalar():
-            logger.debug("No ingest_sources table; skipping lakehouse attach")
-            return {}
-
-        result = await session.execute(
-            text(
-                "SELECT 1 FROM ingest_sources "
-                "WHERE project_id = CAST(:pid AS uuid) AND destination = 'ducklake' "
-                "LIMIT 1"
-            ),
-            {"pid": project_id},
-        )
-        if result.first() is None:
+        if lake is None or conn_type != "duckdb":
             return {}
 
         try:
-            entry = lakehouse.dbt_attach_entry(project_id)
-            password = lakehouse.catalog_password()
+            entry = lakehouse.dbt_attach_entry(lake)
+            password = lakehouse.catalog_password(lake.catalog_url)
         except lakehouse.LakehouseError as exc:
-            logger.warning("Lakehouse attach unavailable for %s: %s", project_id, exc)
-            return {}
+            raise DbtOperationError("profile setup", str(exc)) from exc
 
         extensions = list(adapter_config.get("extensions") or [])
         for extension in lakehouse.DUCKDB_EXTENSIONS:

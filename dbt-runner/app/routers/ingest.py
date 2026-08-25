@@ -32,6 +32,7 @@ from app.core.global_semaphore import global_run_semaphore
 from app.core.host_guard import HostNotAllowed, assert_host_allowed
 from app.models.ingest import DbtSourcesSnippet, IngestRunRequest, IngestTableList
 from app.services.dbt_service import build_adapter_config_from_connection_row
+from app.services.lakes import resolve_project_lake
 from ingest import lakehouse
 from ingest.destination import (
     DESTINATION_LAKEHOUSE,
@@ -199,6 +200,7 @@ def _build_job_config(
     tables: list[str],
     dataset: str,
     write_disposition: str,
+    lake: lakehouse.LakeRef | None = None,
 ) -> Dict[str, Any]:
     project_id = str(source["project_id"])
     source_secret = decrypt_secret_or_plaintext(source.get("password_encrypted"))
@@ -226,7 +228,7 @@ def _build_job_config(
 
     destination = build_destination(
         kind,
-        project_id=project_id,
+        lake=lake,
         connection_type=connection_type,
         connection_config=connection_config,
         connection_secret=connection_secret,
@@ -363,13 +365,15 @@ async def dbt_sources_snippet(
         )
         project_type = (project_connection or {}).get("connection_type")
         if project_type != "duckdb":
+            lake = await resolve_project_lake(session, str(source["project_id"]))
+            lake_path = lake.data_path if lake else "this project's lakehouse"
             warning = (
                 f"# WARNING: this project runs dbt on {project_type or 'no connection'}, "
                 "which cannot attach a DuckLake catalog.\n"
                 "# The load succeeds, but dbt models here cannot read these tables. Either\n"
                 "# switch the source's destination to 'connection', or point the project at a\n"
                 "# DuckDB connection. Engines outside dbt (Dremio, Spark, DuckDB CLI) can still\n"
-                f"# read the Parquet under {lakehouse.data_dir(str(source['project_id']))}.\n\n"
+                f"# read the Parquet under {lake_path}.\n\n"
             )
 
     content = (
@@ -700,7 +704,10 @@ async def ingest_sse(
 
     try:
         config = _build_job_config(
-            source, destination_connection, tables, dataset, write_disposition
+            source, destination_connection, tables, dataset, write_disposition,
+            lake=await resolve_project_lake(session, str(source["project_id"]))
+            if destination_kind == DESTINATION_LAKEHOUSE
+            else None,
         )
     except HostNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc))

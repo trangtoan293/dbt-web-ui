@@ -89,12 +89,15 @@ def run(config: Dict[str, Any]) -> int:
     if destination["kind"] == "ducklake":
         from ingest import lakehouse
 
-        _emit("[info] provisioning lakehouse catalog")
-        lakehouse.provision(
-            catalog=destination["catalog_url"],
-            data_path=destination["data_path"],
-            metadata=destination["metadata_schema"],
-        )
+        lake = lakehouse.LakeRef.from_job_config(destination)
+        if lake.managed:
+            _emit("[info] provisioning lakehouse catalog")
+        else:
+            # An external catalog already exists and its write options belong to
+            # whoever created it. provision() is still called so the one decision
+            # about what a mode may do stays in one place.
+            _emit("[info] using an external lakehouse catalog as-is")
+        lakehouse.provision(lake)
 
     tables = list(config["source"]["tables"])
     _emit(f"[info] reading {len(tables)} table(s): {', '.join(tables)}")
@@ -133,8 +136,7 @@ def run(config: Dict[str, Any]) -> int:
         _emit("[info] applying lake partitioning")
         try:
             applied = lakehouse.apply_partitioning(
-                catalog=destination["catalog_url"],
-                metadata=destination["metadata_schema"],
+                lakehouse.LakeRef.from_job_config(destination),
                 dataset=config["dataset"],
                 tables=tables,
                 partition_by=list(config["partition_by"]),

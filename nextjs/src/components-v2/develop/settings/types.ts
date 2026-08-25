@@ -9,4 +9,4 @@ export interface DbtEnvironmentVariable {
   hasValue?: boolean
 }
 
-export type ProjectSettingsTab = "general" | "environments" | "variables" | "danger"
+export type ProjectSettingsTab = "general" | "environments" | "lakehouse" | "variables" | "danger"

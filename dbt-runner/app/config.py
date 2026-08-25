@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # across two systems, and the metadata-only migration path to Iceberg is
     # unavailable. 0 = always write Parquet.
     lake_inline_row_limit: int = int(os.getenv("LAKE_INLINE_ROW_LIMIT", "0"))
+    # Mount points an *external* lakehouse connection may point its data path at,
+    # comma-separated. Empty means local paths are refused outright and only
+    # object storage (s3://, gs://, az://) is accepted: the data path is typed by
+    # a user and dbt-runner can write anywhere its uid reaches, so without a list
+    # there is no honest way to tell an intended mount from the rest of the
+    # filesystem. Paths inside LAKE_DATA_DIR are refused either way - that space
+    # belongs to lakehouses created here (see ingest/lakehouse.validate_data_path).
+    lake_external_data_roots: str = os.getenv("LAKE_EXTERNAL_DATA_ROOTS", "")
     # Iceberg publish target. The catalog defaults to wherever the DuckLake
     # catalog lives, so the lakehouse keeps one metadata store. The warehouse is
     # deliberately *not* under LAKE_DATA_DIR: the lake's orphan cleanup scans that

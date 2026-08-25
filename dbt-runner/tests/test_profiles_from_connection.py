@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -46,13 +47,19 @@ class _FakeSession:
     queue would have to be re-numbered every time one is added.
     """
 
-    def __init__(self, rows, has_optional_tables=False):
+    def __init__(self, rows, has_optional_tables=False, lakehouse_id=None):
         self._rows = list(rows)
         self._has_optional_tables = has_optional_tables
+        self._lakehouse_id = lakehouse_id
 
     async def execute(self, statement, *_args, **_kwargs):
-        if "to_regclass" in str(statement):
+        sql = str(statement)
+        if "to_regclass" in sql:
             return _FakeResult(scalar=self._has_optional_tables)
+        # Answered by shape too: every profile regeneration asks which lakehouse
+        # the project points at, and most projects point at none.
+        if "lakehouse_connection_id" in sql:
+            return _FakeResult(scalar=self._lakehouse_id)
         return _FakeResult(row=self._rows.pop(0))
 
 
@@ -136,3 +143,44 @@ def test_unsupported_connection_type_is_rejected():
         build_adapter_config_from_connection_row(
             {"connection_type": "snowflake", "extra_config": {}}
         )
+
+
+@pytest.mark.asyncio
+async def test_a_lake_with_no_duckdb_target_is_refused(tmp_path, monkeypatch):
+    """Found in production: refusing per *target* broke a working project.
+
+    A project can have `dev` on DuckDB reading the lake and `prod` on Dremio.
+    Applying the lake to every target and raising on the ones that cannot hold
+    it failed the whole profile, so no dbt command ran at all. The refusal
+    belongs after the loop, where "no target can attach it" is knowable.
+    """
+    from ingest import lakehouse
+
+    project_path = _project(tmp_path)
+    session = _FakeSession([
+        {"connection_id": "11111111-1111-1111-1111-111111111111", "dremio_source_id": None},
+        {
+            "connection_type": "postgresql",
+            "host": "db",
+            "port": 5432,
+            "database": "warehouse",
+            "username": "u",
+            "password_encrypted": None,
+            "extra_config": None,
+        },
+    ])
+    monkeypatch.setattr(
+        DbtService,
+        "_resolve_lakehouse",
+        AsyncMock(
+            return_value=lakehouse.LakeRef(
+                catalog_url="sqlite:////tmp/c.sqlite",
+                data_path="/tmp/lake",
+                metadata_schema="main",
+            )
+        ),
+    )
+
+    with pytest.raises(DbtOperationError) as caught:
+        await DbtService._regenerate_profiles_from_db(session, "pid", project_path)
+    assert "none of its targets runs on DuckDB" in str(caught.value)

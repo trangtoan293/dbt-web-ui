@@ -121,8 +121,10 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   Postgres). Dremio, Oracle and Spark have no dlt destination - those projects
   ingest into the lakehouse and read it from dbt.
 - The lakehouse is DuckLake: catalog tables in Postgres, Parquet on the
-  `storage-data` volume, one catalog per project. `ingest/lakehouse.py` owns the
-  layout and is shared with dbt profile generation.
+  `storage-data` volume. `ingest/lakehouse.py` owns the layout and is shared with
+  dbt profile generation. A lake is a `connections` row of type `ducklake` that a
+  project points at through `dbt_projects.lakehouse_connection_id` - see
+  **Lakehouse connections** below.
 - Ingest counts against the same `global_run_semaphore()` as dbt runs, and takes
   the `dbt_run` file lock when (and only when) it writes a DuckDB file.
 - An ingest source may carry `partition_by` (a column, or
@@ -281,6 +283,57 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   `app/services/run_launcher.py`. Anything that needs "run this project and tell
   me how it ended" belongs there, not in a router.
 
+### Lakehouse connections
+
+- A lakehouse is a **`connections` row of type `ducklake`**, not a value derived
+  from a project id. That is what lets a lake be named, shared by several
+  projects, and pointed at one somebody else owns. A project attaches one through
+  `dbt_projects.lakehouseConnectionId`, which is separate from `connectionId`
+  because a lake sits *beside* the warehouse rather than replacing it.
+- Two modes, in `extra_config.mode`:
+  - **managed** - this deployment created the catalog and owns its files. Its
+    location is generated from the connection id and its catalog URL is read from
+    `LAKE_CATALOG_URL` **at resolve time**, never copied into the row, so rotating
+    that URL moves every managed lake instead of leaving rows pointing at a
+    database that no longer exists.
+  - **external** - the catalog belongs to someone else. Every locating value is
+    user input.
+- The mode is not a display flag. `provision()` refuses to pin write options on an
+  external lake (`set_option` writes to `ducklake_metadata` and changes how the
+  *owner* writes too) and `destroy()` refuses one outright. Both guards live in
+  `ingest/lakehouse.py`, not in the routers, so a caller cannot forget one it does
+  not have to write.
+- **External mode is read-write on purpose.** DuckLake is genuinely multi-writer -
+  the catalog database supplies the transaction - so read-only would block the
+  one thing users want (transform) while not blocking the thing that actually
+  destroys data (garbage collection). What is gated is `maintained`: only lakes
+  flagged so are swept, and external defaults to false.
+- Four checks apply to external mode, all in `app/services/lakes.py` and
+  `ingest/lakehouse.py`, all covered by `tests/test_lakehouse_connections.py`:
+  1. `assert_host_allowed` on the catalog host, at save time *and* at resolve
+     time. Without it a lakehouse aimed at this deployment's Postgres reads every
+     other user's `connections.password_encrypted` through ordinary model SQL.
+     Managed lakes never reach this check - their URL *is* the deployment's own
+     database, which is exactly why the two modes are separate code paths.
+  2. `validate_metadata_schema` - the name is concatenated into
+     `ATTACH ... (METADATA_SCHEMA '...')`, where no bound parameter is accepted.
+  3. `validate_data_path` - refuses anything inside `LAKE_DATA_DIR` (that space
+     belongs to lakes created here) and any local path outside
+     `LAKE_EXTERNAL_DATA_ROOTS`. Object storage always passes.
+  4. Existence is checked *before* attaching an external catalog: attaching
+     creates the metadata schema when absent, so a typo would leave a stray empty
+     catalog in somebody else's database and report success.
+- **Maintenance runs once per lake, not once per project.** Several projects can
+  share a lake; sweeping once per project meant doing it N times while holding N
+  different locks, which is not holding a lock at all.
+- `+database: lake` is settable from Project Settings (`LakehousePanel`). It is
+  edited as lines, not through a YAML round trip, because `dbt_project.yml` ships
+  full of comments that safe_dump would delete the first time someone ticked the
+  box.
+- Migration keyed each backfilled lake row by the **project's** id, so
+  `managed_defaults(connection_id)` reproduces the schema and data path the old
+  derivation produced. Existing lakes need no rename and no data move.
+
 ### Environments (targets)
 - A project's own `connectionId` is always target `dev`. Extra targets are
   `project_targets` rows, each pointing at another Connection the same user owns,
@@ -325,6 +378,10 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   the `INSTALL_DBT_SPARK` build arg). `adapters/__init__.py` is the registry —
   keep it in step with the connection form in `ConnectionDialog.tsx`. Offering a
   warehouse whose dbt plugin is not in the image only produces failed runs.
+  `ducklake` is a connection type but **not** an adapter: dbt never runs against
+  a lakehouse, it attaches one, so it has no registry entry and
+  `build_adapter_config_from_connection_row` refuses it with a message rather
+  than an unsupported-type error.
 
 ## Common commands
 
@@ -455,11 +512,14 @@ docker compose run --rm db-migrate npx prisma migrate deploy
   and a warm worker holds the file, so one file serves one project and nothing
   else can read it while dbt runs. A warehouse-sized deployment wants the
   DuckLake destination, which many readers can attach at once.
-- The lake attach block is added to profiles.yml **only while the project has an
-  ingest source with `destination = 'ducklake'`**. Delete the last one and models
-  referencing `lake.*` stop resolving - the attach is gated in
-  `DbtService._apply_lakehouse_attach` so projects that never ingest do not pay
-  for a Postgres connection on every dbt invocation.
+- The lake attach block is added to profiles.yml **only for a project with a
+  lakehouse attached, and only on its DuckDB targets**. Attaching opens a catalog
+  connection on every dbt invocation, so a project with no lake does not pay for
+  one. Applying it per target matters: a `dev` on DuckDB reading the lake beside
+  a `prod` on Dremio is ordinary, and refusing the Dremio target failed the whole
+  profile - i.e. every dbt command - for a project whose lake target was fine.
+  The refusal belongs after the loop, where "no target can attach it" is knowable
+  (`tests/test_profiles_from_connection.py`).
 
 - **dsh-agent: the first prompt must wait for the MCP tools.** The harness
   answers `initialize` as soon as its JSON-RPC plugin activates, before its MCP

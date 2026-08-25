@@ -1,13 +1,13 @@
 "use client"
 
 import React, { useState, useEffect } from "react"
-import { Database, HardDrive, Loader2, Plus, Server, Trash2, Zap } from "lucide-react"
+import { Database, HardDrive, Layers, Loader2, Plus, Server, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components-v2/ui/dialog"
 import { Input } from "@/components-v2/ui/input"
 import { createConnection, updateConnection } from "@/lib/api-client"
 
-type ConnectionType = "postgresql" | "duckdb" | "dremio" | "oracle" | "spark"
+type ConnectionType = "postgresql" | "duckdb" | "dremio" | "oracle" | "spark" | "ducklake"
 type SourceTable = "connection" | "dremio_source"
 
 export interface ExistingConnection {
@@ -38,6 +38,7 @@ const TYPE_LABELS: Record<ConnectionType, string> = {
   dremio: "Dremio",
   oracle: "Oracle",
   spark: "Apache Spark",
+  ducklake: "Lakehouse",
 }
 
 const DEFAULT_PORTS: Record<ConnectionType, number> = {
@@ -46,6 +47,7 @@ const DEFAULT_PORTS: Record<ConnectionType, number> = {
   dremio: 9047,
   oracle: 1521,
   spark: 0,
+  ducklake: 5432,
 }
 
 const SELECT_CLS = "flex h-9 w-full rounded-md border border-gray-300 bg-white px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:border-[#0078D4] focus-visible:ring-1 focus-visible:ring-[#0078D4]"
@@ -79,6 +81,18 @@ function defaultDremio() {
     object_storage_path: "",
     use_ssl: "false",
     twin_strategy: "",
+  }
+}
+
+function defaultLake() {
+  return {
+    // Creating a lakehouse is the common case, and the one with nothing to fill
+    // in: everything about where a managed lake lives is decided server-side.
+    mode: "managed" as "managed" | "external",
+    catalog_type: "postgresql" as "postgresql" | "sqlite",
+    data_path: "",
+    metadata_schema: "",
+    maintained: false,
   }
 }
 
@@ -121,13 +135,15 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
     existing?.connectionType === "duckdb" ? "duckdb" :
     existing?.connectionType === "dremio" ? "dremio" :
     existing?.connectionType === "oracle" ? "oracle" :
-    existing?.connectionType === "spark" ? "spark" : "postgresql"
+    existing?.connectionType === "spark" ? "spark" :
+    existing?.connectionType === "ducklake" ? "ducklake" : "postgresql"
   const [type, setType] = useState<ConnectionType>(initialType)
   const [typeSelected, setTypeSelected] = useState(isEdit)
   const [form, setForm] = useState(defaultForm())
   const [dremio, setDremio] = useState(defaultDremio())
   const [oracle, setOracle] = useState(defaultOracle())
   const [spark, setSpark] = useState(defaultSpark())
+  const [lake, setLake] = useState(defaultLake())
 
   useEffect(() => {
     if (!open) return
@@ -170,6 +186,15 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
             object_storage_path: (ec.object_storage_path as string) ?? "",
             use_ssl: ec.use_ssl === true ? "true" : "false",
             twin_strategy: (ec.twin_strategy as string) ?? "",
+          })
+        } else if (existing.connectionType === "ducklake") {
+          const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
+          setLake({
+            mode: (ec.mode as "managed" | "external") ?? "managed",
+            catalog_type: (ec.catalog_type as "postgresql" | "sqlite") ?? "postgresql",
+            data_path: (ec.data_path as string) ?? "",
+            metadata_schema: (ec.metadata_schema as string) ?? "",
+            maintained: ec.maintained === true,
           })
         } else if (existing.connectionType === "oracle") {
           const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
@@ -325,6 +350,33 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           await updateConnection(existing.id, "connection", payload)
         } else {
           await createConnection({ ...payload, passwordEncrypted: form.credential })
+        }
+      } else if (type === "ducklake") {
+        // Only what identifies the lake is sent. dbt-runner decides what
+        // actually gets stored - a managed lake's location is generated there
+        // and an external one's is validated there.
+        const extraConfig: Record<string, unknown> = { mode: lake.mode }
+        if (lake.mode === "external") {
+          extraConfig.catalog_type = lake.catalog_type
+          extraConfig.data_path = lake.data_path
+          extraConfig.metadata_schema = lake.metadata_schema
+          extraConfig.maintained = lake.maintained
+        }
+        const isSqlite = lake.mode === "external" && lake.catalog_type === "sqlite"
+        const payload: Record<string, unknown> = {
+          connectionType: "ducklake",
+          name: form.name,
+          host: lake.mode === "external" && !isSqlite ? form.host : "",
+          port: lake.mode === "external" && !isSqlite ? Number(form.port) : 0,
+          database: lake.mode === "external" ? form.database : "",
+          username: lake.mode === "external" && !isSqlite ? form.username : "",
+          extraConfig,
+        }
+        if (form.credential) payload.passwordEncrypted = form.credential
+        if (isEdit && existing) {
+          await updateConnection(existing.id, "connection", payload)
+        } else {
+          await createConnection(payload)
         }
       } else if (type === "duckdb") {
         const extraConfig: Record<string, unknown> = {}
@@ -483,6 +535,12 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                   description="dbt-spark connection using session, thrift, http, or ODBC."
                   onClick={() => chooseType("spark")}
                 />
+                <ConnectionTypeOption
+                  icon={Layers}
+                  title="Lakehouse"
+                  description="A DuckLake catalog: Parquet on disk, metadata in a database. Attached to a project alongside its warehouse, not instead of it."
+                  onClick={() => chooseType("ducklake")}
+                />
               </div>
               {error && <p className="text-sm text-red-600">{error}</p>}
             </div>
@@ -511,10 +569,120 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
               </Field>
             )}
 
+            {type === "ducklake" && (
+              <>
+                <Field label="Lakehouse">
+                  <select
+                    value={lake.mode}
+                    onChange={(e) => setLake({ ...lake, mode: e.target.value as "managed" | "external" })}
+                    className={SELECT_CLS}
+                    disabled={isEdit}
+                  >
+                    <option value="managed">Create a new lakehouse</option>
+                    <option value="external">Connect to an existing lakehouse</option>
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {lake.mode === "managed"
+                      ? "This deployment creates the catalog and owns its files, including cleaning them up."
+                      : "The catalog belongs to whoever created it. Nothing here changes its settings or deletes its files."}
+                  </p>
+                </Field>
+
+                {lake.mode === "external" && (
+                  <>
+                    <Field label="Catalog">
+                      <select
+                        value={lake.catalog_type}
+                        onChange={(e) => setLake({ ...lake, catalog_type: e.target.value as "postgresql" | "sqlite" })}
+                        className={SELECT_CLS}
+                      >
+                        <option value="postgresql">PostgreSQL</option>
+                        <option value="sqlite">SQLite file</option>
+                      </select>
+                    </Field>
+
+                    <Field label="Metadata Schema" required>
+                      <Input
+                        value={lake.metadata_schema}
+                        onChange={(e) => setLake({ ...lake, metadata_schema: e.target.value })}
+                        placeholder="lake_shared"
+                        required
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        The schema holding the catalog&apos;s <code>ducklake_*</code> tables. Get it wrong and
+                        connecting would create an empty catalog there, so it is checked before anything attaches.
+                      </p>
+                    </Field>
+
+                    <Field label="Data Path" required>
+                      <Input
+                        value={lake.data_path}
+                        onChange={(e) => setLake({ ...lake, data_path: e.target.value })}
+                        placeholder="s3://company-lake/warehouse/"
+                        required
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Where its Parquet lives. Object storage always works; a local path has to be
+                        under a mount your administrator allowed.
+                      </p>
+                    </Field>
+
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={lake.maintained}
+                        onChange={(e) => setLake({ ...lake, maintained: e.target.checked })}
+                      />
+                      <span>
+                        <span className="font-medium text-gray-700">This deployment manages this lakehouse</span>
+                        <span className="block text-xs text-gray-500">
+                          Runs compaction and deletes files no snapshot references. Leave off unless you know
+                          nothing else runs garbage collection on this catalog - two collectors cannot share files.
+                        </span>
+                      </span>
+                    </label>
+                  </>
+                )}
+              </>
+            )}
+
             {isDremioSourceEdit && (
               <Field label="Catalog" required>
                 <Input value={form.database} onChange={setF("database")} placeholder="catalog" required />
               </Field>
+            )}
+
+            {type === "ducklake" && lake.mode === "external" && lake.catalog_type === "sqlite" && (
+              <Field label="Catalog File" required>
+                <Input value={form.database} onChange={setF("database")} placeholder="/mnt/lake/catalog.sqlite" required />
+              </Field>
+            )}
+
+            {type === "ducklake" && lake.mode === "external" && lake.catalog_type === "postgresql" && (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2">
+                    <Field label="Catalog Host" required>
+                      <Input value={form.host} onChange={setF("host")} placeholder="lake-catalog.example.com" required />
+                    </Field>
+                  </div>
+                  <Field label="Port" required>
+                    <Input type="number" value={form.port} onChange={setF("port")} required />
+                  </Field>
+                </div>
+                <Field label="Catalog Database" required>
+                  <Input value={form.database} onChange={setF("database")} placeholder="lakehouse" required />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="User" required>
+                    <Input value={form.username} onChange={setF("username")} required />
+                  </Field>
+                  <Field label="Password">
+                    <Input type="password" value={form.credential} onChange={setF("credential")} placeholder={isEdit ? "unchanged" : ""} />
+                  </Field>
+                </div>
+              </>
             )}
 
             {(type === "postgresql" || type === "dremio" || type === "oracle" || type === "spark") && !isDremioSourceEdit && (

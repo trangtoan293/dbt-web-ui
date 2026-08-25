@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.scheduler import RunScheduler, is_misfire, next_fire_time
+from ingest import lakehouse
 
 
 class NextFireTimeTest(unittest.TestCase):
@@ -113,12 +114,32 @@ class IcebergPublishOnScheduleTest(unittest.IsolatedAsyncioTestCase):
         "publish_schema": "marts",
     }
 
+    LAKE = lakehouse.LakeRef(
+        catalog_url="sqlite:////tmp/catalog.sqlite",
+        data_path="/tmp/lake",
+        metadata_schema="main",
+    )
+
+    def _with_lake(self, lake):
+        """Patch the project's lakehouse lookup, which publishing now needs."""
+        return patch(
+            "app.services.scheduler.resolve_project_lake",
+            AsyncMock(return_value=lake),
+        )
+
     async def test_successful_run_publishes_the_named_schema(self):
-        with patch("app.services.scheduler.iceberg") as ice:
+        with patch("app.services.scheduler.iceberg") as ice, self._with_lake(self.LAKE):
             ice.publish.return_value = {"published": {"orders": "incremental: +1 file(s)"}}
             await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "success"})
         ice.publish.assert_called_once()
         self.assertEqual(ice.publish.call_args.kwargs["schema"], "marts")
+        self.assertIs(ice.publish.call_args.args[1], self.LAKE)
+
+    async def test_a_project_without_a_lakehouse_publishes_nothing(self):
+        """Nothing to publish *from*: say so in the log rather than crashing."""
+        with patch("app.services.scheduler.iceberg") as ice, self._with_lake(None):
+            await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "success"})
+        ice.publish.assert_not_called()
 
     async def test_a_failed_run_publishes_nothing(self):
         # Publishing a failed run's output hands external readers a half-built
@@ -138,7 +159,7 @@ class IcebergPublishOnScheduleTest(unittest.IsolatedAsyncioTestCase):
         # The dbt run already succeeded and the models are in the lake. A stale
         # Iceberg copy is the next run's problem, not a reason to report the run
         # as broken - raising here would do exactly that.
-        with patch("app.services.scheduler.iceberg") as ice:
+        with patch("app.services.scheduler.iceberg") as ice, self._with_lake(self.LAKE):
             ice.publish.side_effect = RuntimeError("catalog unreachable")
             await RunScheduler._publish_iceberg(self.SCHEDULE, {"status": "success"})
 

@@ -49,16 +49,12 @@ class IcebergPublishTests(unittest.TestCase):
         # A SQLite catalog cannot create schemas, so the metadata lives in `main`
         # - the same thing tests/test_ingest_lakehouse.py does. Per-project
         # isolation is covered by test_projects_do_not_collide_in_one_catalog.
-        self._schema = patch.object(lakehouse, "metadata_schema", return_value="main")
-        self._schema.start()
-        self.addCleanup(self._schema.stop)
-
-        lakehouse.provision(
-            catalog=catalog,
+        self.lake = lakehouse.LakeRef(
+            catalog_url=catalog,
             data_path=str(lakehouse.data_dir(PROJECT_ID)),
-            metadata=lakehouse.metadata_schema(PROJECT_ID),
-            inline_row_limit=0,
+            metadata_schema="main",
         )
+        lakehouse.provision(self.lake, inline_row_limit=0)
         self.connection = self._lake_connection()
         self.addCleanup(self.connection.close)
         self.connection.execute("CREATE SCHEMA IF NOT EXISTS lake.marts")
@@ -70,8 +66,8 @@ class IcebergPublishTests(unittest.TestCase):
         for extension in lakehouse.DUCKDB_EXTENSIONS:
             connection.execute(f"LOAD {extension}")
         connection.execute(
-            f"ATTACH IF NOT EXISTS '{lakehouse.attach_string(lakehouse.catalog_url())}' "
-            f"AS lake (METADATA_SCHEMA '{lakehouse.metadata_schema(PROJECT_ID)}')"
+            f"ATTACH IF NOT EXISTS '{lakehouse.attach_string(self.lake.catalog_url)}' "
+            f"AS lake (METADATA_SCHEMA '{self.lake.metadata_schema}')"
         )
         return connection
 
@@ -88,7 +84,7 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "CREATE TABLE lake.marts.orders AS SELECT range AS id FROM range(1000)"
         )
-        first = iceberg.publish(PROJECT_ID, schema="marts")
+        first = iceberg.publish(PROJECT_ID, self.lake, schema="marts")
         self.assertTrue(first["published"]["orders"].startswith("full:"), first)
         after_first = self._copied_files()
         self.assertEqual(self._iceberg_rows(), 1000)
@@ -97,7 +93,7 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "INSERT INTO lake.marts.orders SELECT range FROM range(1000, 1500)"
         )
-        second = iceberg.publish(PROJECT_ID, schema="marts")
+        second = iceberg.publish(PROJECT_ID, self.lake, schema="marts")
 
         self.assertTrue(
             second["published"]["orders"].startswith("incremental: +"),
@@ -111,10 +107,10 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "CREATE TABLE lake.marts.orders AS SELECT range AS id FROM range(100)"
         )
-        iceberg.publish(PROJECT_ID, schema="marts")
+        iceberg.publish(PROJECT_ID, self.lake, schema="marts")
         before = self._copied_files()
 
-        again = iceberg.publish(PROJECT_ID, schema="marts")
+        again = iceberg.publish(PROJECT_ID, self.lake, schema="marts")
 
         self.assertEqual(again["published"]["orders"], "unchanged")
         self.assertEqual(before, self._copied_files())
@@ -126,13 +122,13 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "CREATE TABLE lake.marts.orders AS SELECT range AS id FROM range(1000)"
         )
-        iceberg.publish(PROJECT_ID, schema="marts")
+        iceberg.publish(PROJECT_ID, self.lake, schema="marts")
         self.connection.execute("DROP TABLE lake.marts.orders")
         self.connection.execute(
             "CREATE TABLE lake.marts.orders AS SELECT range AS id FROM range(42)"
         )
 
-        result = iceberg.publish(PROJECT_ID, schema="marts")
+        result = iceberg.publish(PROJECT_ID, self.lake, schema="marts")
 
         self.assertTrue(result["published"]["orders"].startswith("full:"), result)
         self.assertEqual(self._iceberg_rows(), 42)
@@ -148,7 +144,7 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "INSERT INTO lake.marts.orders SELECT range FROM range(500, 1000)"
         )
-        iceberg.publish(PROJECT_ID, schema="marts")
+        iceberg.publish(PROJECT_ID, self.lake, schema="marts")
         self.assertEqual(self._iceberg_rows(), 1000)
 
         self.connection.execute("CALL ducklake_merge_adjacent_files('lake')")
@@ -178,13 +174,13 @@ class IcebergPublishTests(unittest.TestCase):
         self.connection.execute(
             "CREATE TABLE lake.marts.orders__dbt_backup AS SELECT 1 AS id"
         )
-        result = iceberg.publish(PROJECT_ID, schema="marts")
+        result = iceberg.publish(PROJECT_ID, self.lake, schema="marts")
         self.assertEqual(list(result["published"]), ["orders"])
 
     def test_unknown_table_is_refused_rather_than_silently_skipped(self):
         self.connection.execute("CREATE TABLE lake.marts.orders AS SELECT 1 AS id")
         with self.assertRaises(iceberg.IcebergPublishError):
-            iceberg.publish(PROJECT_ID, schema="marts", tables=["nope"])
+            iceberg.publish(PROJECT_ID, self.lake, schema="marts", tables=["nope"])
 
     def test_projects_do_not_collide_in_one_catalog(self):
         other = "aaaaaaaa-0000-4000-8000-aaaaaaaaaaaa"
