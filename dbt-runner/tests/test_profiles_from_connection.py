@@ -184,3 +184,65 @@ async def test_a_lake_with_no_duckdb_target_is_refused(tmp_path, monkeypatch):
     with pytest.raises(DbtOperationError) as caught:
         await DbtService._regenerate_profiles_from_db(session, "pid", project_path)
     assert "none of its targets runs on DuckDB" in str(caught.value)
+
+
+def test_an_unusable_extra_target_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """One bad target must not cost the project its whole profile.
+
+    A lakehouse connection has no dbt adapter on purpose. Attaching one as a
+    target used to raise out of the whole regeneration, so profiles.yml was
+    never rewritten and froze at whatever it last held - a file that then
+    disagreed with the connections and that no amount of regenerating fixed.
+    """
+    import asyncio
+
+    from app.services.dbt_service import DbtService
+
+    async def value(result):
+        return result
+
+    project_path = tmp_path / "proj"
+    project_path.mkdir()
+    (project_path / "dbt_project.yml").write_text("name: proj\nprofile: proj\n")
+
+    async def fake_render(_session, *, target_name, **_kwargs):
+        if target_name == "broken":
+            raise ValueError("A lakehouse is not a warehouse.")
+        return {
+            "output": {"type": "duckdb", "path": ":memory:", "threads": 1},
+            "env": {},
+            "conn_type": "duckdb",
+            "release_duckdb_file": False,
+        }
+
+    class _ProjectRowSession:
+        """Just enough session for the project row the regeneration reads."""
+
+        async def execute(self, *_args, **_kwargs):
+            class _Result:
+                def mappings(self):
+                    class _First:
+                        def first(self):
+                            return {"connection_id": "c1", "dremio_source_id": None}
+
+                    return _First()
+
+            return _Result()
+
+    monkeypatch.setattr(DbtService, "_render_target", staticmethod(fake_render))
+    monkeypatch.setattr(
+        DbtService,
+        "_load_project_targets",
+        staticmethod(lambda *_a: value([{"name": "broken", "connection_id": "c2"}])),
+    )
+    monkeypatch.setattr(
+        DbtService, "_resolve_lakehouse", staticmethod(lambda *_a: value(None))
+    )
+
+    asyncio.run(
+        DbtService()._regenerate_profiles_from_db(_ProjectRowSession(), "p1", project_path)
+    )
+
+    written = yaml.safe_load((project_path / "profiles.yml").read_text())
+    assert set(written["proj"]["outputs"]) == {"dev"}
+    assert written["proj"]["target"] == "dev"

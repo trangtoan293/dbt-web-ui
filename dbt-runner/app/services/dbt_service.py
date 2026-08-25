@@ -507,6 +507,63 @@ class DbtService:
         ]
 
     @staticmethod
+    async def _render_target(
+        session: AsyncSession,
+        *,
+        project_id: str,
+        profile_name: str,
+        target_name: str,
+        connection_id: Optional[str],
+        dremio_source_id: Optional[str],
+        lake: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """One profiles.yml output, its env, and whether it holds a DuckDB file."""
+        import yaml as _yaml
+
+        secret_env = DbtService.target_secret_env(target_name)
+        conn_type, adapter_config, target_env = await DbtService._build_target_config(
+            session,
+            connection_id=connection_id,
+            dremio_source_id=dremio_source_id,
+            secret_env=secret_env,
+        )
+        env = dict(target_env)
+        env.update(DbtService._apply_lakehouse_attach(lake, conn_type, adapter_config))
+        DbtService._apply_duckdb_resources(project_id, conn_type, adapter_config)
+
+        try:
+            adapter = _load_connection_adapter_factory()(conn_type, adapter_config)
+            rendered = _yaml.safe_load(
+                adapter.generate_profiles_yml(profile_name, target_name)
+            )
+        except Exception as exc:
+            raise DbtOperationError(
+                "profile setup",
+                f"could not render target '{target_name}' for the "
+                f"{conn_type} connection: {exc}",
+            ) from exc
+
+        # Adapters own their own YAML, so read the output back out of it rather
+        # than assuming the key they used.
+        rendered_outputs = ((rendered or {}).get(profile_name) or {}).get("outputs") or {}
+        output = rendered_outputs.get(target_name) or next(
+            iter(rendered_outputs.values()), None
+        )
+        if output is None:
+            raise DbtOperationError(
+                "profile setup",
+                f"the {conn_type} adapter produced no output for target '{target_name}'",
+            )
+
+        return {
+            "output": output,
+            "env": env,
+            "conn_type": conn_type,
+            "release_duckdb_file": conn_type == "duckdb"
+            and (adapter_config.get("path") or "") not in ("", ":memory:"),
+        }
+
+    @staticmethod
     async def _build_target_config(
         session: AsyncSession,
         *,
@@ -585,7 +642,6 @@ class DbtService:
         warehouse.
         """
         import yaml as _yaml
-        get_adapter = _load_connection_adapter_factory()
 
         try:
             result = await session.execute(
@@ -638,57 +694,41 @@ class DbtService:
             default_target: Optional[str] = None
             release_duckdb_file = False
             conn_types: List[str] = []
+            # Targets that could not be rendered, and why. Reported rather than
+            # raised: before this, one unusable target meant no profile at all,
+            # so profiles.yml froze at whatever it last held and no amount of
+            # regenerating could fix the disagreement with the connections.
+            skipped: Dict[str, str] = {}
 
             for target_name, target_connection_id, target_dremio_id in specs:
-                secret_env = DbtService.target_secret_env(target_name)
-                conn_type, adapter_config, target_env = (
-                    await DbtService._build_target_config(
+                try:
+                    rendered = await DbtService._render_target(
                         session,
+                        project_id=project_id,
+                        profile_name=profile_name,
+                        target_name=target_name,
                         connection_id=target_connection_id,
                         dremio_source_id=target_dremio_id,
-                        secret_env=secret_env,
-                    )
-                )
-                dbt_env.update(target_env)
-                dbt_env.update(
-                    DbtService._apply_lakehouse_attach(lake, conn_type, adapter_config)
-                )
-                DbtService._apply_duckdb_resources(
-                    project_id, conn_type, adapter_config
-                )
-                if conn_type == "duckdb" and (
-                    adapter_config.get("path") or ""
-                ) not in ("", ":memory:"):
-                    release_duckdb_file = True
-
-                try:
-                    adapter = get_adapter(conn_type, adapter_config)
-                    rendered = _yaml.safe_load(
-                        adapter.generate_profiles_yml(profile_name, target_name)
+                        lake=lake,
                     )
                 except Exception as exc:
-                    raise DbtOperationError(
-                        "profile setup",
-                        f"could not render target '{target_name}' for the "
-                        f"{conn_type} connection: {exc}",
-                    ) from exc
-
-                # Adapters own their own YAML, so read the output back out of it
-                # rather than assuming the key they used.
-                rendered_outputs = (
-                    ((rendered or {}).get(profile_name) or {}).get("outputs") or {}
-                )
-                output = rendered_outputs.get(target_name) or next(
-                    iter(rendered_outputs.values()), None
-                )
-                if output is None:
-                    raise DbtOperationError(
-                        "profile setup",
-                        f"the {conn_type} adapter produced no output for target "
-                        f"'{target_name}'",
+                    # `dev` is the project's own connection and the file's
+                    # default target: a profile written without it would run
+                    # somewhere else without saying so. Any other target is one
+                    # row in a list, and skipping it costs that target only.
+                    if target_name == DEFAULT_TARGET_NAME:
+                        raise
+                    skipped[target_name] = str(exc)
+                    logger.warning(
+                        "Skipping target '%s' of project %s: %s", target_name, project_id, exc
                     )
-                outputs[target_name] = output
-                conn_types.append(conn_type)
+                    continue
+
+                outputs[target_name] = rendered["output"]
+                dbt_env.update(rendered["env"])
+                conn_types.append(rendered["conn_type"])
+                if rendered["release_duckdb_file"]:
+                    release_duckdb_file = True
                 if default_target is None:
                     default_target = target_name
 

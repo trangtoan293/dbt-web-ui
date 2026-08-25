@@ -109,9 +109,14 @@ export default function TargetsPanel({
     load()
   }, [load])
 
-  // A legacy dremio_sources row can back the project's own connection but is
-  // not a connections row, so it cannot back an extra target.
-  const targetConnections = connections.filter((row) => row.sourceTable !== "dremio_source")
+  // A target is a warehouse dbt connects to. A lakehouse is not one - it is a
+  // DuckLake catalog a DuckDB target attaches - and a legacy dremio_sources row
+  // is not a connections row, so neither can back a target. Offering them made
+  // a target that silently vanished from profiles.yml, leaving `dbt --target x`
+  // to report a target the UI still listed.
+  const targetConnections = connections.filter(
+    (row) => row.sourceTable !== "dremio_source" && row.type !== "ducklake",
+  )
 
   async function addTarget() {
     setBusy(true)
@@ -184,11 +189,13 @@ export default function TargetsPanel({
             className="h-8 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 text-xs disabled:opacity-50"
           >
             <option value="">None — dbt commands will not run</option>
-            {connections.map((connection) => (
-              <option key={connection.id} value={connection.id}>
-                {connection.name} ({connection.type})
-              </option>
-            ))}
+            {connections
+              .filter((connection) => connection.type !== "ducklake")
+              .map((connection) => (
+                <option key={connection.id} value={connection.id}>
+                  {connection.name} ({connection.type})
+                </option>
+              ))}
           </select>
           <CheckButton name="dev" />
         </div>
@@ -260,7 +267,8 @@ export default function TargetsPanel({
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-500">
-          A check opens a real connection to that target&apos;s warehouse.
+          A check opens a real connection to that target&apos;s warehouse. A lakehouse is not one:
+          attach it to a DuckDB target instead.
         </p>
         <ConnectionCheckDialog projectId={projectId} compact />
       </div>

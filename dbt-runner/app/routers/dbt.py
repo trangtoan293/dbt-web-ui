@@ -472,7 +472,29 @@ async def regenerate_profiles(
         ),
         {"pid": project_id},
     )
-    return {"success": True, "regenerated": bool(has_connection.scalar())}
+    # A target the profile could not render is skipped rather than fatal, so say
+    # which: "regenerated: true" while a target is missing from the file is how
+    # `dbt --target x` comes to report a target the UI still lists.
+    configured = await session.execute(
+        text(
+            "SELECT name FROM project_targets WHERE project_id = CAST(:pid AS uuid)"
+        ),
+        {"pid": project_id},
+    )
+    written: set[str] = set()
+    try:
+        profile = _yaml.safe_load((project_path / "profiles.yml").read_text()) or {}
+        written = set(next(iter(profile.values()), {}).get("outputs") or {})
+    except Exception:  # a missing or hand-edited file is not this call's problem
+        pass
+    missing = sorted({row[0] for row in configured} - written) if written else []
+
+    return {
+        "success": True,
+        "regenerated": bool(has_connection.scalar()),
+        "targets_written": sorted(written),
+        "targets_skipped": missing,
+    }
 
 
 @router.post("/format")
