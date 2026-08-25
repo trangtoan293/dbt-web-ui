@@ -267,8 +267,8 @@ export default function TargetsPanel({
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-500">
-          A check opens a real connection to that target&apos;s warehouse. A lakehouse is not one:
-          attach it to a DuckDB target instead.
+          A check opens a real connection to that target&apos;s warehouse. A lakehouse is not one -
+          it is attached to a target on the Lakehouse tab.
         </p>
         <ConnectionCheckDialog projectId={projectId} compact />
       </div>

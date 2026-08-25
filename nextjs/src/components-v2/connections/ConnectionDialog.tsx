@@ -546,18 +546,29 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
             </div>
           ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
-            <Field label="Connection Type">
-              <select
-                value={type}
-                onChange={(e) => handleTypeChange(e.target.value as ConnectionType)}
-                className={SELECT_CLS}
-                disabled={isEdit}
-              >
-                {(["postgresql", "duckdb", "dremio", "oracle", "spark"] as ConnectionType[]).map((t) => (
-                  <option key={t} value={t}>{TYPE_LABELS[t]}</option>
-                ))}
-              </select>
-            </Field>
+            {/* The type is already chosen - by the cards when creating, by the
+                row when editing. As a select it was disabled half the time and
+                wrong the other half: its options never included Lakehouse, so
+                editing one displayed "PostgreSQL". */}
+            <div className="flex items-center justify-between rounded-md bg-[#FAFAFA] px-3 py-2">
+              <span className="text-sm text-gray-700">
+                {TYPE_LABELS[type]}
+                {type === "ducklake" && (
+                  <span className="ml-2 text-xs text-gray-500">
+                    a catalog a project attaches, not a warehouse it runs on
+                  </span>
+                )}
+              </span>
+              {!isEdit && (
+                <button
+                  type="button"
+                  onClick={() => setTypeSelected(false)}
+                  className="text-xs font-medium text-[#0078D4] underline"
+                >
+                  Change type
+                </button>
+              )}
+            </div>
 
             <Field label="Name" required>
               <Input value={form.name} onChange={setF("name")} placeholder={`My ${TYPE_LABELS[type]}`} required />
