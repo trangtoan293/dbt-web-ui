@@ -32,8 +32,10 @@ interface ProjectSettingsDialogProps {
   connections: Connection[]
   busy: boolean
   onSelectConnection: (connectionId: string) => void
+  /** The target every dbt command runs against, chosen in the Environments list. */
+  dbtTarget: string
+  onSelectTarget: (target: string) => void
   onRename: (name: string) => void
-  onTargetsChanged: () => void
   environmentVariables: DbtEnvironmentVariable[]
   onEnvironmentVariablesChange: (next: DbtEnvironmentVariable[]) => void
   onSaveEnvironmentVariables: () => void
@@ -77,10 +79,11 @@ export default function ProjectSettingsDialog({
   project,
   worktreeLabel,
   connections,
+  dbtTarget,
+  onSelectTarget,
   busy,
   onSelectConnection,
   onRename,
-  onTargetsChanged,
   environmentVariables,
   onEnvironmentVariablesChange,
   onSaveEnvironmentVariables,
@@ -206,7 +209,8 @@ export default function ProjectSettingsDialog({
                 activeConnectionId={activeConnectionId}
                 onSelectConnection={onSelectConnection}
                 disabled={busy || Boolean(project.deleted_at)}
-                onChanged={onTargetsChanged}
+                activeTarget={dbtTarget}
+                onSelectActiveTarget={onSelectTarget}
               />
             )}
 
@@ -215,7 +219,6 @@ export default function ProjectSettingsDialog({
                 projectId={project.id}
                 connections={connections}
                 disabled={busy || Boolean(project.deleted_at)}
-                onChanged={onTargetsChanged}
               />
             )}
 

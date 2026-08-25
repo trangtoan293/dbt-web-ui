@@ -10,3 +10,6 @@ export interface DbtEnvironmentVariable {
 }
 
 export type ProjectSettingsTab = "general" | "environments" | "lakehouse" | "variables" | "danger"
+
+/** The project's own connection, always present, never a project_targets row. */
+export const DEFAULT_DBT_TARGET = "dev"

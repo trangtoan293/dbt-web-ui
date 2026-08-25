@@ -14,7 +14,6 @@ interface Props {
   projectId: string
   connections: Connection[]
   disabled?: boolean
-  onChanged?: () => void
 }
 
 const SELECT_CLS =
@@ -24,7 +23,6 @@ export default function LakehousePanel({
   projectId,
   connections,
   disabled,
-  onChanged,
 }: Props): React.ReactElement {
   const [state, setState] = useState<ProjectLakehouse | null>(null)
   const [saving, setSaving] = useState(false)
@@ -47,14 +45,13 @@ export default function LakehousePanel({
       try {
         await setProjectLakehouse(projectId, patch)
         load()
-        onChanged?.()
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not save")
       } finally {
         setSaving(false)
       }
     },
-    [projectId, load, onChanged],
+    [projectId, load],
   )
 
   if (!state) {

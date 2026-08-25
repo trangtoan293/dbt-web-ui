@@ -13,6 +13,7 @@ import {
   GitBranch,
   History,
   KeyRound,
+  Layers,
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
@@ -60,7 +61,7 @@ import {
 } from "@/components-v2/ui/dropdown-menu";
 import ProjectSettingsDialog from "@/components-v2/develop/settings/ProjectSettingsDialog";
 import type { DbtEnvironmentVariable, ProjectSettingsTab } from "@/components-v2/develop/settings/types";
-import TargetSelector, { DEFAULT_DBT_TARGET } from "@/components-v2/develop/TargetSelector";
+import { DEFAULT_DBT_TARGET } from "@/components-v2/develop/settings/types";
 import { useTopBar } from "@/components-v2/layout/TopBarContext";
 import type { Connection } from "@/components-v2/develop/types";
 
@@ -289,9 +290,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   const [createFileTrigger] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<ProjectSettingsTab>("general");
-  // Bumped when the settings dialog adds or removes a target, so the toolbar
-  // selector does not keep offering one that no longer exists.
-  const [targetsVersion, setTargetsVersion] = useState(0);
   const worktreeLabel = project?.git_project_subdirectory?.trim() || "Repository root";
   const openSettings = useCallback((tab: ProjectSettingsTab = "general") => {
     setSettingsTab(tab);
@@ -504,22 +502,26 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           {project.deleted_at ? <RotateCcw className="h-4 w-4" /> : <Edit className="h-4 w-4" />}
         </button>
 
-        {!project.deleted_at && (
-          <div className="hidden shrink-0 md:flex">
-            <TargetSelector
-              projectId={project.id}
-              value={dbtTarget}
-              onChange={setDbtTarget}
-              onManage={() => openSettings("environments")}
-              reloadKey={targetsVersion}
-            />
-          </div>
+        {/* Not a control: the target is chosen in Project settings, beside the
+            connection it belongs to. This only appears when commands are NOT
+            going to the project's own connection, because that is the case
+            worth seeing without opening anything. */}
+        {!project.deleted_at && dbtTarget !== DEFAULT_DBT_TARGET && (
+          <button
+            type="button"
+            onClick={() => openSettings("environments")}
+            title="Every dbt command in this project runs against this target. Click to change it."
+            className="hidden shrink-0 items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-900 md:flex"
+          >
+            <Layers className="h-3.5 w-3.5" />
+            {dbtTarget}
+          </button>
         )}
       </div>
     );
 
     return () => setTopBarContent(null);
-  }, [dbtTarget, gitStatus.changes.length, gitStatus.clean, openSettings, project, setTopBarContent, targetsVersion, worktreeLabel]);
+  }, [dbtTarget, gitStatus.changes.length, gitStatus.clean, openSettings, project, setTopBarContent, worktreeLabel]);
 
   useEffect(() => {
     if (!userId || restoredForUserRef.current === userId) return;
@@ -2132,8 +2134,9 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
         connections={connections}
         busy={operationLoading}
         onSelectConnection={updateProjectConnection}
+        dbtTarget={dbtTarget}
+        onSelectTarget={setDbtTarget}
         onRename={handleRenameProject}
-        onTargetsChanged={() => setTargetsVersion((version) => version + 1)}
         environmentVariables={environmentVariables}
         onEnvironmentVariablesChange={setEnvironmentVariables}
         onSaveEnvironmentVariables={handleSaveEnvironmentVariables}

@@ -12,6 +12,7 @@ import {
   type ProjectTargetRow,
 } from "@/lib/api-client"
 import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog"
+import { DEFAULT_DBT_TARGET } from "./types"
 import { apiClient } from "@/lib/api/client"
 import type { Connection } from "@/components-v2/develop/types"
 
@@ -24,8 +25,9 @@ interface TargetsPanelProps {
   /** Attaches a connection to the project, i.e. redefines `dev`. */
   onSelectConnection: (connectionId: string) => void
   disabled?: boolean
-  /** Called after a target is added or removed, so the toolbar selector reloads. */
-  onChanged?: () => void
+  /** The target every dbt command in this project runs against. */
+  activeTarget: string
+  onSelectActiveTarget: (target: string) => void
 }
 
 /**
@@ -43,7 +45,8 @@ export default function TargetsPanel({
   activeConnectionId,
   onSelectConnection,
   disabled = false,
-  onChanged,
+  activeTarget,
+  onSelectActiveTarget,
 }: TargetsPanelProps): React.ReactElement {
   const [targets, setTargets] = useState<ProjectTargetRow[]>([])
   const [name, setName] = useState("")
@@ -109,6 +112,15 @@ export default function TargetsPanel({
     load()
   }, [load])
 
+  // Removing the selected target would otherwise leave every command carrying a
+  // --target dbt rejects.
+  useEffect(() => {
+    if (activeTarget === DEFAULT_DBT_TARGET) return
+    if (!targets.some((target) => target.name === activeTarget)) {
+      onSelectActiveTarget(DEFAULT_DBT_TARGET)
+    }
+  }, [activeTarget, onSelectActiveTarget, targets])
+
   // A target is a warehouse dbt connects to. A lakehouse is not one - it is a
   // DuckLake catalog a DuckDB target attaches - and a legacy dremio_sources row
   // is not a connections row, so neither can back a target. Offering them made
@@ -126,7 +138,6 @@ export default function TargetsPanel({
       setName("")
       setConnectionId("")
       await load()
-      onChanged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add target")
     } finally {
@@ -147,7 +158,6 @@ export default function TargetsPanel({
         connectionId: nextConnectionId,
       })
       await load()
-      onChanged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update target")
     } finally {
@@ -161,7 +171,6 @@ export default function TargetsPanel({
     try {
       await deleteProjectTarget(id)
       await load()
-      onChanged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove target")
     } finally {
@@ -172,14 +181,22 @@ export default function TargetsPanel({
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-500">
-        Each target is one profiles.yml output, and the toolbar picks which one every dbt command
-        runs against. <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">dev</code> is this
+        Each target is one profiles.yml output. The selected one is what every dbt command in this
+        project runs against. <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">dev</code> is this
         project&apos;s own connection; add more to run the same models against a second warehouse
         without a second project.
       </p>
 
       <div className="rounded-md border border-gray-200">
         <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+          <input
+            type="radio"
+            name="active-target"
+            aria-label="Run dbt against dev"
+            checked={activeTarget === DEFAULT_DBT_TARGET}
+            onChange={() => onSelectActiveTarget(DEFAULT_DBT_TARGET)}
+            disabled={disabled}
+          />
           <span className="font-mono text-xs text-gray-900">dev</span>
           <select
             aria-label="Connection for target dev"
@@ -204,6 +221,14 @@ export default function TargetsPanel({
             key={target.id}
             className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-2 text-sm"
           >
+            <input
+              type="radio"
+              name="active-target"
+              aria-label={`Run dbt against ${target.name}`}
+              checked={activeTarget === target.name}
+              onChange={() => onSelectActiveTarget(target.name)}
+              disabled={disabled}
+            />
             <span className="font-mono text-xs text-gray-900">{target.name}</span>
             <select
               aria-label={`Connection for target ${target.name}`}
