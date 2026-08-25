@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useState } from "react"
-import { CheckCircle2, Loader2, Plus, Trash2, XCircle } from "lucide-react"
+import { CheckCircle2, Loader2, Plus, ShieldCheck, Trash2, XCircle } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
 import {
@@ -12,6 +12,7 @@ import {
   type ProjectTargetRow,
 } from "@/lib/api-client"
 import ConnectionCheckDialog from "@/components-v2/develop/ConnectionCheckDialog"
+import { apiClient } from "@/lib/api/client"
 import type { Connection } from "@/components-v2/develop/types"
 
 interface TargetsPanelProps {
@@ -49,18 +50,50 @@ export default function TargetsPanel({
   const [connectionId, setConnectionId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Filled by the Check button: one live result per target, keyed by name.
+  // One live result per target, keyed by name, filled by that row's own check.
   const [reachable, setReachable] = useState<Record<string, { ok: boolean; message?: string | null }>>({})
+  const [checking, setChecking] = useState<string | null>(null)
 
-  /** A dot beside a target, once it has been checked. */
-  function Status({ name }: { name: string }): React.ReactElement | null {
+  /**
+   * Reach one target's warehouse.
+   *
+   * Per row rather than one button for the list: a check costs a real
+   * connection attempt, and a warehouse that is down takes its timeout to say
+   * so - which is a slow, unreadable button when it answers for every target
+   * at once.
+   */
+  async function checkTarget(name: string) {
+    setChecking(name)
+    try {
+      const result = await apiClient.get<{ ok: boolean; message?: string | null }>(
+        `/dbt/check-target/${projectId}?target=${encodeURIComponent(name)}`,
+      )
+      setReachable((current) => ({ ...current, [name]: { ok: result.ok, message: result.message } }))
+    } catch (err) {
+      setReachable((current) => ({
+        ...current,
+        [name]: { ok: false, message: err instanceof Error ? err.message : "Check failed" },
+      }))
+    } finally {
+      setChecking(null)
+    }
+  }
+
+  /** This row's check button, which becomes its result. */
+  function CheckButton({ name }: { name: string }): React.ReactElement {
     const status = reachable[name]
-    if (!status) return null
-    const Icon = status.ok ? CheckCircle2 : XCircle
+    const Icon = checking === name ? Loader2 : status ? (status.ok ? CheckCircle2 : XCircle) : ShieldCheck
+    const tone = !status ? "text-gray-400 hover:text-[#0078D4]" : status.ok ? "text-green-600" : "text-red-600"
     return (
-      <span title={status.message ?? (status.ok ? "Reachable" : "Unreachable")}>
-        <Icon className={`h-3.5 w-3.5 shrink-0 ${status.ok ? "text-green-600" : "text-red-600"}`} />
-      </span>
+      <button
+        type="button"
+        onClick={() => checkTarget(name)}
+        disabled={checking !== null}
+        title={status?.message ?? `Reach the warehouse behind ${name}`}
+        className={`shrink-0 disabled:opacity-50 ${tone}`}
+      >
+        <Icon className={`h-4 w-4 ${checking === name ? "animate-spin" : ""}`} />
+      </button>
     )
   }
 
@@ -143,7 +176,6 @@ export default function TargetsPanel({
       <div className="rounded-md border border-gray-200">
         <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
           <span className="font-mono text-xs text-gray-900">dev</span>
-          <Status name="dev" />
           <select
             aria-label="Connection for target dev"
             value={activeConnectionId}
@@ -158,20 +190,7 @@ export default function TargetsPanel({
               </option>
             ))}
           </select>
-          <ConnectionCheckDialog
-            projectId={projectId}
-            compact
-            onResult={(result) =>
-              setReachable(
-                Object.fromEntries(
-                  (result.targets ?? []).map((target) => [
-                    target.name,
-                    { ok: target.ok, message: target.message },
-                  ]),
-                ),
-              )
-            }
-          />
+          <CheckButton name="dev" />
         </div>
         {targets.map((target) => (
           <div
@@ -179,7 +198,6 @@ export default function TargetsPanel({
             className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-2 text-sm"
           >
             <span className="font-mono text-xs text-gray-900">{target.name}</span>
-            <Status name={target.name} />
             <select
               aria-label={`Connection for target ${target.name}`}
               value={target.connectionId}
@@ -200,6 +218,7 @@ export default function TargetsPanel({
                 </option>
               ))}
             </select>
+            <CheckButton name={target.name} />
             <button
               type="button"
               disabled={busy}
@@ -237,6 +256,13 @@ export default function TargetsPanel({
         <Button size="sm" onClick={addTarget} disabled={busy || !name.trim() || !connectionId}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
         </Button>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500">
+          A check opens a real connection to that target&apos;s warehouse.
+        </p>
+        <ConnectionCheckDialog projectId={projectId} compact />
       </div>
 
       {connections.length === 0 && (

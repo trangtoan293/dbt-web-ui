@@ -22,12 +22,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-import httpx
-
 from app.authz import authorize_project
 from app.config import settings
 from app.harness import HarnessError, verify_composition
-from app.harness_ui import provision_credential
 from app.model_config import ModelConfig
 from app.registry import SessionsFull, registry
 from app.sessions import list_sessions, read_history
@@ -64,21 +61,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    async def _harness_ui_url() -> str | None:
-        """The harness's own UI, but only when something is actually serving it.
-
-        It runs behind a compose profile, so the usual state is "not started".
-        Offering a link to a dead port is worse than offering none.
-        """
-        if not settings.web_url or not settings.web_probe_url:
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(settings.web_probe_url)
-        except httpx.HTTPError:
-            return None
-        return settings.web_url if response.status_code < 500 else None
-
     @app.get("/health")
     async def health() -> dict:
         return {
@@ -88,8 +70,6 @@ def create_app() -> FastAPI:
             # Whether THIS DEPLOYMENT has a shared fallback key. A user's own
             # key arrives per request, so the UI asks the frontend about that.
             "model_configured": settings.model_credential_present(),
-            # A link the panel offers when the harness's own UI is up.
-            "web_url": await _harness_ui_url(),
         }
 
     @app.post("/agent/{project_id}/prompt")
@@ -119,11 +99,6 @@ def create_app() -> FastAPI:
         # The shim calls dbt-runner as this user, so it gets this request's token
         # and no ambient credential of its own.
         session.write_token(authorization)
-        # The harness's own UI resolves providers and credentials from its own
-        # documents; hand it the same ones so a single-user deployment configures
-        # them once. Refused when OIDC is on - that surface is unauthenticated
-        # and shared.
-        provision_credential(model_config)
 
         async def events():
             yield _sse({"type": "session", "session_id": session_id})

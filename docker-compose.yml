@@ -243,17 +243,6 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
       AGENT_CORS_ORIGINS: ${AGENT_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-      # Optional link to the harness's own richer UI, shown in the panel header.
-      # There is no container for it on purpose: `dsh web` refuses to bind
-      # 0.0.0.0 because that would publish remote code execution to the network.
-      # Run `npx @deepseek-ai/dsh web` where loopback is the right boundary and
-      # point this at it.
-      AGENT_WEB_URL: ${AGENT_WEB_URL-http://localhost:${AGENT_WEB_PORT:-3082}}
-      AGENT_WEB_PROBE_URL: ${AGENT_WEB_PROBE_URL-http://dsh-web:3080}
-      # Where that UI keeps its credential store, on the shared volume: a user
-      # who entered a key in Settings should not enter it again there. Only
-      # honoured with AUTH_DISABLED - see dsh-agent/app/harness_ui.py.
-      AGENT_WEB_HOME: /data/storage/agent/dsh-web-home
       AUTH_DISABLED: ${AUTH_DISABLED:-false}
     ports:
       - "127.0.0.1:${AGENT_PORT:-8090}:8090"
@@ -271,49 +260,6 @@ services:
     # shared box the container can starve dbt-runner, whose DuckDB share is
     # derived from ITS cgroup limit and cannot see this one.
     mem_limit: ${AGENT_MEM_LIMIT:-0}
-    networks: [dbt-craft-network]
-
-  # The harness's own web UI: the full DeepSeek Harness surface (session list,
-  # plan mode, permission prompts, its own settings) over the same project
-  # files. Optional, and OFF by default:
-  #
-  #   docker compose --profile dsh-web up -d dsh-web
-  #
-  # It has NO AUTHENTICATION of its own and can run code in every project on the
-  # volume, which is why `dsh web` refuses to bind 0.0.0.0 upstream. The port is
-  # published on loopback only; reach it from elsewhere through an SSH tunnel,
-  # never by publishing it. socat bridges the container's own loopback because
-  # docker cannot publish a loopback-bound port.
-  dsh-web:
-    profiles: [dsh-web]
-    build:
-      context: ./dsh-agent
-      dockerfile: Dockerfile
-    container_name: dbt-craft-agent-web
-    restart: unless-stopped
-    working_dir: /workspace/dbt-projects
-    command:
-      - sh
-      - -c
-      - >-
-        dsh web --port 3081 --no-open &
-        exec socat TCP-LISTEN:3080,fork,reuseaddr TCP:127.0.0.1:3081
-    environment:
-      # On the shared volume so dsh-agent can hand it the providers and keys the
-      # user already configured in Settings (single-user deployments only).
-      DSH_HOME: /data/storage/agent/dsh-web-home
-      # Deliberately NO DEEPSEEK_* here. The harness ranks the inherited
-      # environment above its own credential file, and compose writes an empty
-      # string for an unset variable - which would outrank the file and read as
-      # "configured with nothing", leaving this UI asking for a key it has.
-    ports:
-      # 3082, not 3080: a `dsh web` run by hand on the machine takes 3080, and
-      # that one sees the developer's own directories rather than the project
-      # volume this container mounts.
-      - "127.0.0.1:${AGENT_WEB_PORT:-3082}:3080"
-    volumes:
-      - dbt-projects:/workspace/dbt-projects
-      - storage-data:/data/storage
     networks: [dbt-craft-network]
 
   frontend:

@@ -6,7 +6,7 @@ import { Button } from "@/components-v2/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components-v2/ui/dialog"
 import { apiClient } from "@/lib/api/client"
 
-export interface CheckResult {
+interface CheckResult {
   all_conditions_met: boolean
   condition_1_has_connection: boolean
   condition_2_profile_names_match: boolean
@@ -28,11 +28,9 @@ interface Props {
   projectId: string
   /** Icon only, for a row that already has its own labels. */
   compact?: boolean
-  /** Handed the per-target results so a caller can show them inline. */
-  onResult?: (result: CheckResult) => void
 }
 
-export default function ConnectionCheckDialog({ projectId, compact = false, onResult }: Props) {
+export default function ConnectionCheckDialog({ projectId, compact = false }: Props) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CheckResult | null>(null)
@@ -45,7 +43,6 @@ export default function ConnectionCheckDialog({ projectId, compact = false, onRe
     try {
       const data = await apiClient.get<CheckResult>(`/dbt/check-connection/${projectId}`)
       setResult(data)
-      onResult?.(data)
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "Request failed")
     } finally {

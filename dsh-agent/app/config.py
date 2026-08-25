@@ -54,24 +54,6 @@ class Settings:
     # works without dbt tools, and refusing the prompt would be worse.
     mcp_ready_timeout = _int("AGENT_MCP_READY_TIMEOUT", 30)
 
-    # The harness's own web UI, if the operator runs one, so the panel can offer
-    # a link to it. Deliberately not a service in this compose file: `dsh web`
-    # refuses --host 0.0.0.0 ("it would expose remote code execution to the
-    # network"), and forwarding around that refusal would defeat its point. Run
-    # it where loopback is the right boundary - a workstation - and put its URL
-    # here.
-    web_url = os.environ.get("AGENT_WEB_URL", "").strip()
-    # The address to test before offering that link. It differs from web_url:
-    # the browser reaches the harness UI on a published loopback port, while this
-    # service reaches the same container over the compose network.
-    web_probe_url = os.environ.get("AGENT_WEB_PROBE_URL", "http://dsh-web:3080").strip()
-    # The harness UI's own home, on the shared volume, so this service can hand
-    # it the caller's key instead of making a person enter it twice.
-    web_home = Path(os.environ.get("AGENT_WEB_HOME", "")) if os.environ.get("AGENT_WEB_HOME") else None
-    # Single local user. The harness UI has no authentication of its own, so
-    # sharing one user's key with it is only safe when there is one user.
-    auth_disabled = os.environ.get("AUTH_DISABLED", "").strip().lower() == "true"
-
     cors_origins = [
         origin.strip()
         for origin in os.environ.get(

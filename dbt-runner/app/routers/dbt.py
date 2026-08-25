@@ -710,7 +710,9 @@ def _lake_references(project_path: Path) -> List[str]:
     return hits
 
 
-async def _check_targets(session: AsyncSession, project_id: str) -> List[Dict[str, Any]]:
+async def _check_targets(
+    session: AsyncSession, project_id: str, only: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Reach every target's warehouse, concurrently, and report each one.
 
     Checking only the project's own connection answered for `dev` and left every
@@ -753,8 +755,33 @@ async def _check_targets(session: AsyncSession, project_id: str) -> List[Dict[st
         except Exception as exc:
             return {**report, "ok": False, "message": str(exc)}
 
-    checks = [check(dict(row)) for row in rows.mappings()]
+    checks = [
+        check(dict(row))
+        for row in rows.mappings()
+        if only is None or row["name"] == only
+    ]
     return list(await asyncio.gather(*checks)) if checks else []
+
+
+@router.get("/check-target/{project_id}")
+async def check_target(
+    project_id: str,
+    target: str = Query(..., description="Target name to reach, e.g. dev or prod"),
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Reach one target's warehouse.
+
+    Separate from check-connection because that endpoint also reads the project
+    files and renders a profile preview: too much work to hang off a button that
+    answers one row.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    await _verify_project_ownership(session, project_id, user_id)
+    results = await _check_targets(session, project_id, only=target)
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No target named '{target}'")
+    return results[0]
 
 
 @router.get("/check-connection/{project_id}")

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import {
-  Bot, Check, ChevronDown, ExternalLink, FileCode, ListChecks, MessageSquarePlus,
+  Bot, Check, ChevronDown, FileCode, ListChecks, MessageSquarePlus,
   Send, Square, X,
 } from "lucide-react"
 import {
@@ -115,7 +115,6 @@ export default function AgentPanel({
 
   // A model credential is the one thing the service cannot provide itself.
   const needsCredential = userKeySet === false && health?.model_configured === false
-  const harnessUrl = health?.web_url
   const current = sessions.find((item) => item.session_id === sessionId)
 
   const submit = () => {
@@ -144,17 +143,6 @@ export default function AgentPanel({
             >
               <MessageSquarePlus className="h-4 w-4" />
             </button>
-            {harnessUrl && (
-              <a
-                href={harnessUrl}
-                target="_blank"
-                rel="noreferrer"
-                title="Open the harness's own UI: permission prompts, plan mode, its own settings"
-                className="rounded p-1 text-gray-400 hover:bg-[#F3F2F1] hover:text-[#0078D4]"
-              >
-                <ExternalLink className="h-4 w-4" />
-              </a>
-            )}
             <button
               type="button"
               onClick={onClose}
