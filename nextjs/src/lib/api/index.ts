@@ -16,7 +16,6 @@
 
 export { apiClient, ApiClient, getDbtRunnerUrl, type ApiResponse, type ApiError } from './client';
 export { dbtApi } from './dbt';
-export { profilesApi, type ProfilesGenerateRequest, type ProfilesGenerateResponse } from './profiles';
 export { connectionApi, type ConnectionTestRequest, type ConnectionTestResponse } from './connection';
 export { filesApi } from './files';
 export { gitApi } from './git';
