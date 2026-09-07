@@ -23,7 +23,7 @@ dependencies = [
     "pydantic-settings>=2.12.0",
     "python-multipart>=0.0.21",
     "dbt-core==1.10.16",
-    "dbt-dremio==1.10.0",
+    "dbt-dremio==1.10.1",
     "dbt-postgres==1.10.0",
     "dbt-duckdb==1.10.0",
     "dbt-oracle==1.10.0",
