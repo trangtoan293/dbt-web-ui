@@ -89,8 +89,8 @@ export default function SettingsPage(): React.ReactElement {
   }, [])
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-6">
-      <PageHeader title="Settings" description="Your account, and how this deployment is configured" />
+    <div className="mx-auto w-full max-w-4xl space-y-6">
+      <PageHeader title="Settings" description="Manage your account, AI connections, and deployment configuration" />
 
       <Card>
         <CardHeader>

@@ -3,6 +3,7 @@ import {
   defaultApiKeyEnv,
   deleteProvider,
   listProviders,
+  readProviderCredentialForTest,
   resolveRoutes,
   upsertProvider,
   validateProvider,
@@ -37,11 +38,24 @@ describe('assistant model providers', () => {
   it('refuses a declared route that cannot be served', () => {
     // The adapter refuses such a profile where it is written; refusing here
     // means the message names the missing field instead of arriving mid-prompt.
-    expect(validateProvider({ route: 'acme' })).toMatch(/protocol, a base URL and at least one model/)
+    expect(validateProvider({ route: 'acme' })).toMatch(/Protocol is required/)
+    expect(validateProvider({
+      route: 'acme', api: 'openai-completions',
+    })).toMatch(/Base URL is required/)
+    expect(validateProvider({
+      route: 'acme', api: 'openai-completions', baseUrl: 'https://g.example/v1',
+    })).toMatch(/model ID is required/)
     expect(validateProvider({
       route: 'acme', api: 'openai-completions', baseUrl: 'https://g.example/v1',
       models: [{ id: 'acme-large' }],
     })).toBeNull()
+  })
+
+  it('requires the default model to be one of a custom provider\'s model ids', () => {
+    expect(validateProvider({
+      route: 'acme', api: 'openai-completions', baseUrl: 'https://g.example/v1',
+      models: [{ id: 'acme-large' }], defaultModel: 'typo-model',
+    })).toMatch(/Default model must match/)
   })
 
   it('refuses shapes the harness schema would reject', () => {
@@ -62,9 +76,12 @@ describe('assistant model providers', () => {
 
   it('reports whether a route has a key, never the key', async () => {
     await upsertProvider(USER_A, { route: 'openai', apiKey: 'sk-user-secret' })
-    await upsertProvider(USER_A, {
-      route: 'acme', api: 'openai-completions', baseUrl: 'https://g.example/v1',
-      models: [{ id: 'acme-large' }],
+    await prisma.aiProvider.create({
+      data: {
+        userId: USER_A, route: 'acme', apiKeyEnv: 'ACME_API_KEY',
+        api: 'openai-completions', baseUrl: 'https://g.example/v1',
+        models: [{ id: 'acme-large' }],
+      },
     })
 
     const providers = await listProviders(USER_A)
@@ -73,6 +90,50 @@ describe('assistant model providers', () => {
       ['acme', false], ['openai', true],
     ])
     expect(JSON.stringify(providers)).not.toContain('sk-user-secret')
+  })
+
+  it('requires an API key when creating a personal connection', async () => {
+    await expect(upsertProvider(USER_A, { route: 'openai' })).rejects.toThrow(/API key is required/)
+  })
+
+  it('reuses a write-only key only for the exact saved connection endpoint', async () => {
+    await upsertProvider(USER_A, {
+      route: 'acme', api: 'openai-completions', baseUrl: 'https://gateway.example/v1',
+      models: [{ id: 'acme-large' }], apiKey: 'sk-write-only',
+    })
+
+    expect(await readProviderCredentialForTest(
+      USER_A, 'acme', 'ACME_API_KEY', 'https://gateway.example/v1',
+    )).toBe('sk-write-only')
+    expect(await readProviderCredentialForTest(
+      USER_A, 'acme', 'ACME_API_KEY', 'https://attacker.example/v1',
+    )).toBeNull()
+  })
+
+  it('requires the key again before moving a saved connection to another endpoint', async () => {
+    await upsertProvider(USER_A, {
+      route: 'acme', api: 'openai-completions', baseUrl: 'https://gateway.example/v1',
+      models: [{ id: 'acme-large' }], apiKey: 'sk-write-only',
+    })
+
+    await expect(upsertProvider(USER_A, {
+      route: 'acme', api: 'openai-completions', baseUrl: 'https://other.example/v1',
+      models: [{ id: 'acme-large' }],
+    })).rejects.toThrow(/Re-enter the API key/)
+
+    await expect(upsertProvider(USER_A, {
+      route: 'acme', label: 'Renamed', api: 'openai-completions',
+      baseUrl: 'https://gateway.example/v1', models: [{ id: 'acme-large' }],
+    })).resolves.toBeDefined()
+  })
+
+  it('does not let a new route reuse another connection\'s write-only key', async () => {
+    await upsertProvider(USER_A, { route: 'openai', apiKey: 'sk-write-only' })
+
+    await expect(upsertProvider(USER_A, {
+      route: 'acme', apiKeyEnv: 'OPENAI_API_KEY', api: 'openai-completions',
+      baseUrl: 'https://attacker.example/v1', models: [{ id: 'acme-large' }],
+    })).rejects.toThrow(/API key/)
   })
 
   it('keeps one default route', async () => {

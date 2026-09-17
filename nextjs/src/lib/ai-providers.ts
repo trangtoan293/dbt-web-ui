@@ -2,6 +2,14 @@ import { Prisma } from '@prisma/client'
 
 import { db } from '@/lib/db'
 import { decryptSecret, encryptSecret } from '@/lib/crypto'
+import {
+  CATALOG_ROUTES,
+  PROTOCOLS,
+  PROVIDER_PRESETS,
+  type Protocol,
+} from '@/lib/ai-provider-definitions'
+
+export { CATALOG_ROUTES, PROTOCOLS, PROVIDER_PRESETS }
 
 /**
  * Model providers for the dbt assistant, in the shape the harness itself uses.
@@ -16,13 +24,6 @@ import { decryptSecret, encryptSecret } from '@/lib/crypto'
  * Server-only, and deliberately not a server action: an action returning a
  * decrypted key would be callable from the browser.
  */
-
-/** Every wire protocol a declared route may name (llm-pi-ai supportedProtocols). */
-export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const
-export type Protocol = (typeof PROTOCOLS)[number]
-
-/** Routes pi-ai ships a catalog for: a credential is all they need. */
-export const CATALOG_ROUTES = ['deepseek', 'openai', 'anthropic', 'google', 'xai', 'groq', 'mistral'] as const
 
 export interface ProviderModel {
   id: string
@@ -102,14 +103,53 @@ export function validateProvider(input: ProviderInput): string | null {
       return 'Base URL must be a valid http(s) URL'
     }
   }
-  const isCatalog = (CATALOG_ROUTES as readonly string[]).includes(route)
+  const isCatalog = CATALOG_ROUTES.includes(route)
   const models = normalizeModels(input.models)
-  if (!isCatalog && (!input.api || !input.baseUrl || models.length === 0)) {
-    // The adapter refuses such a route where it is written; refuse it here so
-    // the message names the missing field instead of arriving mid-prompt.
-    return 'A provider pi-ai does not ship needs a protocol, a base URL and at least one model'
+  if (!isCatalog && !input.api) {
+    return 'Protocol is required for a custom provider'
+  }
+  if (!isCatalog && !input.baseUrl) {
+    return 'Base URL is required for a custom provider'
+  }
+  if (!isCatalog && models.length === 0) {
+    return 'At least one model ID is required for a custom provider'
+  }
+  const defaultModel = input.defaultModel?.trim()
+  if (!isCatalog && defaultModel && !models.some((model) => model.id === defaultModel)) {
+    return 'Default model must match one of the configured model IDs'
   }
   return null
+}
+
+/** Resolve a write-only credential for a server-side connection check. */
+export async function readProviderCredentialForTest(
+  userId: string,
+  route: string,
+  credentialName: string,
+  baseUrl: string | null | undefined,
+): Promise<string | null> {
+  const provider = await db.aiProvider.findUnique({
+    where: { userId_route: { userId, route } },
+  })
+  // A write-only saved key may only be sent back to the exact endpoint it was
+  // saved for. Otherwise a stolen browser session could point a connection at
+  // an attacker-controlled URL and use this check to recover the secret.
+  if (
+    !provider
+    || provider.apiKeyEnv !== credentialName
+    || (provider.baseUrl ?? null) !== (baseUrl?.trim() || null)
+  ) {
+    return null
+  }
+  const row = await db.aiCredential.findUnique({
+    where: { userId_credentialName: { userId, credentialName } },
+  })
+  if (!row) return null
+  try {
+    return decryptSecret(row.apiKeyEncrypted)
+  } catch {
+    return null
+  }
 }
 
 export async function listProviders(userId: string): Promise<ProviderView[]> {
@@ -139,6 +179,27 @@ export async function upsertProvider(userId: string, input: ProviderInput): Prom
   const route = input.route.trim()
   const apiKeyEnv = (input.apiKeyEnv ?? defaultApiKeyEnv(route)).trim()
   const models = normalizeModels(input.models)
+  const baseUrl = input.baseUrl?.trim() || null
+  const suppliedApiKey = input.apiKey?.trim() || null
+
+  const [existingProvider, targetCredential] = await Promise.all([
+    db.aiProvider.findUnique({ where: { userId_route: { userId, route } } }),
+    db.aiCredential.findUnique({
+      where: { userId_credentialName: { userId, credentialName: apiKeyEnv } },
+      select: { id: true },
+    }),
+  ])
+  if (!existingProvider && !suppliedApiKey) {
+    throw new Error('API key is required when creating a personal AI connection')
+  }
+  const movesStoredCredential = targetCredential && (
+    !existingProvider
+    || existingProvider.apiKeyEnv !== apiKeyEnv
+    || (existingProvider.baseUrl ?? null) !== baseUrl
+  )
+  if (movesStoredCredential && !suppliedApiKey) {
+    throw new Error('Re-enter the API key when changing its connection or Base URL')
+  }
 
   await db.$transaction(async (tx) => {
     if (input.isDefault) {
@@ -148,7 +209,7 @@ export async function upsertProvider(userId: string, input: ProviderInput): Prom
       label: input.label?.trim() || null,
       apiKeyEnv,
       api: input.api?.trim() || null,
-      baseUrl: input.baseUrl?.trim() || null,
+      baseUrl,
       // Prisma spells "store SQL NULL in a nullable Json column" explicitly, and
       // an empty list means "serve the route's own catalog" rather than "no
       // models", so it must be that null and not [].
@@ -161,8 +222,8 @@ export async function upsertProvider(userId: string, input: ProviderInput): Prom
       create: { userId, route, ...data },
       update: data,
     })
-    if (input.apiKey && input.apiKey.trim()) {
-      const apiKeyEncrypted = encryptSecret(input.apiKey.trim())
+    if (suppliedApiKey) {
+      const apiKeyEncrypted = encryptSecret(suppliedApiKey)
       await tx.aiCredential.upsert({
         where: { userId_credentialName: { userId, credentialName: apiKeyEnv } },
         create: { userId, credentialName: apiKeyEnv, provider: route, apiKeyEncrypted },
