@@ -52,6 +52,12 @@ x-ingest-env: &ingest-env
   INGEST_ALLOW_PRIVATE_HOSTS: ${INGEST_ALLOW_PRIVATE_HOSTS:-false}
   INGEST_SUBPROCESS_TIMEOUT: ${INGEST_SUBPROCESS_TIMEOUT:-3600}
   INGEST_RUN_LOG_MAX_CHARS: ${INGEST_RUN_LOG_MAX_CHARS:-262144}
+  # Directories a *filesystem* ingest source may read CSV/JSONL/Parquet from,
+  # comma separated. Empty turns that source type off: dbt-runner can read
+  # anywhere its uid reaches, so an unfenced path would expose every project's
+  # files and the storage volume to whoever can create a source. Mount the drop
+  # directory into dbt-runner and name it here.
+  INGEST_FILE_ROOTS: ${INGEST_FILE_ROOTS:-}
   # Publishing lake marts as Iceberg, for engines that cannot read DuckLake.
   # The catalog falls back to LAKE_CATALOG_URL then DATABASE_URL. The warehouse
   # must stay outside LAKE_DATA_DIR - the lake's orphan cleanup scans that tree.

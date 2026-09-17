@@ -2,6 +2,7 @@
 Connection and profiles router.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -20,6 +21,13 @@ from app.models.connection import (
     DremioTestRequest,
 )
 from app.services.project import ProjectService
+from ingest.rest_source import UnsupportedRestSource, probe_rest
+from ingest.sql_source import (
+    SOURCE_ONLY_TYPES,
+    UnsupportedSource,
+    build_url_from_config,
+    probe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +36,10 @@ router = APIRouter(tags=["Connections"])
 # DuckDB is a local file and Spark is reached through its own session config, so
 # neither carries a network host to check.
 _HOSTLESS_TYPES = {"duckdb", "spark"}
+
+# Connection types with no dbt adapter, tested through the same code path ingest
+# reads them with. `rest` is not in SOURCE_ONLY_TYPES because it is not SQL.
+_REST_TYPE = "rest"
 
 
 def _assert_target_allowed(conn_type: str, config: Dict[str, Any]) -> None:
@@ -137,6 +149,23 @@ async def test_connection(request: ConnectionTestRequest):
         _assert_target_allowed(request.type, request.config)
     except HostNotAllowed as e:
         return {"success": False, "message": str(e)}
+
+    # Source-only types have no adapter on purpose (see
+    # ingest/sql_source.SOURCE_ONLY_TYPES), so they are probed the way ingest
+    # will actually read them rather than through a registry entry that would
+    # also offer them to dbt.
+    if request.type in SOURCE_ONLY_TYPES:
+        try:
+            url = build_url_from_config(request.type, request.config)
+        except (UnsupportedSource, HostNotAllowed) as e:
+            return {"success": False, "message": str(e)}
+        return await asyncio.to_thread(probe, url)
+
+    if request.type == _REST_TYPE:
+        try:
+            return await probe_rest(request.config)
+        except (UnsupportedRestSource, HostNotAllowed) as e:
+            return {"success": False, "message": str(e)}
 
     try:
         adapter = get_adapter(request.type, request.config)

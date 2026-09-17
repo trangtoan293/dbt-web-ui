@@ -219,6 +219,8 @@ model DbtRunArtifact {
 
 enum IngestSourceType {
   sql_database
+  rest_api
+  filesystem
 
   @@map("ingest_source_type")
 }
@@ -236,7 +238,9 @@ enum IngestDestination {
 model IngestSource {
   id                 String            @id @default(uuid()) @db.Uuid
   projectId          String            @map("project_id") @db.Uuid
-  sourceConnectionId String            @map("source_connection_id") @db.Uuid
+  /// Null for a source that carries no credential: a filesystem path, or a
+  /// public API.
+  sourceConnectionId String?           @map("source_connection_id") @db.Uuid
   name               String            @db.Text
   sourceType         IngestSourceType  @default(sql_database) @map("source_type")
   destination        IngestDestination @default(ducklake)
@@ -244,6 +248,15 @@ model IngestSource {
   /// before it reaches SQL.
   dataset            String            @db.Text
   tables             Json              @db.JsonB
+  /// Per-source-type configuration that has no column of its own: a filesystem
+  /// glob, or a REST resource list. `sql_database` uses `tables` instead.
+  sourceConfig       Json?             @map("source_config") @db.JsonB
+  /// Column dlt tracks to load only new rows. Without one, every load reads the
+  /// whole source table - `append` then duplicates and `merge` only dedupes at
+  /// the destination.
+  cursorField        String?           @map("cursor_field") @db.Text
+  /// Lower bound for the first load, so a first run need not read all history.
+  cursorInitialValue String?           @map("cursor_initial_value") @db.Text
   writeDisposition   String            @default("append") @map("write_disposition") @db.Text
   /// Required for writeDisposition = merge.
   primaryKey         Json?             @map("primary_key") @db.JsonB
@@ -256,7 +269,7 @@ model IngestSource {
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz()
   project            DbtProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceConnection   Connection        @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  sourceConnection   Connection?       @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
   user               User              @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   runs               IngestRun[]
 
@@ -276,6 +289,10 @@ enum ConnectionType {
   oracle
   spark
   ducklake
+  /// Read-only ingest sources. Neither has a dbt adapter - dbt never runs
+  /// against them, in the same way it never runs against `ducklake`.
+  mysql
+  rest
 
   @@map("connection_type")
 }

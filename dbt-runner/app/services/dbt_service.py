@@ -262,6 +262,17 @@ def build_adapter_config_from_connection_row(
             "connection and attach the lakehouse to it in Project Settings."
         )
 
+    if conn_type in ("mysql", "rest"):
+        # Read-only ingest sources. Neither has a dbt adapter in this image, in
+        # the same way `ducklake` has none - a message rather than an
+        # unsupported-type error, because assigning one as a project's warehouse
+        # is a UI mistake and not a missing mapping here.
+        raise ValueError(
+            f"A {conn_type} connection is an ingest source, not a warehouse. Use "
+            "it on the Sources page; point the project at a warehouse dbt can "
+            "run against."
+        )
+
     # Adding a warehouse means: an adapter in adapters/__init__.py, its dbt
     # plugin in pyproject.toml, and the type in CONNECTION_TYPES on the
     # frontend. A mapping here alone only produces failed runs.

@@ -116,7 +116,49 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   never argv: it carries a decrypted warehouse password and argv is readable via
   `ps`.
 - An `ingest_sources` row stores no credentials. It references a `connections`
-  row, so a warehouse password still lives in exactly one table.
+  row, so a warehouse password still lives in exactly one table. That reference
+  is **nullable**: a filesystem source reads a path and a public API needs no
+  key, so neither has a connection to point at.
+- **Three source kinds**, dispatched in `_build_source_block`
+  (`app/routers/ingest.py`) and built in `ingest/runner.py:_build_source`. The
+  router decides *which* type; each type's own module decides what it may
+  contain, so a check lives beside the code that renders it:
+  - `sql_database` - `ingest/sql_source.py`. PostgreSQL, Oracle and **MySQL**.
+    One URL builder (`build_url`) fed either a `connections` row or a
+    connection-test body, because those are the same facts under different key
+    names and only one place should assemble a DSN.
+  - `rest_api` - `ingest/rest_source.py`. dlt's `rest_api` source is configured
+    with a **dict**, which is the only reason an API can be a source at all: a
+    Python source definition in a request body is remote code execution. Every
+    field is validated - paths cannot contain `..`, params must be scalars, and
+    the resource names must equal the source's `tables`.
+  - `filesystem` - `ingest/file_source.py`. CSV/JSONL/Parquet from a local
+    directory, fenced to `INGEST_FILE_ROOTS` exactly as an external lake's data
+    path is fenced to `LAKE_EXTERNAL_DATA_ROOTS`. Empty means the type is off.
+    CSV is read through duckdb, not pandas - duckdb is already here.
+- **`mysql` and `rest` are connection types with no dbt adapter**, the same shape
+  as `ducklake`: they exist to be read from. They live in `connections` because a
+  credential should be encrypted, owned and rotated in one place, and
+  `build_adapter_config_from_connection_row` refuses them as a project's
+  warehouse with a message rather than an unsupported-type error. Because they
+  have no adapter, `/connection/test` and the ingest table picker fall back to
+  `sql_source.probe` / `inspect_tables` (or `rest_source.probe_rest`) - adding
+  them to `ADAPTERS` would offer a warehouse dbt cannot run.
+- **The incremental cursor is the single most important field on a source.**
+  `cursor_field` (+ optional `cursor_initial_value`) makes dlt push
+  `WHERE cursor > last_value` down to the source. Without one, *every* load reads
+  the whole source table: `append` then duplicates it and `merge` only dedupes at
+  the destination, so the source warehouse is read in full either way.
+  `tests/test_ingest_incremental.py` pins both halves - 3 rows stay 3 with a
+  cursor and become 6 without one.
+- `_apply_hints` applies the cursor for `sql_database` and `filesystem` but
+  **not** `rest_api`: an HTTP cursor only saves work if it is *sent*, so a REST
+  resource carries it declaratively instead. `endpoint.incremental` dedupes;
+  `incremental.start_param` names the query parameter that carries the last
+  value, and that is what turns a full re-fetch into a filtered one. A resource
+  naming none is still correct, just as expensive as before -
+  `tests/test_ingest_incremental.py` asserts on what the API was actually asked
+  for, not on the config dict.
 - Destinations: `ducklake` (default) or `connection` (the project's own DuckDB or
   Postgres). Dremio, Oracle and Spark have no dlt destination - those projects
   ingest into the lakehouse and read it from dbt.
@@ -378,9 +420,10 @@ ORM is **Prisma 6** (frontend only); the backend uses **SQLAlchemy 2 async**.
   the `INSTALL_DBT_SPARK` build arg). `adapters/__init__.py` is the registry —
   keep it in step with the connection form in `ConnectionDialog.tsx`. Offering a
   warehouse whose dbt plugin is not in the image only produces failed runs.
-  `ducklake` is a connection type but **not** an adapter: dbt never runs against
-  a lakehouse, it attaches one, so it has no registry entry and
-  `build_adapter_config_from_connection_row` refuses it with a message rather
+  `ducklake`, `mysql` and `rest` are connection types but **not** adapters: dbt
+  never runs against a lakehouse (it attaches one) and never runs against the
+  other two at all (they are ingest sources), so none has a registry entry and
+  `build_adapter_config_from_connection_row` refuses each with a message rather
   than an unsupported-type error.
 
 ## Common commands
@@ -477,6 +520,26 @@ docker compose run --rm db-migrate npx prisma migrate deploy
   image. An air-gapped deployment that skips that build step fails on its first load.
 - `dlt`'s incremental cursors live in `STORAGE_DIR/dlt/{project_id}`. Anywhere else
   and a container restart resets them, so the next load re-reads or skips rows.
+- **dlt has two incremental shapes and they are not interchangeable.** The
+  endpoint form (`IncrementalConfig`) takes `start_param` and **rejects** a
+  `type` key; the parameter form (`IncrementalParamConfig`) **requires** `type`
+  and has no `start_param`. Mixing them fails at load time with
+  `Received invalid value type=None`, which no unit test on the config dict
+  catches - which is why the REST source has an end-to-end test against a real
+  HTTP server. `ingest/rest_source.py` builds only the endpoint form.
+- **A source with no `cursor_field` re-reads everything, every run.** That is not
+  a tuning knob: at core-banking size it is the difference between a source that
+  loads and one that never finishes. `write_disposition` does not save it -
+  `merge` dedupes at the destination after the whole source has been read.
+- **`INGEST_FILE_ROOTS` empty means the filesystem source type does not work.**
+  Deliberate: dbt-runner can read anywhere its uid reaches, so an unfenced path
+  would expose every project's files and the storage volume to whoever can create
+  a source. Mount the drop directory into dbt-runner *and* name it in the
+  variable. Object storage is refused outright - it needs its own credential row.
+- A `rest` connection stores the base URL in `extra_config` and its hostname in
+  `host`, so the host guard has the same thing to check as every other type. Both
+  save time and resolve time go through `rest_source.validate_base_url`; skipping
+  it would make an ingest source a reader of cloud metadata endpoints.
 - `INGEST_ALLOW_PRIVATE_HOSTS=true` is needed for on-premise warehouses. It does
   **not** unblock this deployment's own Postgres/Redis or link-local addresses -
   see `app/core/host_guard.py`, which compares resolved IPs, not hostnames.
@@ -555,7 +618,9 @@ docker compose run --rm db-migrate npx prisma migrate deploy
 - Don't add database RLS policies — auth/ownership is enforced in application code.
 - Don't add third-party analytics or telemetry. This is self-hosted software.
 - Don't add a warehouse to the connection UI without adding its dbt adapter to
-  `dbt-runner/pyproject.toml`.
+  `dbt-runner/pyproject.toml`. A read-only *ingest source* type is the exception
+  (`mysql`, `rest`, `ducklake`): it has no adapter on purpose and must be refused
+  as a project's warehouse with a message.
 - Don't accept Python source for an ingest source. dlt defines sources in Python,
   which is remote code execution the moment that code comes from a request body.
   Source configuration is declarative (table lists) only.

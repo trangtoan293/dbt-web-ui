@@ -1,13 +1,20 @@
 "use client"
 
 import React, { useState, useEffect } from "react"
-import { Database, HardDrive, Layers, Loader2, Plus, Server, Trash2, Zap } from "lucide-react"
+import { Database, Globe, HardDrive, Layers, Loader2, Plus, Server, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components-v2/ui/dialog"
 import { Input } from "@/components-v2/ui/input"
 import { createConnection, updateConnection } from "@/lib/api-client"
 
-type ConnectionType = "postgresql" | "duckdb" | "dremio" | "oracle" | "spark" | "ducklake"
+type ConnectionType =
+  | "postgresql" | "duckdb" | "dremio" | "oracle" | "spark" | "ducklake"
+  // Read-only ingest sources. Neither has a dbt adapter, so neither can be a
+  // project's warehouse - dbt-runner refuses that with a message.
+  | "mysql" | "rest"
+
+/** Types that exist to be read from, never run against. */
+const SOURCE_ONLY_TYPES: ReadonlySet<string> = new Set(["mysql", "rest"])
 type SourceTable = "connection" | "dremio_source"
 
 export interface ExistingConnection {
@@ -39,6 +46,8 @@ const TYPE_LABELS: Record<ConnectionType, string> = {
   oracle: "Oracle",
   spark: "Apache Spark",
   ducklake: "Lakehouse",
+  mysql: "MySQL",
+  rest: "REST API",
 }
 
 const DEFAULT_PORTS: Record<ConnectionType, number> = {
@@ -48,6 +57,8 @@ const DEFAULT_PORTS: Record<ConnectionType, number> = {
   oracle: 1521,
   spark: 0,
   ducklake: 5432,
+  mysql: 3306,
+  rest: 443,
 }
 
 const SELECT_CLS = "flex h-9 w-full rounded-md border border-gray-300 bg-white px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:border-[#0078D4] focus-visible:ring-1 focus-visible:ring-[#0078D4]"
@@ -102,6 +113,15 @@ function defaultOracle() {
   }
 }
 
+function defaultRest() {
+  return {
+    base_url: "",
+    auth_type: "none" as "none" | "bearer" | "basic" | "api_key",
+    api_key_name: "",
+    api_key_location: "header" as "header" | "query",
+  }
+}
+
 function defaultSpark() {
   return {
     method: "session",
@@ -136,7 +156,9 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
     existing?.connectionType === "dremio" ? "dremio" :
     existing?.connectionType === "oracle" ? "oracle" :
     existing?.connectionType === "spark" ? "spark" :
-    existing?.connectionType === "ducklake" ? "ducklake" : "postgresql"
+    existing?.connectionType === "ducklake" ? "ducklake" :
+    existing?.connectionType === "mysql" ? "mysql" :
+    existing?.connectionType === "rest" ? "rest" : "postgresql"
   const [type, setType] = useState<ConnectionType>(initialType)
   const [typeSelected, setTypeSelected] = useState(isEdit)
   const [form, setForm] = useState(defaultForm())
@@ -144,6 +166,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
   const [oracle, setOracle] = useState(defaultOracle())
   const [spark, setSpark] = useState(defaultSpark())
   const [lake, setLake] = useState(defaultLake())
+  const [rest, setRest] = useState(defaultRest())
 
   useEffect(() => {
     if (!open) return
@@ -196,6 +219,14 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
             metadata_schema: (ec.metadata_schema as string) ?? "",
             maintained: ec.maintained === true,
           })
+        } else if (existing.connectionType === "rest") {
+          const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
+          setRest({
+            base_url: (ec.base_url as string) ?? "",
+            auth_type: (ec.auth_type as "none" | "bearer" | "basic" | "api_key") ?? "none",
+            api_key_name: (ec.api_key_name as string) ?? "",
+            api_key_location: (ec.api_key_location as "header" | "query") ?? "header",
+          })
         } else if (existing.connectionType === "oracle") {
           const ec = (existing.extraConfig ?? {}) as Record<string, unknown>
           setOracle({ schema: (ec.schema as string) ?? "" })
@@ -233,6 +264,7 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
       setDremio(defaultDremio())
       setOracle(defaultOracle())
       setSpark(defaultSpark())
+      setRest(defaultRest())
     }
     setError("")
   }, [open, existing, initialType])
@@ -255,6 +287,11 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
   function setD(field: keyof typeof dremio) {
     return (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setDremio((d) => ({ ...d, [field]: e.target.value }))
+  }
+
+  function setR(field: keyof typeof rest) {
+    return (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+      setRest((r) => ({ ...r, [field]: e.target.value }))
   }
 
   function setO(field: keyof typeof oracle) {
@@ -395,6 +432,57 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
           await updateConnection(existing.id, "connection", payload)
         } else {
           await createConnection(payload)
+        }
+      } else if (type === "mysql") {
+        // No threads and no schema: neither means anything for a connection dbt
+        // never runs against. It is read table-by-table by the ingest runner.
+        const payload: Record<string, unknown> = {
+          connectionType: "mysql",
+          name: form.name,
+          host: form.host,
+          port: Number(form.port),
+          database: form.database,
+          username: form.username,
+          extraConfig: {},
+        }
+        if (form.credential) payload.passwordEncrypted = form.credential
+        if (isEdit && existing) {
+          await updateConnection(existing.id, "connection", payload)
+        } else {
+          await createConnection({ ...payload, passwordEncrypted: form.credential })
+        }
+      } else if (type === "rest") {
+        const extraConfig: Record<string, unknown> = {
+          base_url: rest.base_url,
+          auth_type: rest.auth_type,
+        }
+        if (rest.auth_type === "api_key") {
+          extraConfig.api_key_name = rest.api_key_name
+          extraConfig.api_key_location = rest.api_key_location
+        }
+        // `host` carries the base URL's hostname so the host guard has something
+        // to check the way it does for every other connection type; the URL
+        // itself lives in extraConfig because a path and a scheme are not a host.
+        let hostname = ""
+        try {
+          hostname = new URL(rest.base_url).hostname
+        } catch {
+          throw new Error("Base URL must be a full http(s) URL, for example https://api.example.com/v1")
+        }
+        const payload: Record<string, unknown> = {
+          connectionType: "rest",
+          name: form.name,
+          host: hostname,
+          port: 0,
+          database: "",
+          username: rest.auth_type === "basic" ? form.username : "",
+          extraConfig,
+        }
+        if (form.credential) payload.passwordEncrypted = form.credential
+        if (isEdit && existing) {
+          await updateConnection(existing.id, "connection", payload)
+        } else {
+          await createConnection({ ...payload, passwordEncrypted: form.credential })
         }
       } else if (type === "oracle") {
         const extraConfig: Record<string, unknown> = {}
@@ -540,6 +628,18 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                   title="Lakehouse"
                   description="A DuckLake catalog: Parquet on disk, metadata in a database. Attached to a project alongside its warehouse, not instead of it."
                   onClick={() => chooseType("ducklake")}
+                />
+                <ConnectionTypeOption
+                  icon={Database}
+                  title="MySQL"
+                  description="An ingest source only: rows are read out of it. dbt has no MySQL adapter here, so a project cannot run against it."
+                  onClick={() => chooseType("mysql")}
+                />
+                <ConnectionTypeOption
+                  icon={Globe}
+                  title="REST API"
+                  description="A base URL and its credential, so an ingest source can read endpoints from it. Not a warehouse."
+                  onClick={() => chooseType("rest")}
                 />
               </div>
               {error && <p className="text-sm text-red-600">{error}</p>}
@@ -696,12 +796,12 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
               </>
             )}
 
-            {(type === "postgresql" || type === "dremio" || type === "oracle" || type === "spark") && !isDremioSourceEdit && (
+            {(type === "postgresql" || type === "dremio" || type === "oracle" || type === "spark" || type === "mysql") && !isDremioSourceEdit && (
               <>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="col-span-2">
                     <Field label="Host" required>
-                      <Input value={form.host} onChange={setF("host")} placeholder={type === "dremio" ? "dremio.example.com" : type === "oracle" ? "oracle.example.com" : "localhost"} required />
+                      <Input value={form.host} onChange={setF("host")} placeholder={type === "dremio" ? "dremio.example.com" : type === "oracle" ? "oracle.example.com" : type === "mysql" ? "mysql.example.com" : "localhost"} required />
                     </Field>
                   </div>
                   <Field label="Port" required={type !== "spark" || spark.method !== "session"}>
@@ -710,12 +810,14 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                 </div>
 
                 <Field label="Username" required={type !== "spark" || spark.method === "thrift"}>
-                  <Input value={form.username} onChange={setF("username")} placeholder={type === "dremio" ? "vaultadmin" : type === "oracle" ? "system" : type === "spark" ? "optional user" : "postgres"} required={type !== "spark" || spark.method === "thrift"} />
+                  <Input value={form.username} onChange={setF("username")} placeholder={type === "dremio" ? "vaultadmin" : type === "oracle" ? "system" : type === "spark" ? "optional user" : type === "mysql" ? "ingest_reader" : "postgres"} required={type !== "spark" || spark.method === "thrift"} />
                 </Field>
               </>
             )}
 
-            {type !== "spark" && !isDremioSourceEdit && (
+            {/* Threads is how many models dbt builds at once, so it means
+                nothing for a type dbt never runs against. */}
+            {type !== "spark" && !SOURCE_ONLY_TYPES.has(type) && !isDremioSourceEdit && (
               <Field label="Threads" hint={THREADS_HINT[type] ?? "How many models dbt builds at once. Blank uses the default."}>
                 <Input
                   type="number"
@@ -764,6 +866,64 @@ export default function ConnectionDialog({ onSaved, onClose, existing, trigger }
                     <option value="require">Require</option>
                   </select>
                 </Field>
+              </>
+            )}
+
+            {type === "mysql" && !isDremioSourceEdit && (
+              <>
+                <Field label="Database" required>
+                  <Input value={form.database} onChange={setF("database")} placeholder="crm" required />
+                </Field>
+                <Field label={isEdit ? "Password (leave blank to keep)" : "Password"}>
+                  <Input type="password" value={form.credential} onChange={setF("credential")} placeholder={isEdit ? "••••••••" : ""} />
+                </Field>
+                <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                  This is an ingest source. Use it on the Sources page to load tables
+                  into the lakehouse — a project cannot run dbt against it.
+                </p>
+              </>
+            )}
+
+            {type === "rest" && !isDremioSourceEdit && (
+              <>
+                <Field label="Base URL" required>
+                  <Input value={rest.base_url} onChange={setR("base_url")} placeholder="https://api.example.com/v1" required />
+                </Field>
+                <Field label="Authentication">
+                  <select value={rest.auth_type} onChange={setR("auth_type")} className={SELECT_CLS}>
+                    <option value="none">None (public API)</option>
+                    <option value="bearer">Bearer token</option>
+                    <option value="basic">Basic (username and password)</option>
+                    <option value="api_key">API key</option>
+                  </select>
+                </Field>
+                {rest.auth_type === "basic" && (
+                  <Field label="Username" required>
+                    <Input value={form.username} onChange={setF("username")} required />
+                  </Field>
+                )}
+                {rest.auth_type === "api_key" && (
+                  <>
+                    <Field label="Key name" required hint="The header or query parameter the API expects, for example X-API-Key.">
+                      <Input value={rest.api_key_name} onChange={setR("api_key_name")} placeholder="X-API-Key" required />
+                    </Field>
+                    <Field label="Send it as">
+                      <select value={rest.api_key_location} onChange={setR("api_key_location")} className={SELECT_CLS}>
+                        <option value="header">A request header</option>
+                        <option value="query">A query parameter</option>
+                      </select>
+                    </Field>
+                  </>
+                )}
+                {rest.auth_type !== "none" && (
+                  <Field label={isEdit ? "Secret (leave blank to keep)" : "Secret"}>
+                    <Input type="password" value={form.credential} onChange={setF("credential")} placeholder={isEdit ? "••••••••" : ""} />
+                  </Field>
+                )}
+                <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                  Endpoints and pagination are configured per ingest source, so one API
+                  with one credential can serve several sources.
+                </p>
               </>
             )}
 

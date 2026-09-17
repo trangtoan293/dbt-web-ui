@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     ingest_run_log_max_chars: int = int(
         os.getenv("INGEST_RUN_LOG_MAX_CHARS", str(256 * 1024))
     )
+    # Directories a filesystem ingest source may read from, comma-separated.
+    # Empty means the feature is off: dbt-runner can read anywhere its uid
+    # reaches, so an unfenced path would expose every project's files and the
+    # storage volume to whoever can create a source.
+    ingest_file_roots: str = os.getenv("INGEST_FILE_ROOTS", "")
 
     # === Scheduler (cron for dbt runs, retention, lake maintenance) ===
     # One runner process at a time holds the leader lock, so this is safe with

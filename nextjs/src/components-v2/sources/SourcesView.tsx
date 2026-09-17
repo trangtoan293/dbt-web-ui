@@ -28,6 +28,12 @@ const DESTINATION_LABELS: Record<string, string> = {
   connection: "Project warehouse",
 }
 
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  sql_database: "database",
+  rest_api: "REST API",
+  filesystem: "files",
+}
+
 export default function SourcesView(): React.ReactElement {
   const [sources, setSources] = useState<IngestSource[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,9 +43,14 @@ export default function SourcesView(): React.ReactElement {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [toDelete, setToDelete] = useState<IngestSource | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [meta, setMeta] = useState<{ source_connection_types: string[]; lakehouse_configured: boolean }>({
+  const [meta, setMeta] = useState<{
+    source_connection_types: string[]
+    lakehouse_configured: boolean
+    file_roots_configured?: boolean
+  }>({
     source_connection_types: [],
     lakehouse_configured: false,
+    file_roots_configured: false,
   })
 
   const load = useCallback(async () => {
@@ -134,8 +145,11 @@ export default function SourcesView(): React.ReactElement {
                     <span className="min-w-0">
                     <p className="font-medium text-gray-900">{source.name}</p>
                     <p className="mt-0.5 text-xs text-gray-500">
-                      {source.sourceConnection?.name ?? "connection"} → {DESTINATION_LABELS[source.destination]} ·{" "}
+                      {source.sourceConnection?.name
+                        ?? SOURCE_TYPE_LABELS[source.sourceType ?? "sql_database"]
+                        ?? "source"} → {DESTINATION_LABELS[source.destination]} ·{" "}
                       {source.dataset} · {source.tables.length} table(s) · {source.writeDisposition}
+                      {source.cursorField ? ` · incremental on ${source.cursorField}` : " · full read"}
                     </p>
                     </span>
                   </button>
@@ -213,6 +227,7 @@ export default function SourcesView(): React.ReactElement {
         onSaved={load}
         sourceConnectionTypes={meta.source_connection_types}
         lakehouseConfigured={meta.lakehouse_configured}
+        fileRootsConfigured={Boolean(meta.file_roots_configured)}
       />
     </div>
   )
