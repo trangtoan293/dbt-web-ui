@@ -56,18 +56,12 @@ class MaintainTest(unittest.TestCase):
         self.addCleanup(catalog_patcher.stop)
 
         # SQLite has no CREATE SCHEMA, so the catalog lives in `main`.
-        schema_patcher = patch.object(
-            lakehouse, "metadata_schema", return_value="main"
-        )
-        schema_patcher.start()
-        self.addCleanup(schema_patcher.stop)
-
-        lakehouse.provision(
-            catalog=self.catalog,
+        self.lake = lakehouse.LakeRef(
+            catalog_url=self.catalog,
             data_path=str(lakehouse.data_dir(PROJECT_ID)),
-            metadata=lakehouse.metadata_schema(PROJECT_ID),
-            inline_row_limit=0,
+            metadata_schema="main",
         )
+        lakehouse.provision(self.lake, inline_row_limit=0)
 
     def _write_table(self, statement: str) -> None:
         import duckdb
@@ -79,14 +73,14 @@ class MaintainTest(unittest.TestCase):
             connection.execute(
                 f"ATTACH IF NOT EXISTS '{lakehouse.attach_string(self.catalog)}' "
                 f"AS {lakehouse.ATTACH_ALIAS} "
-                f"(METADATA_SCHEMA '{lakehouse.metadata_schema(PROJECT_ID)}')"
+                f"(METADATA_SCHEMA '{self.lake.metadata_schema}')"
             )
             connection.execute(statement)
         finally:
             connection.close()
 
     def test_maintains_an_empty_catalog(self):
-        outcomes = lakehouse.maintain(PROJECT_ID, retention_days=7)
+        outcomes = lakehouse.maintain(self.lake, retention_days=7)
         # Every step reports; a missing function is "skipped: ...", not a raise.
         self.assertIn("expire_snapshots", outcomes)
         self.assertIn("delete_orphaned_files", outcomes)
@@ -95,7 +89,7 @@ class MaintainTest(unittest.TestCase):
     def test_expire_snapshots_is_accepted_by_the_installed_extension(self):
         self._write_table("CREATE TABLE lake.main.orders AS SELECT 1 AS id")
         self._write_table("INSERT INTO lake.main.orders SELECT 2")
-        outcomes = lakehouse.maintain(PROJECT_ID, retention_days=0)
+        outcomes = lakehouse.maintain(self.lake, retention_days=0)
         self.assertEqual(
             outcomes["expire_snapshots"], "ok", msg=f"outcomes={outcomes}"
         )
@@ -106,7 +100,7 @@ class MaintainTest(unittest.TestCase):
             "CREATE TABLE lake.main.dim_customer__dbt_backup AS SELECT 1 AS id"
         )
 
-        outcomes = lakehouse.maintain(PROJECT_ID, retention_days=7)
+        outcomes = lakehouse.maintain(self.lake, retention_days=7)
         self.assertEqual(outcomes["drop_dbt_backups"], "dropped 1")
 
         import duckdb
@@ -118,7 +112,7 @@ class MaintainTest(unittest.TestCase):
             connection.execute(
                 f"ATTACH IF NOT EXISTS '{lakehouse.attach_string(self.catalog)}' "
                 f"AS {lakehouse.ATTACH_ALIAS} "
-                f"(METADATA_SCHEMA '{lakehouse.metadata_schema(PROJECT_ID)}')"
+                f"(METADATA_SCHEMA '{self.lake.metadata_schema}')"
             )
             remaining = {
                 row[0]
@@ -135,7 +129,46 @@ class MaintainTest(unittest.TestCase):
 
     def test_negative_retention_is_refused(self):
         with self.assertRaises(lakehouse.LakehouseError):
-            lakehouse.maintain(PROJECT_ID, retention_days=-1)
+            lakehouse.maintain(self.lake, retention_days=-1)
+
+    def test_an_unmaintained_lake_is_refused(self):
+        """The guard is in maintain(), not in every caller that might forget it.
+
+        cleanup_old_files deletes every file this catalog does not reference. On
+        a lake somebody else also writes to, that is not the same as garbage -
+        so a lake this deployment does not maintain never reaches the steps.
+        """
+        external = lakehouse.LakeRef(
+            catalog_url=self.catalog,
+            data_path=self.lake.data_path,
+            metadata_schema="main",
+            mode=lakehouse.MODE_EXTERNAL,
+            maintained=False,
+        )
+        with self.assertRaises(lakehouse.LakehouseError):
+            lakehouse.maintain(external, retention_days=7)
+
+    def test_provision_does_not_pin_options_on_an_external_lake(self):
+        """set_option writes to the catalog, changing how its owner writes too."""
+        external = lakehouse.LakeRef(
+            catalog_url="postgresql://nobody@nowhere.invalid:5432/db",
+            data_path=self.lake.data_path,
+            metadata_schema="main",
+            mode=lakehouse.MODE_EXTERNAL,
+        )
+        # Unreachable on purpose: provision must return before touching it.
+        lakehouse.provision(external)
+
+    def test_destroy_refuses_an_external_lake(self):
+        external = lakehouse.LakeRef(
+            catalog_url=self.catalog,
+            data_path=self.lake.data_path,
+            metadata_schema="main",
+            mode=lakehouse.MODE_EXTERNAL,
+        )
+        with self.assertRaises(lakehouse.LakehouseError):
+            lakehouse.destroy(external)
+        self.assertTrue(Path(self.lake.data_path).exists())
 
 
 if __name__ == "__main__":

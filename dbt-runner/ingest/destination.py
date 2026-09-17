@@ -26,20 +26,24 @@ class UnsupportedDestination(ValueError):
 def build_destination(
     kind: str,
     *,
-    project_id: str,
+    lake: lakehouse.LakeRef | None = None,
     connection_type: str | None = None,
     connection_config: Dict[str, Any] | None = None,
     connection_secret: str = "",
 ) -> Dict[str, Any]:
-    """Describe the dlt destination for one ingest job."""
+    """Describe the dlt destination for one ingest job.
+
+    The lakehouse arrives resolved rather than derived from a project id: which
+    lake a project writes to is a row in the database now, and several projects
+    may share one.
+    """
     if kind == DESTINATION_LAKEHOUSE:
-        return {
-            "kind": DESTINATION_LAKEHOUSE,
-            "catalog_url": lakehouse.catalog_url(),
-            "data_path": str(lakehouse.data_dir(project_id)),
-            "metadata_schema": lakehouse.metadata_schema(project_id),
-            "ducklake_name": lakehouse.ATTACH_ALIAS,
-        }
+        if lake is None:
+            raise UnsupportedDestination(
+                "this project has no lakehouse attached. Attach one in Project "
+                "Settings, or load into the project's own warehouse instead."
+            )
+        return {"kind": DESTINATION_LAKEHOUSE, **lake.as_job_config()}
 
     if kind != DESTINATION_CONNECTION:
         raise UnsupportedDestination(

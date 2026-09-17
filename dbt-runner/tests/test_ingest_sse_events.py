@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.core.auth import require_user
 from app.main import app
 from app.routers import ingest as ingest_router
+from ingest import lakehouse
 
 SOURCE_ROW = {
     "id": "s1",
@@ -74,6 +75,19 @@ class IngestSseTest(unittest.TestCase):
             ),
             patch.object(ingest_router, "resolve_user_id", AsyncMock(return_value="u1")),
             patch.object(ingest_router, "_build_job_config", return_value=JOB_CONFIG),
+            # A lakehouse load resolves which lake the project points at before
+            # the job is built, so a source with destination 'ducklake' needs one.
+            patch.object(
+                ingest_router,
+                "resolve_project_lake",
+                AsyncMock(
+                    return_value=lakehouse.LakeRef(
+                        catalog_url="sqlite:////tmp/catalog.sqlite",
+                        data_path="/tmp/lake",
+                        metadata_schema="main",
+                    )
+                ),
+            ),
             patch.object(
                 ingest_router, "_RunRecorder", MagicMock(return_value=self.recorder)
             ),

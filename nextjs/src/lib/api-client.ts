@@ -161,6 +161,45 @@ export async function publishIceberg(projectId: string, schema: string, tables?:
   })
 }
 
+// --- A project's lakehouse ------------------------------------------------
+// Both halves in one call, because they are one decision: a lake attached
+// without `+database: lake` is the state where ingest succeeds, the Parquet is
+// there, and dbt quietly writes its marts to the warehouse file instead.
+
+export interface ProjectLakehouse {
+  connectionId: string | null
+  name: string | null
+  mode: 'managed' | 'external' | null
+  maintained: boolean | null
+  buildIntoLake: boolean
+  /** Only dbt-duckdb can attach a DuckLake catalog. */
+  warehouseSupportsLake: boolean
+}
+
+export async function getProjectLakehouse(projectId: string) {
+  return apiFetch<ProjectLakehouse>(`/api/dbt-runner/lakehouse/project/${projectId}`)
+}
+
+export async function setProjectLakehouse(
+  projectId: string,
+  data: { connectionId?: string | null; buildIntoLake?: boolean },
+) {
+  return apiFetch<{ success: boolean; projectFileChanged: boolean }>(
+    `/api/dbt-runner/lakehouse/project/${projectId}`,
+    { method: 'PUT', body: JSON.stringify(data) },
+  )
+}
+
+export async function getLakehouseUsage(connectionId: string) {
+  return apiFetch<{
+    mode: string
+    maintained: boolean
+    metadataSchema: string
+    dataPath: string
+    projects: Array<{ id: string; name: string }>
+  }>(`/api/dbt-runner/lakehouse/${connectionId}/usage`)
+}
+
 export async function deleteIngestSource(id: string) {
   return apiFetch(`/api/ingest?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
@@ -329,6 +368,10 @@ export async function getProjectTargets(projectId: string) {
 
 export async function createProjectTarget(data: Record<string, unknown>) {
   return apiFetch<ProjectTargetRow>('/api/targets', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function updateProjectTarget(data: Record<string, unknown> & { id: string }) {
+  return apiFetch<ProjectTargetRow>('/api/targets', { method: 'PATCH', body: JSON.stringify(data) })
 }
 
 export async function deleteProjectTarget(id: string) {

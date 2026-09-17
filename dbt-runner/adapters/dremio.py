@@ -48,6 +48,7 @@ class DremioAdapter(BaseAdapter):
         self._password = config.get("password")
         self._user = config.get("user") or config.get("username")
         self._cloud_host = config.get("cloud_host", "api.dremio.cloud")
+        self._test_timeout = float(config.get("test_timeout", 15.0))
     
     def _get_base_url(self) -> str:
         """Get the base URL for Dremio API."""
@@ -81,47 +82,60 @@ class DremioAdapter(BaseAdapter):
         pass
     
     async def test_connection(self) -> Dict[str, Any]:
-        """Test Dremio connection via REST API."""
+        """Test Dremio by submitting the smallest query dbt could run.
+
+        Not a catalog read: ``GET /api/v3/user`` and ``GET /api/v3/catalog``
+        never answer on a coordinator whose sources are slow to enumerate - they
+        hold the connection open until the client gives up, so a working server
+        reported "Connection timed out". Neither proves dbt can run anything
+        either. ``POST /api/v3/sql`` is the endpoint dbt itself depends on, it
+        answers 401 on bad credentials, and it returns as soon as the job is
+        queued.
+        """
         import httpx
-        
+
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                url = f"{self._get_base_url()}/api/v3/user"
+            async with httpx.AsyncClient(timeout=self._test_timeout) as client:
                 headers = self._get_headers()
                 if self._password and self._user:
                     headers = await self._get_password_headers(client)
-                response = await client.get(url, headers=headers)
-                
+                    if not headers:
+                        return {"success": False, "message": "Invalid username or password"}
+                response = await client.post(
+                    f"{self._get_base_url()}/api/v3/sql",
+                    headers=headers,
+                    json={"sql": "SELECT 1"},
+                )
+
                 if response.status_code == 200:
-                    user = response.json()
                     return {
                         "success": True,
-                        "message": f"Connected as {user.get('userName', 'unknown')}",
+                        "message": f"Connected as {self._user or 'unknown'}",
                         "details": {
-                            "user": user.get('userName'),
-                            "email": user.get('email'),
-                            "type": "cloud" if self._is_cloud else "software"
-                        }
+                            "user": self._user,
+                            "type": "cloud" if self._is_cloud else "software",
+                            "job_id": response.json().get("id"),
+                        },
                     }
-                elif response.status_code == 401:
-                    return {"success": False, "message": "Invalid PAT token - authentication failed"}
-                elif response.status_code == 403:
-                    return {"success": False, "message": "Access forbidden - check PAT permissions"}
-                else:
-                    return {
-                        "success": False, 
-                        "message": f"Connection failed with status {response.status_code}"
-                    }
+                if response.status_code == 401:
+                    credential = "username/password" if self._password else "PAT token"
+                    return {"success": False, "message": f"Invalid {credential} - authentication failed"}
+                if response.status_code == 403:
+                    return {"success": False, "message": "Access forbidden - check the account's permissions"}
+                return {
+                    "success": False,
+                    "message": f"Connection failed with status {response.status_code}",
+                }
         except httpx.ConnectError:
             return {
-                "success": False, 
-                "message": f"Cannot connect to {self._get_base_url()}"
+                "success": False,
+                "message": f"Cannot connect to {self._get_base_url()}",
             }
         except httpx.TimeoutException:
             return {"success": False, "message": "Connection timed out"}
         except Exception as e:
             return {"success": False, "message": str(e)}
-    
+
     async def _get_schemas(self) -> List[str]:
         """Get schemas/spaces from Dremio catalog."""
         # TODO: Implement via Dremio REST API /api/v3/catalog

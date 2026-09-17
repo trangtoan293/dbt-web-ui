@@ -37,6 +37,9 @@ class CompileRequest(BaseModel):
     environment_variables: Optional[Dict[str, str]] = Field(
         None, description="Environment variables to expose to dbt for this compile"
     )
+    target: Optional[str] = Field(
+        None, description="profiles.yml output to use (--target). Null uses the project default."
+    )
 
 
 class PreviewRequest(BaseModel):
@@ -51,6 +54,9 @@ class PreviewRequest(BaseModel):
     environment_variables: Optional[Dict[str, str]] = Field(
         None, description="Environment variables to expose to dbt for this preview"
     )
+    target: Optional[str] = Field(
+        None, description="profiles.yml output to use (--target). Null uses the project default."
+    )
 
 
 class ExplainRequest(BaseModel):
@@ -63,6 +69,9 @@ class ExplainRequest(BaseModel):
     )
     environment_variables: Optional[Dict[str, str]] = Field(
         None, description="Environment variables to expose to dbt for this explain"
+    )
+    target: Optional[str] = Field(
+        None, description="profiles.yml output to use (--target). Null uses the project default."
     )
 
 

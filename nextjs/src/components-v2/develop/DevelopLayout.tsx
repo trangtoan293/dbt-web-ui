@@ -13,6 +13,7 @@ import {
   GitBranch,
   History,
   KeyRound,
+  Layers,
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
@@ -60,7 +61,7 @@ import {
 } from "@/components-v2/ui/dropdown-menu";
 import ProjectSettingsDialog from "@/components-v2/develop/settings/ProjectSettingsDialog";
 import type { DbtEnvironmentVariable, ProjectSettingsTab } from "@/components-v2/develop/settings/types";
-import TargetSelector, { DEFAULT_DBT_TARGET } from "@/components-v2/develop/TargetSelector";
+import { DEFAULT_DBT_TARGET } from "@/components-v2/develop/settings/types";
 import { useTopBar } from "@/components-v2/layout/TopBarContext";
 import type { Connection } from "@/components-v2/develop/types";
 
@@ -253,7 +254,29 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     clean: true,
     changes: [],
   });
-  const [isCommandRunning, setIsCommandRunning] = useState(false);
+  const [isCommandRunning, setIsCommandRunningState] = useState(false);
+  // State lags a click by a render, and Preview also fires from a keybinding
+  // that no disabled button can stop. The ref is what actually gates a second
+  // command: without it a held Cmd+Enter queues one dbt job per keypress.
+  const commandInFlightRef = useRef(false);
+
+  const setIsCommandRunning = useCallback((running: boolean) => {
+    commandInFlightRef.current = running;
+    setIsCommandRunningState(running);
+  }, []);
+
+  /** True when this command may start; otherwise it says why and refuses. */
+  const claimCommandSlot = useCallback(() => {
+    if (commandInFlightRef.current) {
+      setTerminalOutput((prev) => [
+        ...prev,
+        "A dbt command is already running for this project. Wait for it, or press Stop.",
+      ]);
+      setTerminalOpen(true);
+      return false;
+    }
+    return true;
+  }, []);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(restoredSession.expandedPaths ?? []));
   const [loadedChildren, setLoadedChildren] = useState<Record<string, FileNode[]>>(restoredSession.loadedChildren ?? {});
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
@@ -267,9 +290,6 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   const [createFileTrigger] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<ProjectSettingsTab>("general");
-  // Bumped when the settings dialog adds or removes a target, so the toolbar
-  // selector does not keep offering one that no longer exists.
-  const [targetsVersion, setTargetsVersion] = useState(0);
   const worktreeLabel = project?.git_project_subdirectory?.trim() || "Repository root";
   const openSettings = useCallback((tab: ProjectSettingsTab = "general") => {
     setSettingsTab(tab);
@@ -482,22 +502,26 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           {project.deleted_at ? <RotateCcw className="h-4 w-4" /> : <Edit className="h-4 w-4" />}
         </button>
 
-        {!project.deleted_at && (
-          <div className="hidden shrink-0 md:flex">
-            <TargetSelector
-              projectId={project.id}
-              value={dbtTarget}
-              onChange={setDbtTarget}
-              onManage={() => openSettings("environments")}
-              reloadKey={targetsVersion}
-            />
-          </div>
+        {/* Not a control: the target is chosen in Project settings, beside the
+            connection it belongs to. This only appears when commands are NOT
+            going to the project's own connection, because that is the case
+            worth seeing without opening anything. */}
+        {!project.deleted_at && dbtTarget !== DEFAULT_DBT_TARGET && (
+          <button
+            type="button"
+            onClick={() => openSettings("environments")}
+            title="Every dbt command in this project runs against this target. Click to change it."
+            className="hidden shrink-0 items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-900 md:flex"
+          >
+            <Layers className="h-3.5 w-3.5" />
+            {dbtTarget}
+          </button>
         )}
       </div>
     );
 
     return () => setTopBarContent(null);
-  }, [dbtTarget, gitStatus.changes.length, gitStatus.clean, openSettings, project, setTopBarContent, targetsVersion, worktreeLabel]);
+  }, [dbtTarget, gitStatus.changes.length, gitStatus.clean, openSettings, project, setTopBarContent, worktreeLabel]);
 
   useEffect(() => {
     if (!userId || restoredForUserRef.current === userId) return;
@@ -705,7 +729,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     if (dbtRunStream.isConnected || dbtRunStream.isConnecting) {
       setIsCommandRunning(true);
     }
-  }, [dbtRunStream.isConnected, dbtRunStream.isConnecting]);
+  }, [dbtRunStream.isConnected, dbtRunStream.isConnecting, setIsCommandRunning]);
 
   // ---- Load project + models ----
   useEffect(() => {
@@ -901,6 +925,17 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           console.error("Failed to regenerate profiles.yml:", regenError);
         }
       }
+      // The project connection *is* target dev. Leaving a different target
+      // selected means the connection just chosen is not the one commands use,
+      // and nothing on screen would say so - the toolbar keeps its target
+      // across reloads, so it can have been prod since another day.
+      if (dbtTarget !== DEFAULT_DBT_TARGET) {
+        setDbtTarget(DEFAULT_DBT_TARGET);
+        setTerminalOutput((prev) => [
+          ...prev,
+          `Target switched to ${DEFAULT_DBT_TARGET} (project connection); it was ${dbtTarget}.`,
+        ]);
+      }
       setTerminalOutput((prev) => [...prev, connectionId ? "✅ Connection updated" : "✅ Connection disconnected"]);
     } catch (error) {
       console.error("Error updating connection:", error);
@@ -921,6 +956,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleRunDbt = async (command: string) => {
+    if (!claimCommandSlot()) return;
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
     const commandWithArgs = buildDbtCommandWithArgs(command, dbtCommandArgs, dbtFullRefresh, dbtTarget);
     setTerminalOpen(true);
@@ -950,6 +986,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
       return;
     }
     activeDbtCommandRef.current = commandWithArgs;
+    setIsCommandRunning(true);
     setTerminalOutput((prev) => [...prev, "[INFO] Connected via SSE"]);
     dbtRunStream.sendCommand(commandWithArgs, undefined, dbtEnvironment);
   };
@@ -978,6 +1015,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handlePreviewModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setTerminalOutput((prev) => [...prev, "Please select a SQL model file to preview"]);
@@ -991,9 +1029,12 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setIsCommandRunning(true);
     const extraArgs = buildDbtAdditionalArgs("show", dbtCommandArgs, dbtFullRefresh);
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
-    setTerminalOutput((prev) => [...prev, `$ dbt show --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
+    // Through the same builder the run path uses, so the echoed line carries
+    // --target. Without it the terminal said `dbt show --select x` while the
+    // request ran on prod, and nothing on screen could tell them apart.
+    setTerminalOutput((prev) => [...prev, `$ dbt ${buildDbtCommandWithArgs(`show --select ${targetFile.split("/").pop()?.replace(".sql", "")}`, dbtCommandArgs, dbtFullRefresh, dbtTarget)}`]);
     try {
-      const data = await dbtApi.preview(projectId, targetFile, 100, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.preview(projectId, targetFile, 100, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setQueryLoading(false);
       setIsCommandRunning(false);
       if (data.success) {
@@ -1039,6 +1080,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleCompileModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setTerminalOutput((prev) => [...prev, "Please select a SQL model file to compile"]);
@@ -1050,9 +1092,9 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setCompiledError(null);
     const extraArgs = buildDbtAdditionalArgs("compile", dbtCommandArgs, dbtFullRefresh);
     const dbtEnvironment = toEnvironmentPayload(environmentVariables);
-    setTerminalOutput((prev) => [...prev, `$ dbt compile --select ${targetFile.split("/").pop()?.replace(".sql", "")}${extraArgs ? ` ${extraArgs}` : ""}`]);
+    setTerminalOutput((prev) => [...prev, `$ dbt ${buildDbtCommandWithArgs(`compile --select ${targetFile.split("/").pop()?.replace(".sql", "")}`, dbtCommandArgs, dbtFullRefresh, dbtTarget)}`]);
     try {
-      const data = await dbtApi.compile(projectId, targetFile, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.compile(projectId, targetFile, extraArgs || undefined, dbtEnvironment, dbtTarget);
       setCompiledLoading(false);
       if (data.success) {
         setCompiledSQL(data.compiled_sql);
@@ -1069,6 +1111,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
   };
 
   const handleExplainModel = async () => {
+    if (!claimCommandSlot()) return;
     const targetFile = await ensureSavedSqlFile();
     if (!targetFile || !targetFile.endsWith(".sql")) {
       setQueryPlanError("Please select a SQL model file to explain");
@@ -1094,7 +1137,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
       stageTimer = window.setTimeout(() => {
         setQueryPlanLoadingStage((stage) => (stage === "Compiling model..." ? "Running explain..." : stage));
       }, 500);
-      const data = await dbtApi.explain(projectId, targetFile, extraArgs || undefined, dbtEnvironment);
+      const data = await dbtApi.explain(projectId, targetFile, extraArgs || undefined, dbtEnvironment, dbtTarget);
       if (stageTimer !== undefined) window.clearTimeout(stageTimer);
       setQueryPlanLoading(false);
       setQueryPlanLoadingStage(null);
@@ -1672,7 +1715,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setTerminalTab("logs");
     setTerminalOutput((prev) => [...prev, "$ dbt docs generate", "Generating documentation..."]);
     try {
-      const result = await dbtApi.generateDocs(projectId);
+      const result = await dbtApi.generateDocs(projectId, undefined, dbtTarget);
       if (result.success) {
         const lines = result.stdout?.split("\n").filter((l: string) => l.trim()) || [];
         setTerminalOutput((prev) => [...prev, ...lines, "✅ Documentation generated"]);
@@ -1689,7 +1732,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setTerminalOutput((prev) => [...prev, "$ dbt docs generate", "Generating..."]);
     const docsWindow = window.open("about:blank", "_blank");
     try {
-      const result = await dbtApi.generateDocs(projectId);
+      const result = await dbtApi.generateDocs(projectId, undefined, dbtTarget);
       if (result.success) {
         setTerminalOutput((prev) => [...prev, "✅ Opening docs..."]);
         await refreshDbtIntellisense();
@@ -2091,8 +2134,9 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
         connections={connections}
         busy={operationLoading}
         onSelectConnection={updateProjectConnection}
+        dbtTarget={dbtTarget}
+        onSelectTarget={setDbtTarget}
         onRename={handleRenameProject}
-        onTargetsChanged={() => setTargetsVersion((version) => version + 1)}
         environmentVariables={environmentVariables}
         onEnvironmentVariablesChange={setEnvironmentVariables}
         onSaveEnvironmentVariables={handleSaveEnvironmentVariables}

@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth'
 import { getDbtRunnerUrl } from '@/lib/api/client'
 import { getConnectionById, getDremioSourceById } from '@/lib/actions/data'
 import { decryptSecret } from '@/lib/crypto'
+import { checkLakehouse, type LakehouseMode } from '@/lib/lakehouse'
 
 export async function POST(
   request: Request,
@@ -53,6 +54,30 @@ export async function POST(
       passwordEncrypted: string | null
       sslMode: string | null
       extraConfig: unknown
+    }
+    if (c.connectionType === 'ducklake') {
+      // A lakehouse is not tested through the adapter registry: dbt never runs
+      // against it, and what has to be checked is the catalog, the data path and
+      // the schema, all of which only dbt-runner can validate.
+      const extra = ((c.extraConfig as Record<string, unknown> | null) ?? {})
+      const result = await checkLakehouse(
+        {
+          mode: (extra.mode as LakehouseMode) ?? 'managed',
+          catalogType: extra.catalog_type as 'postgresql' | 'sqlite' | undefined,
+          host: c.host,
+          port: c.port,
+          database: c.database,
+          username: c.username,
+          password: decryptSecret(c.passwordEncrypted),
+          dataPath: extra.data_path as string | undefined,
+          metadataSchema: extra.metadata_schema as string | undefined,
+          maintained: extra.maintained as boolean | undefined,
+          connectionId: id,
+          probe: true,
+        },
+        (session as { accessToken?: string }).accessToken,
+      )
+      return NextResponse.json(result)
     }
     if (c.connectionType === 'dremio') {
       const extraConfig = ((c.extraConfig as Record<string, unknown> | null) ?? {})

@@ -48,14 +48,54 @@ MAX_CONCURRENT_QUERIES`; raising concurrency shrinks every run. Adapters import
 nothing from `app` — `_apply_duckdb_resources` in `dbt_service.py` is the single
 call site. Spill goes to `DUCKDB_TEMP_DIR`, not next to the db file.
 
-**Ingest & lakehouse.** `POST /sse/ingest/{source_id}` runs dlt in a subprocess
-configured over **stdin, never argv** (argv leaks the warehouse password).
-`ingest_sources` stores no credentials — it references a `connections` row.
-Destinations: `ducklake` (default) or `connection`. The lake is DuckLake:
-catalog in Postgres, Parquet on `storage-data`, one catalog per project;
+**Ingest.** `POST /sse/ingest/{source_id}` runs dlt in a subprocess configured
+over **stdin, never argv** (argv leaks the warehouse password). `ingest_sources`
+stores no credentials — it references a `connections` row, and that reference is
+**nullable**: a file path and a public API have none. Three source kinds,
+dispatched in `_build_source_block` (`app/routers/ingest.py`) and built in
+`ingest/runner.py:_build_source`; each kind's own module validates what it may
+contain — `sql_database` (`sql_source.py`: Postgres, Oracle, MySQL, one
+`build_url`), `rest_api` (`rest_source.py`: configured with a **dict**, because a
+Python source definition in a request body is RCE; paths cannot contain `..`,
+params must be scalars, resource names must equal `tables`), `filesystem`
+(`file_source.py`: CSV/JSONL/Parquet fenced to `INGEST_FILE_ROOTS`, CSV read
+through duckdb). `mysql` and `rest` are connection types with **no dbt adapter**,
+the same shape as `ducklake`: `build_adapter_config_from_connection_row` refuses
+them as a project's warehouse with a message, and `/connection/test` plus the
+table picker fall back to `sql_source.probe` / `rest_source.probe_rest`.
+**`cursor_field` is the most important field on a source** — it makes dlt push
+`WHERE cursor > last_value` down to the source; without one every load reads the
+whole table and `merge` only dedupes afterwards. `_apply_hints` applies it for
+`sql_database` and `filesystem` but not `rest_api`, which carries it
+declaratively so it is actually *sent* (`incremental.start_param` names the query
+parameter). Destinations: `ducklake` (default) or `connection`.
+
+**Lakehouse.** A lake is a `connections` row of type `ducklake`, not a value
+derived from a project id — that is what lets one be named, shared by several
+projects, or borrowed from someone else. A project attaches one through
+`dbt_projects.lakehouseConnectionId`, separate from `connectionId` because a lake
+sits *beside* the warehouse. Catalog in Postgres, Parquet on `storage-data`;
 `ingest/lakehouse.py` owns the layout and is shared with profile generation.
-`partition_by` becomes `SET PARTITIONED BY` DDL — validated on both sides,
-`lakehouse.partition_expression` enforces it.
+`extra_config.mode` is **managed** (this deployment created the catalog; its URL
+is read from `LAKE_CATALOG_URL` at resolve time, never copied into the row, so
+rotating it moves every managed lake) or **external** (every locating value is
+user input). The mode is not a display flag: `provision()` refuses to pin write
+options on an external lake and `destroy()` refuses one outright, both guards in
+`ingest/lakehouse.py` rather than in the routers. External is read-write on
+purpose — DuckLake is genuinely multi-writer; what is gated is `maintained`,
+which external defaults to false. Four external-mode checks
+(`app/services/lakes.py`, covered by `tests/test_lakehouse_connections.py`):
+`assert_host_allowed` at save *and* resolve time (without it a lake aimed at our
+own Postgres reads every user's `password_encrypted` through ordinary model SQL),
+`validate_metadata_schema` (the name is concatenated into `ATTACH`, no bound
+parameter), `validate_data_path` (refuses inside `LAKE_DATA_DIR` and any local
+path outside `LAKE_EXTERNAL_DATA_ROOTS`), and an existence check *before*
+attaching (attaching creates the metadata schema, so a typo would leave a stray
+catalog and report success). Maintenance runs once per lake, not once per
+project. `partition_by` becomes `SET PARTITIONED BY` DDL — validated on both
+sides, `lakehouse.partition_expression` enforces it. `+database: lake` is set
+from `LakehousePanel`, edited as lines because `dbt_project.yml` ships full of
+comments that a YAML round trip would delete.
 
 **Iceberg publish.** `POST /lake/iceberg/{project_id}` **copies** Parquet, never
 registers the lake's own files: two catalogs each running GC cannot share files
@@ -121,9 +161,20 @@ Warm worker pools are reclaimed idle-first then LRU, never mid-job.
 - Models reach the lake only with `+database: lake`. Only dbt-duckdb can attach
   DuckLake — other warehouses should use the `connection` destination. dbt-built
   lake tables have no partition spec (`lakehouse.unpartitioned_tables` reports
-  them). The attach block is added only while a `ducklake` ingest source exists.
+  them). The attach block is added only for a project with a lakehouse attached,
+  and only on its DuckDB targets — the refusal belongs *after* the target loop,
+  or one Dremio target fails the whole profile.
 - dlt cursors live in `STORAGE_DIR/dlt/{project_id}`.
   `INGEST_ALLOW_PRIVATE_HOSTS=true` still blocks our own Postgres/Redis.
+- dlt's two incremental shapes are not interchangeable: the endpoint form takes
+  `start_param` and **rejects** `type`, the parameter form requires `type` and
+  has no `start_param`. Mixing them fails only at load time, which is why the
+  REST source has an end-to-end test against a real HTTP server.
+- A source with no `cursor_field` re-reads everything every run — not a tuning
+  knob at core-banking size. Empty `INGEST_FILE_ROOTS` turns the filesystem
+  source off, deliberately: dbt-runner can read anywhere its uid reaches. A
+  `rest` connection keeps its hostname in `host` so the host guard has the same
+  thing to check as every other type (`rest_source.validate_base_url`).
 - dsh-agent: the first prompt waits on the MCP readiness file; drain harness
   stderr in chunks; stdout is JSON-RPC (log to stderr); drop empty env values;
   the image must run npm install scripts (koffi); mount projects outside `/tmp`;
@@ -134,6 +185,10 @@ Warm worker pools are reclaimed idle-first then LRU, never mid-job.
 
 - Hardcode secrets, add RLS policies, or add analytics/telemetry.
 - Add a warehouse to the UI without its dbt adapter in `pyproject.toml`.
+  `mysql`, `rest` and `ducklake` are the exception: read-only ingest types with
+  no adapter on purpose, refused as a warehouse with a message.
 - Accept Python source for an ingest source — configuration is declarative only.
-- Skip `host_guard` on any endpoint that connects to a user-supplied host.
+- Skip a host guard on any endpoint that connects to a user-supplied host:
+  `app/core/host_guard.py` in dbt-runner, `src/lib/host-guard.ts` in the
+  frontend (a provider's Base URL is fetched by the server too).
 - Give dsh-agent database access or let it shell out to dbt.

@@ -14,6 +14,9 @@ class DocsGenerateRequest(BaseModel):
     select: Optional[str] = Field(
         None, description="Optional model selector to limit docs generation"
     )
+    target: Optional[str] = Field(
+        None, description="profiles.yml output to use (--target). Null uses the project default."
+    )
 
 
 class DocsGenerateResponse(BaseModel):

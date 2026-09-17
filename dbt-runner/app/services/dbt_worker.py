@@ -251,6 +251,9 @@ class DbtWarmWorkerPool:
         self._capacity_sem = asyncio.BoundedSemaphore(self.capacity)
         self._started = False
         self._start_lock = asyncio.Lock()
+        # Bumped when a project's workers are killed on purpose. A caller that
+        # sees its epoch change knows the worker did not fail - it was stopped.
+        self._cancellations: Dict[str, int] = {}
 
     async def start(self) -> None:
         if not self.enabled or self.worker_count <= 0:
@@ -272,8 +275,17 @@ class DbtWarmWorkerPool:
         self._project_pools.clear()
         self._started = False
 
-    async def release_project(self, project_id: str) -> bool:
+    def cancellation_epoch(self, project_id: str) -> int:
+        """How many times this project's workers have been cancelled."""
+        return self._cancellations.get(project_id, 0)
+
+    async def release_project(self, project_id: str, *, cancel: bool = False) -> bool:
         """Stop this project's warm workers and let them restart on demand.
+
+        `cancel=True` marks it as a user Stop. Without that mark the caller in
+        flight treats the dead worker as a worker failure and re-runs the whole
+        command as a subprocess, so Stop looked like it did nothing except make
+        the command slower.
 
         A warm worker keeps a dbt process alive, and a dbt process on a
         file-backed DuckDB warehouse keeps that file open. DuckDB is
@@ -283,6 +295,8 @@ class DbtWarmWorkerPool:
         Any preview in flight on this project dies with the worker. That is the
         cheaper end of the trade: the alternative is a run that cannot start.
         """
+        if cancel:
+            self._cancellations[project_id] = self.cancellation_epoch(project_id) + 1
         pool = self._project_pools.pop(project_id, None)
         if pool is None:
             return False

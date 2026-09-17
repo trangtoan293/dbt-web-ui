@@ -186,7 +186,24 @@ export default function ConnectionsView() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-semibold text-gray-950">{c.name}</p>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{TYPE_LABELS[c.connectionType] ?? c.connectionType}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        c.connectionType === "ducklake"
+                          ? "bg-teal-50 text-teal-700"
+                          : "bg-slate-100 text-slate-600"
+                      }`}
+                      // A lakehouse sits in this list because it is stored like
+                      // a connection, but a project attaches it alongside its
+                      // warehouse rather than running on it. Same badge shape
+                      // made it look like one more warehouse to point dbt at.
+                      title={
+                        c.connectionType === "ducklake"
+                          ? "A DuckLake catalog. Attach it to a project under Project settings → Lakehouse; it cannot be a dbt target."
+                          : "A warehouse dbt connects to"
+                      }
+                    >
+                      {TYPE_LABELS[c.connectionType] ?? c.connectionType}
+                    </span>
                   </div>
                   <p className="mt-1 truncate text-sm text-gray-500">{c.host || c.database || "Local connection"}{c.port ? `:${c.port}` : ""}</p>
                 </div>

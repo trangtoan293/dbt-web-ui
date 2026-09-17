@@ -1,374 +1,427 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { AlertCircle, Bot, Check, Loader2, Plus, Star, Trash2 } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components-v2/ui/card"
+import { useEffect, useState, type ReactNode } from "react"
+import {
+  AlertCircle, Bot, Check, CheckCircle2, KeyRound, Loader2, Pencil,
+  PlugZap, Plus, Server, Star, Trash2, TriangleAlert,
+} from "lucide-react"
+
 import { Button } from "@/components-v2/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components-v2/ui/card"
 import { Input } from "@/components-v2/ui/input"
+import {
+  createProviderDraft, draftToProviderInput, validateProviderDraft,
+  type ProviderDraft, type ProviderViewModel,
+} from "@/lib/ai-provider-form"
 
-interface ProviderModel {
-  id: string
-}
-
-interface ProviderView {
-  route: string
-  label: string | null
-  apiKeyEnv: string
-  api: string | null
-  baseUrl: string | null
-  models: ProviderModel[]
-  defaultModel: string | null
-  isDefault: boolean
-  credentialConfigured: boolean
-  updatedAt: string
-}
-
-interface Draft {
+interface ProviderPresetView {
   route: string
   label: string
-  apiKeyEnv: string
-  api: string
+  description: string
+  apiKeyPlaceholder: string
   baseUrl: string
-  models: string
-  defaultModel: string
-  apiKey: string
-  isDefault: boolean
-  /** A route the installed catalog does not list, typed in by hand. */
-  custom: boolean
 }
 
-const EMPTY: Draft = {
-  route: "", label: "", apiKeyEnv: "", api: "", baseUrl: "",
-  models: "", defaultModel: "", apiKey: "", isDefault: false, custom: false,
+interface ConnectionResult {
+  status: "connected" | "warning" | "error"
+  message: string
+  latencyMs?: number
 }
 
-const CUSTOM = "__custom__"
-
-const SELECT_CLASS = "mt-1 h-9 w-full rounded-md border border-gray-200 bg-white px-2 text-xs"
-
-function defaultApiKeyEnv(route: string): string {
-  const cleaned = route.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
-  return cleaned ? `${cleaned.toUpperCase()}_API_KEY` : ""
+const PROTOCOL_LABELS: Record<string, string> = {
+  "openai-completions": "Chat Completions — works with most compatible APIs",
+  "openai-responses": "OpenAI Responses API",
+  "anthropic-messages": "Anthropic Messages API",
 }
 
-/** Follow the route, unless the reference was typed in by hand. */
-function nextApiKeyEnv(draft: Draft, route: string): string {
-  const derived = defaultApiKeyEnv(draft.route)
-  return draft.apiKeyEnv && draft.apiKeyEnv !== derived ? draft.apiKeyEnv : defaultApiKeyEnv(route)
+function ResultMessage({ result }: { result: ConnectionResult }) {
+  const isConnected = result.status === "connected"
+  const isWarning = result.status === "warning"
+  const Icon = isConnected ? CheckCircle2 : isWarning ? TriangleAlert : AlertCircle
+  const tone = isConnected
+    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    : isWarning
+      ? "border-amber-200 bg-amber-50 text-amber-800"
+      : "border-red-200 bg-red-50 text-red-800"
+
+  return (
+    <div role="status" className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${tone}`}>
+      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span>
+        {result.message}
+        {typeof result.latencyMs === "number" && result.status !== "error" && (
+          <span className="ml-1 opacity-70">({result.latencyMs} ms)</span>
+        )}
+      </span>
+    </div>
+  )
 }
 
-/**
- * Model providers for the dbt assistant, in the harness's own shape.
- *
- * A provider the harness's adapter ships a catalog for needs nothing but a key;
- * a gateway it does not ship declares its protocol, endpoint and models. That is
- * the same distinction the harness makes, which is what keeps any provider a
- * matter of configuration here rather than a code change.
- */
+function FieldHelp({ children }: { children: ReactNode }) {
+  return <span className="mt-1 block text-[11px] leading-4 text-gray-500">{children}</span>
+}
+
 export default function AssistantProvidersCard() {
-  const [providers, setProviders] = useState<ProviderView[] | null>(null)
+  const [providers, setProviders] = useState<ProviderViewModel[] | null>(null)
   const [protocols, setProtocols] = useState<string[]>([])
-  const [catalogRoutes, setCatalogRoutes] = useState<string[]>([])
-  const [draft, setDraft] = useState<Draft | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [presets, setPresets] = useState<ProviderPresetView[]>([])
+  const [draft, setDraft] = useState<ProviderDraft | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [removingRoute, setRemovingRoute] = useState<string | null>(null)
+  const [testingTarget, setTestingTarget] = useState<string | null>(null)
+  const [draftResult, setDraftResult] = useState<ConnectionResult | null>(null)
+  const [savedResults, setSavedResults] = useState<Record<string, ConnectionResult>>({})
   const [error, setError] = useState<string | null>(null)
 
   const load = async () => {
     try {
       const response = await fetch("/api/ai-providers")
-      if (!response.ok) throw new Error(`Could not read providers (${response.status})`)
+      if (!response.ok) throw new Error(`Could not read AI connections (${response.status})`)
       const body = await response.json()
       setProviders(body.providers ?? [])
       setProtocols(body.protocols ?? [])
-      setCatalogRoutes(body.catalogRoutes ?? [])
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Could not read providers")
+      setPresets(body.providerPresets ?? [])
+      setError(null)
+    } catch (loadError: unknown) {
+      setError(loadError instanceof Error ? loadError.message : "Could not read AI connections")
     }
   }
 
-  useEffect(() => {
-    void load()
-  }, [])
+  useEffect(() => { void load() }, [])
 
-  const isCatalog = draft ? catalogRoutes.includes(draft.route.trim()) : false
+  function updateDraft<K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) {
+    setDraft((current) => current ? { ...current, [key]: value } : null)
+    setDraftResult(null)
+    setError(null)
+  }
 
-  const save = async () => {
+  function selectConnectionType(connectionType: string) {
+    const next = createProviderDraft(connectionType)
+    next.isDefault = draft?.isDefault ?? false
+    setDraft(next)
+    setDraftResult(null)
+    setError(null)
+  }
+
+  async function checkConnection(inputDraft: ProviderDraft, target: string) {
+    const problem = validateProviderDraft(inputDraft)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    setTestingTarget(target)
+    setError(null)
+    if (target === "draft") setDraftResult(null)
+    try {
+      const response = await fetch("/api/ai-providers/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draftToProviderInput(inputDraft)),
+      })
+      const body = await response.json()
+      if (!response.ok) throw new Error(body?.error ?? `Connection check failed (${response.status})`)
+      if (target === "draft") setDraftResult(body)
+      else setSavedResults((current) => ({ ...current, [target]: body }))
+    } catch (checkError: unknown) {
+      const message = checkError instanceof Error ? checkError.message : "Connection check failed"
+      if (target === "draft") setDraftResult({ status: "error", message })
+      else setSavedResults((current) => ({ ...current, [target]: { status: "error", message } }))
+    } finally {
+      setTestingTarget(null)
+    }
+  }
+
+  async function save() {
     if (!draft) return
-    setBusy(true)
+    const problem = validateProviderDraft(draft)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    setSaving(true)
     setError(null)
     try {
       const response = await fetch("/api/ai-providers", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          route: draft.route.trim(),
-          label: draft.label.trim() || null,
-          apiKeyEnv: draft.apiKeyEnv.trim() || defaultApiKeyEnv(draft.route),
-          api: draft.api || null,
-          baseUrl: draft.baseUrl.trim() || null,
-          models: draft.models
-            .split(/[\s,]+/)
-            .filter(Boolean)
-            .map((id) => ({ id })),
-          defaultModel: draft.defaultModel.trim() || null,
-          isDefault: draft.isDefault,
-          apiKey: draft.apiKey.trim() || null,
-        }),
+        body: JSON.stringify(draftToProviderInput(draft)),
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body?.error ?? `Save failed (${response.status})`)
       setProviders(body.providers ?? [])
       setDraft(null)
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Save failed")
+      setDraftResult(null)
+    } catch (saveError: unknown) {
+      setError(saveError instanceof Error ? saveError.message : "Save failed")
     } finally {
-      setBusy(false)
+      setSaving(false)
     }
   }
 
-  const remove = async (route: string) => {
-    setBusy(true)
+  async function remove(route: string) {
+    setRemovingRoute(route)
     setError(null)
     try {
-      const response = await fetch(`/api/ai-providers?route=${encodeURIComponent(route)}`, {
-        method: "DELETE",
-      })
+      const response = await fetch(`/api/ai-providers?route=${encodeURIComponent(route)}`, { method: "DELETE" })
       const body = await response.json()
       if (!response.ok) throw new Error(body?.error ?? `Remove failed (${response.status})`)
       setProviders(body.providers ?? [])
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Remove failed")
+      setSavedResults((current) => {
+        const next = { ...current }
+        delete next[route]
+        return next
+      })
+    } catch (removeError: unknown) {
+      setError(removeError instanceof Error ? removeError.message : "Remove failed")
     } finally {
-      setBusy(false)
+      setRemovingRoute(null)
     }
   }
 
+  const selectedPreset = draft ? presets.find((preset) => preset.route === draft.connectionType) : undefined
+  const isCustom = draft?.connectionType === "custom"
+  const actionBusy = saving || removingRoute !== null || testingTarget !== null
+
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-2">
-          <Bot className="h-4 w-4 text-[#0078D4]" />
-          Assistant model providers
+          <Bot className="h-5 w-5 text-[#0078D4]" /> AI connections
         </CardTitle>
-        <CardDescription>
-          Your own providers for the dbt assistant, in the shape the harness takes:
-          a provider it ships a catalog for needs only a key, while any other
-          gateway declares its protocol, endpoint and models. Keys are stored
-          encrypted and never shown again.
+        <CardDescription className="max-w-2xl leading-5">
+          Connect the provider and model used by the dbt assistant. API keys are encrypted,
+          write-only, and never shown again.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+
+      <CardContent className="space-y-5">
+        <div className="grid gap-2 rounded-xl border border-blue-100 bg-blue-50/60 p-3 sm:grid-cols-3">
+          {[
+            ["1", "Choose", "Select a provider or compatible API"],
+            ["2", "Check", "Verify endpoint, key, and model"],
+            ["3", "Save", "Use it for new conversations"],
+          ].map(([number, title, description]) => (
+            <div key={number} className="flex gap-2.5">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#0078D4] text-xs font-semibold text-white">{number}</span>
+              <span>
+                <span className="block text-xs font-semibold text-gray-900">{title}</span>
+                <span className="block text-[11px] leading-4 text-gray-600">{description}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+
         {providers === null ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-gray-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading providers…
+          <div className="flex items-center gap-2 py-5 text-sm text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading AI connections…
           </div>
         ) : providers.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            No provider yet. The assistant falls back to whatever key the deployment
-            configured, if any.
-          </p>
+          <div className="rounded-lg border border-dashed border-gray-300 px-4 py-5 text-center">
+            <Server className="mx-auto mb-2 h-5 w-5 text-gray-400" />
+            <p className="text-sm font-medium text-gray-800">No personal AI connection</p>
+            <p className="mt-1 text-xs text-gray-500">The assistant uses the deployment default, if one is configured.</p>
+          </div>
         ) : (
-          <ul className="divide-y divide-gray-100">
-            {providers.map((provider) => (
-              <li key={provider.route} className="flex flex-wrap items-center gap-2 py-2">
-                <span className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
-                  {provider.isDefault && <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />}
-                  {provider.label || provider.route}
-                </span>
-                <span className="font-mono text-[11px] text-gray-400">{provider.route}</span>
-                {provider.api && (
-                  <span className="rounded bg-[#F3F2F1] px-1.5 py-0.5 text-[10px] text-gray-600">
-                    {provider.api}
-                  </span>
-                )}
-                {provider.defaultModel && (
-                  <span className="text-[11px] text-gray-500">{provider.defaultModel}</span>
-                )}
-                <span className={`text-[11px] ${provider.credentialConfigured ? "text-green-700" : "text-amber-700"}`}>
-                  {provider.credentialConfigured ? `${provider.apiKeyEnv} set` : `${provider.apiKeyEnv} missing`}
-                </span>
-                <span className="ml-auto flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => setDraft({
-                      ...EMPTY,
-                      route: provider.route,
-                      label: provider.label ?? "",
-                      apiKeyEnv: provider.apiKeyEnv,
-                      api: provider.api ?? "",
-                      baseUrl: provider.baseUrl ?? "",
-                      models: provider.models.map((model) => model.id).join(", "),
-                      defaultModel: provider.defaultModel ?? "",
-                      isDefault: provider.isDefault,
-                      custom: !catalogRoutes.includes(provider.route),
-                    })}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    title={`Remove ${provider.route} and its stored key`}
-                    onClick={() => void remove(provider.route)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">Saved connections</h3>
+            {providers.map((provider) => {
+              const preset = presets.find((item) => item.route === provider.route)
+              const providerDraft = createProviderDraft(preset?.route ?? "custom", provider)
+              const result = savedResults[provider.route]
+              return (
+                <div key={provider.route} className="rounded-lg border border-gray-200 p-3">
+                  <div className="flex flex-wrap items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-gray-900">{provider.label || preset?.label || provider.route}</span>
+                        {provider.isDefault && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            <Star className="h-3 w-3 fill-amber-400 text-amber-400" /> Default
+                          </span>
+                        )}
+                        <span className={`inline-flex items-center gap-1 text-[11px] ${provider.credentialConfigured ? "text-emerald-700" : "text-amber-700"}`}>
+                          <KeyRound className="h-3 w-3" /> {provider.credentialConfigured ? "API key saved" : "API key missing"}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500">
+                        <span>{preset?.label ?? "Custom OpenAI-compatible"}</span>
+                        {provider.baseUrl && <span className="truncate font-mono">{provider.baseUrl}</span>}
+                        {provider.defaultModel && <span>Model: <span className="font-mono">{provider.defaultModel}</span></span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" variant="outline" disabled={actionBusy || !provider.credentialConfigured} onClick={() => void checkConnection(providerDraft, provider.route)}>
+                        {testingTarget === provider.route ? <Loader2 className="animate-spin" /> : <PlugZap />} Check
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={actionBusy} onClick={() => { setDraft(providerDraft); setDraftResult(null); setError(null) }} aria-label={`Edit ${provider.label || provider.route}`}>
+                        <Pencil />
+                      </Button>
+                      <Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700" disabled={actionBusy} title={`Remove ${provider.label || provider.route} and its stored API key`} onClick={() => void remove(provider.route)} aria-label={`Remove ${provider.label || provider.route}`}>
+                        {removingRoute === provider.route ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                      </Button>
+                    </div>
+                  </div>
+                  {result && <div className="mt-2"><ResultMessage result={result} /></div>}
+                </div>
+              )
+            })}
+          </div>
         )}
 
         {draft === null ? (
-          <Button size="sm" variant="outline" onClick={() => setDraft(EMPTY)}>
-            <Plus className="mr-1 h-3.5 w-3.5" /> Add provider
+          <Button variant="outline" onClick={() => setDraft(createProviderDraft("openai"))}>
+            <Plus /> Add AI connection
           </Button>
         ) : (
-          <div className="space-y-2 rounded-lg border border-gray-200 bg-[#FAFAFA] p-3">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className="text-xs text-gray-600">
-                Provider id
-                <select
-                  className={SELECT_CLASS}
-                  value={draft.custom ? CUSTOM : draft.route}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    const route = value === CUSTOM ? "" : value
-                    setDraft({
-                      ...draft,
-                      route,
-                      custom: value === CUSTOM,
-                      apiKeyEnv: nextApiKeyEnv(draft, route),
-                    })
-                  }}
-                >
-                  <option value="">Select a provider</option>
-                  {catalogRoutes.map((route) => (
-                    <option key={route} value={route}>{route}</option>
-                  ))}
-                  <option value={CUSTOM}>Other gateway…</option>
-                </select>
-                {draft.custom && (
-                  <Input
-                    className="mt-1 font-mono"
-                    placeholder="my-gateway"
-                    value={draft.route}
-                    onChange={(event) => setDraft({
-                      ...draft,
-                      route: event.target.value,
-                      apiKeyEnv: nextApiKeyEnv(draft, event.target.value),
-                    })}
-                  />
-                )}
-              </label>
-              <label className="text-xs text-gray-600">
-                Credential reference
-                <Input
-                  className="mt-1 font-mono"
-                  placeholder={defaultApiKeyEnv(draft.route) || "OPENAI_API_KEY"}
-                  value={draft.apiKeyEnv}
-                  onChange={(event) => setDraft({ ...draft, apiKeyEnv: event.target.value })}
-                />
-              </label>
-              <label className="text-xs text-gray-600">
-                API key {draft.route && <span className="text-gray-400">(write-only)</span>}
-                <Input
-                  className="mt-1"
-                  type="password"
-                  // "off" does not stop a password manager; this field is not a
-                  // login and must never be autofilled with an unrelated secret.
-                  autoComplete="new-password"
-                  placeholder="sk-…"
-                  value={draft.apiKey}
-                  onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })}
-                />
-              </label>
-              <label className="text-xs text-gray-600">
-                Display name
-                <Input
-                  className="mt-1"
-                  placeholder="Optional"
-                  value={draft.label}
-                  onChange={(event) => setDraft({ ...draft, label: event.target.value })}
-                />
-              </label>
-              <label className="text-xs text-gray-600">
-                Protocol {isCatalog && <span className="text-gray-400">(optional)</span>}
-                <select
-                  className={SELECT_CLASS}
-                  value={draft.api}
-                  onChange={(event) => setDraft({ ...draft, api: event.target.value })}
-                >
-                  <option value="">{isCatalog ? "From the installed catalog" : "Select a protocol"}</option>
-                  {protocols.map((protocol) => (
-                    <option key={protocol} value={protocol}>{protocol}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs text-gray-600">
-                Base URL {isCatalog && <span className="text-gray-400">(optional)</span>}
-                <Input
-                  className="mt-1"
-                  placeholder="https://gateway.example/v1"
-                  value={draft.baseUrl}
-                  onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
-                />
-              </label>
-              <label className="text-xs text-gray-600 sm:col-span-2">
-                Models {isCatalog && <span className="text-gray-400">(optional — narrows the catalog)</span>}
-                <Input
-                  className="mt-1 font-mono"
-                  placeholder="gpt-5.1, gpt-5.1-mini"
-                  value={draft.models}
-                  onChange={(event) => setDraft({ ...draft, models: event.target.value })}
-                />
-              </label>
-              <label className="text-xs text-gray-600">
-                Default model
-                <Input
-                  className="mt-1 font-mono"
-                  placeholder="First model listed"
-                  value={draft.defaultModel}
-                  onChange={(event) => setDraft({ ...draft, defaultModel: event.target.value })}
-                />
-              </label>
-              <label className="flex items-end gap-2 text-xs text-gray-600">
-                <input
-                  type="checkbox"
-                  checked={draft.isDefault}
-                  onChange={(event) => setDraft({ ...draft, isDefault: event.target.checked })}
-                />
-                Use this provider for new conversations
-              </label>
+          <div className="space-y-5 rounded-xl border border-blue-200 bg-slate-50/60 p-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">{draft.editingRoute ? "Edit AI connection" : "Add AI connection"}</h3>
+              <p className="mt-0.5 text-xs text-gray-500">Required fields are marked with <span className="text-red-600">*</span>.</p>
             </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => void save()} disabled={busy || !draft.route.trim()}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save provider"}
+
+            <fieldset className="space-y-3">
+              <legend className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.1em] text-gray-500">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-200 text-[10px] text-gray-700">1</span> Provider
+              </legend>
+              {draft.editingRoute ? (
+                <div className="rounded-lg border border-gray-200 bg-white px-3 py-2.5">
+                  <span className="block text-sm font-medium text-gray-900">{selectedPreset?.label ?? "Custom OpenAI-compatible API"}</span>
+                  <span className="text-[11px] text-gray-500">Connection type and ID stay fixed after creation.</span>
+                </div>
+              ) : (
+                <label className="block text-xs font-medium text-gray-700">
+                  Connection type <span className="text-red-600">*</span>
+                  <select className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm shadow-sm focus:border-[#0078D4] focus:outline-none focus:ring-2 focus:ring-[#0078D4]/15" value={draft.connectionType} onChange={(event) => selectConnectionType(event.target.value)}>
+                    {presets.map((preset) => <option key={preset.route} value={preset.route}>{preset.label} — {preset.description}</option>)}
+                    <option value="custom">Custom OpenAI-compatible API</option>
+                  </select>
+                </label>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {isCustom && (
+                  <label className="block text-xs font-medium text-gray-700">
+                    Connection ID <span className="text-red-600">*</span>
+                    <Input className="mt-1 font-mono" placeholder="company-ai" value={draft.route} disabled={Boolean(draft.editingRoute)} onChange={(event) => {
+                      const route = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-")
+                      setDraft((current) => current ? { ...current, route, apiKeyEnv: current.editingRoute ? current.apiKeyEnv : `${route.replace(/-/g, "_").toUpperCase()}_API_KEY` } : null)
+                      setDraftResult(null)
+                    }} />
+                    <FieldHelp>Internal name using lowercase letters, numbers, and dashes.</FieldHelp>
+                  </label>
+                )}
+                <label className={`block text-xs font-medium text-gray-700 ${isCustom ? "" : "sm:col-span-2"}`}>
+                  Display name <span className="font-normal text-gray-400">(optional)</span>
+                  <Input className="mt-1" placeholder={selectedPreset?.label ? `${selectedPreset.label} for Analytics` : "Company AI Gateway"} value={draft.label} onChange={(event) => updateDraft("label", event.target.value)} />
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-3 border-t border-gray-200 pt-4">
+              <legend className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.1em] text-gray-500">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-200 text-[10px] text-gray-700">2</span> Credentials and endpoint
+              </legend>
+
+              {isCustom && (
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                  <p className="font-semibold">How to fill an OpenAI-compatible connection</p>
+                  <ul className="mt-1.5 space-y-1 leading-4 text-blue-800">
+                    <li><strong>Base URL:</strong> API root only, usually ending in <code>/v1</code>. Do not include <code>/chat/completions</code>.</li>
+                    <li><strong>Model ID:</strong> exact ID returned by the server&apos;s <code>GET /models</code>.</li>
+                    <li><strong>Local server:</strong> the URL must be reachable from this deployment, not only from your browser.</li>
+                    <li><strong>No key required:</strong> enter a non-sensitive placeholder such as <code>local</code>.</li>
+                  </ul>
+                  <div className="mt-2 rounded bg-white/80 px-2 py-1.5 font-mono text-[11px] text-blue-900">Example: https://ai.company.com/v1 · model: company-chat</div>
+                </div>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {isCustom && (
+                  <>
+                    <label className="block text-xs font-medium text-gray-700 sm:col-span-2">
+                      API Base URL <span className="text-red-600">*</span>
+                      <Input className="mt-1 font-mono" type="url" placeholder="https://gateway.example.com/v1" value={draft.baseUrl} onChange={(event) => updateDraft("baseUrl", event.target.value)} />
+                      <FieldHelp>The app checks <code>{"<Base URL>"}/models</code> from the server.</FieldHelp>
+                    </label>
+                    <label className="block text-xs font-medium text-gray-700 sm:col-span-2">
+                      API format <span className="text-red-600">*</span>
+                      <select className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm shadow-sm focus:border-[#0078D4] focus:outline-none focus:ring-2 focus:ring-[#0078D4]/15" value={draft.api} onChange={(event) => updateDraft("api", event.target.value)}>
+                        {protocols.map((protocol) => <option key={protocol} value={protocol}>{PROTOCOL_LABELS[protocol] ?? protocol}</option>)}
+                      </select>
+                    </label>
+                  </>
+                )}
+
+                {!isCustom && selectedPreset && (
+                  <div className="sm:col-span-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5">
+                    <span className="block text-xs font-medium text-gray-700">API endpoint managed automatically</span>
+                    <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500">{selectedPreset.baseUrl}</span>
+                  </div>
+                )}
+
+                <label className="block text-xs font-medium text-gray-700 sm:col-span-2">
+                  API key <span className="text-red-600">*</span>
+                  <Input className="mt-1 font-mono" type="password" autoComplete="new-password" placeholder={draft.credentialConfigured ? "Saved key will be reused — enter only to replace it" : selectedPreset?.apiKeyPlaceholder ?? "API key"} value={draft.apiKey} onChange={(event) => updateDraft("apiKey", event.target.value)} />
+                  <FieldHelp>{draft.credentialConfigured ? "A key is already saved. Leave blank to keep using it." : "Stored encrypted and never returned to the browser."}</FieldHelp>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-3 border-t border-gray-200 pt-4">
+              <legend className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.1em] text-gray-500">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-200 text-[10px] text-gray-700">3</span> Model and default
+              </legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {isCustom ? (
+                  <label className="block text-xs font-medium text-gray-700 sm:col-span-2">
+                    Model IDs <span className="text-red-600">*</span>
+                    <Input className="mt-1 font-mono" placeholder="company-chat, company-reasoning" value={draft.models} onChange={(event) => updateDraft("models", event.target.value)} />
+                    <FieldHelp>Separate multiple exact model IDs with commas or spaces.</FieldHelp>
+                  </label>
+                ) : (
+                  <label className="block text-xs font-medium text-gray-700 sm:col-span-2">
+                    Model ID <span className="font-normal text-gray-400">(optional)</span>
+                    <Input className="mt-1 font-mono" placeholder="Leave blank to use the provider default" value={draft.defaultModel} onChange={(event) => updateDraft("defaultModel", event.target.value)} />
+                    <FieldHelp>Use the exact API model ID, not the display name.</FieldHelp>
+                  </label>
+                )}
+
+                {isCustom && (
+                  <label className="block text-xs font-medium text-gray-700">
+                    Default model <span className="font-normal text-gray-400">(optional)</span>
+                    <Input className="mt-1 font-mono" placeholder="First model ID above" value={draft.defaultModel} onChange={(event) => updateDraft("defaultModel", event.target.value)} />
+                  </label>
+                )}
+
+                <label className={`flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs text-gray-700 ${isCustom ? "" : "sm:col-span-2"}`}>
+                  <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-[#0078D4]" checked={draft.isDefault} onChange={(event) => updateDraft("isDefault", event.target.checked)} />
+                  Use this connection for new conversations
+                </label>
+              </div>
+            </fieldset>
+
+            {draftResult && <ResultMessage result={draftResult} />}
+
+            <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 pt-4">
+              <Button variant="outline" onClick={() => void checkConnection(draft, "draft")} disabled={actionBusy}>
+                {testingTarget === "draft" ? <Loader2 className="animate-spin" /> : <PlugZap />} Check connection
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setDraft(null)} disabled={busy}>
-                Cancel
+              <Button onClick={() => void save()} disabled={actionBusy}>
+                {saving ? <Loader2 className="animate-spin" /> : <Check />} Save connection
               </Button>
-              <span className="text-[11px] text-gray-400">
-                {isCatalog
-                  ? "The harness ships a catalog for this one: a key is enough."
-                  : draft.route.trim() && "Not in the installed catalog: protocol, base URL and models are required."}
-              </span>
+              <Button variant="ghost" onClick={() => { setDraft(null); setDraftResult(null); setError(null) }} disabled={actionBusy}>Cancel</Button>
             </div>
           </div>
         )}
 
         {error && (
-          <p className="flex items-start gap-1.5 text-xs text-red-700">
+          <p role="alert" className="flex items-start gap-1.5 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {error}
           </p>
         )}
-        <p className="flex items-start gap-1.5 text-[11px] text-gray-500">
-          <Check className="mt-0.5 h-3 w-3 shrink-0" />
-          A conversation already open restarts on its next message so a change here
-          takes effect.
+
+        <p className="flex items-start gap-1.5 text-[11px] leading-4 text-gray-500">
+          <Check className="mt-0.5 h-3 w-3 shrink-0" /> Changes apply to new conversations. An open conversation restarts on its next message.
         </p>
       </CardContent>
     </Card>

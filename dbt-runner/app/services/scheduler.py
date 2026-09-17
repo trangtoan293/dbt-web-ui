@@ -21,6 +21,7 @@ nothing to rebuild on boot.
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,7 @@ from app.core.redis_client import get_redis
 from app.models.dbt import DbtCommand
 from app.services.notify import post_run_notification
 from app.services.run_launcher import launch_dbt_run
+from app.services.lakes import resolve_lake, resolve_project_lake
 from ingest import iceberg, lakehouse
 
 logger = logging.getLogger(__name__)
@@ -313,9 +315,20 @@ class RunScheduler:
         if not schedule.get("publish_schema") or run.get("status") != "success":
             return
         schema = str(schedule["publish_schema"])
+        project_id = str(schedule["project_id"])
         try:
+            async with async_session() as session:
+                lake = await resolve_project_lake(session, project_id)
+            if lake is None:
+                logger.warning(
+                    "Schedule '%s' asks to publish %s, but the project has no "
+                    "lakehouse attached",
+                    schedule["name"],
+                    schema,
+                )
+                return
             result = await asyncio.to_thread(
-                iceberg.publish, str(schedule["project_id"]), schema=schema
+                iceberg.publish, project_id, lake, schema=schema
             )
             logger.info(
                 "Schedule '%s' published %s to Iceberg: %s",
@@ -413,45 +426,73 @@ class RunScheduler:
 
     @staticmethod
     async def maintain_lakehouses() -> Dict[str, Any]:
-        """Expire snapshots and delete dead files for every ingesting project."""
+        """Expire snapshots and delete dead files for every lake we maintain.
+
+        Once per *lake*, not once per project. Several projects can share one
+        lake, and running the same garbage collection once per project meant
+        doing it N times while holding N different locks - which is not holding
+        a lock at all.
+
+        Only lakes flagged `maintained` are touched. On a lake somebody else
+        also writes to, "unreferenced by this catalog" is not the same as
+        "garbage", and `cleanup_old_files` does not know the difference.
+        """
         days = settings.lake_snapshot_retention_days
-        if days <= 0 or not lakehouse.is_configured():
+        if days <= 0:
             return {}
 
         async with async_session() as session:
             exists = await session.execute(
-                text("SELECT to_regclass('ingest_sources') IS NOT NULL")
+                text("SELECT to_regclass('connections') IS NOT NULL")
             )
             if not exists.scalar():
                 return {}
             result = await session.execute(
                 text(
                     """
-                    SELECT DISTINCT s.project_id
-                    FROM ingest_sources s
-                    JOIN dbt_projects p ON p.id = s.project_id
-                    WHERE s.destination = 'ducklake' AND p.deleted_at IS NULL
+                    SELECT c.id AS lake_id,
+                           array_agg(p.id::text) AS project_ids
+                    FROM connections c
+                    JOIN dbt_projects p ON p.lakehouse_connection_id = c.id
+                    WHERE c.connection_type = 'ducklake'
+                      AND COALESCE(c.extra_config->>'maintained', 'false') = 'true'
+                      AND p.deleted_at IS NULL
+                    GROUP BY c.id
                     """
                 )
             )
-            project_ids = [str(row[0]) for row in result.all()]
+            lakes = [
+                (str(row["lake_id"]), list(row["project_ids"] or []))
+                for row in result.mappings().all()
+            ]
 
         outcomes: Dict[str, Any] = {}
-        for project_id in project_ids:
+        for lake_id, project_ids in lakes:
             try:
-                # Serialise against this project's dbt runs and DuckDB-writing
-                # ingests. A busy project is skipped, not queued behind.
-                async with AsyncFileLock.lock(project_id, "dbt_run", timeout=30):
-                    outcomes[project_id] = await asyncio.to_thread(
-                        lakehouse.maintain, project_id, retention_days=days
+                async with async_session() as session:
+                    lake = await resolve_lake(session, lake_id)
+                if lake is None or not lake.maintained:
+                    continue
+                # Serialise against the dbt runs and DuckDB-writing ingests of
+                # *every* project on this lake. A busy one means skip, not
+                # queue: maintenance is periodic and a missed round costs
+                # nothing.
+                async with AsyncExitStack() as stack:
+                    for project_id in project_ids:
+                        await stack.enter_async_context(
+                            AsyncFileLock.lock(project_id, "dbt_run", timeout=30)
+                        )
+                    outcomes[lake_id] = await asyncio.to_thread(
+                        lakehouse.maintain, lake, retention_days=days
                     )
             except TimeoutError:
                 logger.info(
-                    "Lake maintenance skipped for %s - project busy", project_id
+                    "Lake maintenance skipped for %s - a project on it is busy",
+                    lake_id,
                 )
             except Exception as exc:
-                logger.warning("Lake maintenance failed for %s: %s", project_id, exc)
-                outcomes[project_id] = {"error": str(exc)}
+                logger.warning("Lake maintenance failed for %s: %s", lake_id, exc)
+                outcomes[lake_id] = {"error": str(exc)}
         return outcomes
 
 

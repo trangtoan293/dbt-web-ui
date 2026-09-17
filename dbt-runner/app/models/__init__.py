@@ -6,8 +6,6 @@ from app.models.connection import (
     ConnectionSchemaRequest,
     ConnectionTestRequest,
     DremioTestRequest,
-    ProfilesGenerateV2Request,
-    ProfilesYamlRequest,
 )
 from app.models.dbt import (
     CompileRequest,
@@ -47,10 +45,8 @@ __all__ = [
     "GitCheckoutRequest",
     # connection models
     "DremioTestRequest",
-    "ProfilesYamlRequest",
     "ConnectionTestRequest",
     "ConnectionSchemaRequest",
-    "ProfilesGenerateV2Request",
     # file models
     "FileCreateRequest",
     "FileSaveRequest",

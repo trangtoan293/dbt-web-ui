@@ -2,8 +2,10 @@
 dbt operations router.
 """
 
+import asyncio
 import json
 import logging
+import re
 import shlex
 import uuid
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter
 from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.crypto import decrypt_secret_or_plaintext
 from app.core.db import get_session
 from app.core.dependencies import get_dbt_service
 from app.core.file_lock import AsyncFileLock
@@ -49,6 +52,7 @@ from app.services.project import ProjectService
 from app.services.run_launcher import launch_dbt_run
 from app.services.scheduler import next_fire_time
 from app.services.sql_format import format_sql
+from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +472,29 @@ async def regenerate_profiles(
         ),
         {"pid": project_id},
     )
-    return {"success": True, "regenerated": bool(has_connection.scalar())}
+    # A target the profile could not render is skipped rather than fatal, so say
+    # which: "regenerated: true" while a target is missing from the file is how
+    # `dbt --target x` comes to report a target the UI still lists.
+    configured = await session.execute(
+        text(
+            "SELECT name FROM project_targets WHERE project_id = CAST(:pid AS uuid)"
+        ),
+        {"pid": project_id},
+    )
+    written: set[str] = set()
+    try:
+        profile = _yaml.safe_load((project_path / "profiles.yml").read_text()) or {}
+        written = set(next(iter(profile.values()), {}).get("outputs") or {})
+    except Exception:  # a missing or hand-edited file is not this call's problem
+        pass
+    missing = sorted({row[0] for row in configured} - written) if written else []
+
+    return {
+        "success": True,
+        "regenerated": bool(has_connection.scalar()),
+        "targets_written": sorted(written),
+        "targets_skipped": missing,
+    }
 
 
 @router.post("/format")
@@ -677,6 +703,109 @@ async def list_docs_servers(service: DbtService = Depends(get_dbt_service)):
     }
 
 
+# `database: lake` / `+database: lake` on one line, quoted or not. A regex over
+# the text rather than a YAML walk: this is a diagnostic, and the same line
+# shape covers dbt_project.yml, a sources file and a model's own config block.
+_LAKE_DATABASE_RE = re.compile(
+    rf"""^\s*\+?database:\s*['"]?{re.escape(lakehouse.ATTACH_ALIAS)}['"]?\s*$""",
+    re.MULTILINE,
+)
+
+
+def _lake_references(project_path: Path) -> List[str]:
+    """Project files pinning the DuckLake catalog, which only dbt-duckdb attaches.
+
+    A project moved onto Postgres, Dremio, Oracle or Spark keeps these lines, and
+    dbt then asks that warehouse for a catalog named `lake`: every model fails
+    with "not found within 'lake'", which reads as the connection having silently
+    reverted rather than as a project file naming the wrong database.
+    """
+    candidates = [project_path / "dbt_project.yml", *sorted(project_path.glob("models/**/*.yml"))]
+    hits = []
+    for path in candidates:
+        try:
+            content = path.read_text()
+        except OSError:
+            continue
+        if _LAKE_DATABASE_RE.search(content):
+            hits.append(str(path.relative_to(project_path)))
+    return hits
+
+
+async def _check_targets(
+    session: AsyncSession, project_id: str, only: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Reach every target's warehouse, concurrently, and report each one.
+
+    Checking only the project's own connection answered for `dev` and left every
+    other target unverified, which is the half that is usually wrong: a target
+    is a second warehouse someone configured once and has not run since.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT 'dev' AS name, c.name AS connection_name, c.connection_type, c.host, "
+            "       c.port, c.database, c.username, c.password_encrypted, c.extra_config "
+            "FROM dbt_projects p JOIN connections c ON c.id = p.connection_id "
+            "WHERE p.id = CAST(:pid AS uuid) "
+            "UNION ALL "
+            "SELECT t.name, c.name, c.connection_type, c.host, c.port, c.database, "
+            "       c.username, c.password_encrypted, c.extra_config "
+            "FROM project_targets t JOIN connections c ON c.id = t.connection_id "
+            "WHERE t.project_id = CAST(:pid AS uuid) "
+            "ORDER BY 1"
+        ),
+        {"pid": project_id},
+    )
+
+    async def check(row: Dict[str, Any]) -> Dict[str, Any]:
+        report = {
+            "name": row["name"],
+            "connection_name": row["connection_name"],
+            "connection_type": row["connection_type"],
+        }
+        try:
+            conn_type, config, needs_secret = build_adapter_config_from_connection_row(
+                dict(row), secret_value=None
+            )
+            if needs_secret:
+                config = {
+                    **config,
+                    "password": decrypt_secret_or_plaintext(row["password_encrypted"]),
+                }
+            result = await get_adapter(conn_type, config).test_connection()
+            return {**report, "ok": bool(result.get("success")), "message": result.get("message")}
+        except Exception as exc:
+            return {**report, "ok": False, "message": str(exc)}
+
+    checks = [
+        check(dict(row))
+        for row in rows.mappings()
+        if only is None or row["name"] == only
+    ]
+    return list(await asyncio.gather(*checks)) if checks else []
+
+
+@router.get("/check-target/{project_id}")
+async def check_target(
+    project_id: str,
+    target: str = Query(..., description="Target name to reach, e.g. dev or prod"),
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Reach one target's warehouse.
+
+    Separate from check-connection because that endpoint also reads the project
+    files and renders a profile preview: too much work to hang off a button that
+    answers one row.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    await _verify_project_ownership(session, project_id, user_id)
+    results = await _check_targets(session, project_id, only=target)
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No target named '{target}'")
+    return results[0]
+
+
 @router.get("/check-connection/{project_id}")
 async def check_connection(
     project_id: str,
@@ -699,6 +828,9 @@ async def check_connection(
         "profile_name_in_profiles_yml": None,
         "profiles_yml_preview": None,
         "profiles_yml_on_disk": None,
+        "condition_4_lake_reference_usable": True,
+        "lake_references": [],
+        "targets": [],
         "errors": [],
     }
 
@@ -815,10 +947,29 @@ async def check_connection(
             result["profile_name_in_profiles_yml"] == result["profile_name_in_dbt_project_yml"]
         )
 
+    # --- Condition 4: the project's own files must name a database this
+    # warehouse has. Only dbt-duckdb can attach the DuckLake catalog.
+    lake_refs = _lake_references(project_path)
+    if lake_refs and result["connection_type"] not in (None, "duckdb"):
+        result["condition_4_lake_reference_usable"] = False
+        result["lake_references"] = lake_refs
+        result["errors"].append(
+            f"{', '.join(lake_refs)} pin database '{lakehouse.ATTACH_ALIAS}', the DuckLake "
+            f"catalog. Only a duckdb connection can attach it, so every model will fail "
+            f"against this {result['connection_type']} connection with \"not found within "
+            f"'{lakehouse.ATTACH_ALIAS}'\". Point them at a database this warehouse has."
+        )
+
+    try:
+        result["targets"] = await _check_targets(session, project_id)
+    except Exception as exc:  # a diagnostic must not fail on its own extra check
+        result["errors"].append(f"Could not reach the targets: {exc}")
+
     result["all_conditions_met"] = (
         result["condition_1_has_connection"]
         and result["condition_2_profile_names_match"]
         and result["condition_3_session_passed"]
+        and result["condition_4_lake_reference_usable"]
     )
 
     return result

@@ -32,6 +32,7 @@ from app.core.global_semaphore import global_run_semaphore
 from app.core.host_guard import HostNotAllowed, assert_host_allowed
 from app.models.ingest import DbtSourcesSnippet, IngestRunRequest, IngestTableList
 from app.services.dbt_service import build_adapter_config_from_connection_row
+from app.services.lakes import resolve_project_lake
 from ingest import lakehouse
 from ingest.destination import (
     DESTINATION_LAKEHOUSE,
@@ -39,9 +40,17 @@ from ingest.destination import (
     build_destination,
 )
 from ingest.runner import RESULT_PREFIX
+from ingest.file_source import FORMATS as file_formats
+from ingest.file_source import UnsupportedFileSource
+from ingest.file_source import build_config as build_file_source
+from ingest.rest_source import AUTH_TYPES as rest_auth_types
+from ingest.rest_source import UnsupportedRestSource
+from ingest.rest_source import build_config as build_rest_source
 from ingest.sql_source import (
+    SOURCE_ONLY_TYPES,
     UnsupportedSource,
     build_source_url,
+    inspect_tables,
     supported_source_types,
 )
 
@@ -56,6 +65,16 @@ _DATASET_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
 _WRITE_DISPOSITIONS = ("append", "replace", "merge")
+
+# Source kinds this deployment can read. `sql_database` needs a connection to
+# read over SQL; `rest_api` may have one (for its credential) or not; a
+# `filesystem` source never does - which is why the connection reference is
+# nullable rather than every type being forced to have one.
+_SOURCE_TYPES = ("sql_database", "rest_api", "filesystem")
+
+# A cursor field is a source column name, and for rest_api a JSON path segment.
+# Same shape as a table name: it reaches SQL as an identifier.
+_CURSOR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
 MAX_LINE_BYTES = 16 * 1024
 
@@ -89,12 +108,15 @@ async def _load_source(
         text(
             "SELECT s.id, s.name, s.source_type, s.destination, s.dataset, s.tables, "
             "s.write_disposition, s.primary_key, s.partition_by, s.project_id, "
+            "s.source_config, s.cursor_field, s.cursor_initial_value, "
             "p.connection_id AS project_connection_id, "
             "c.connection_type, c.host, c.port, c.database, c.username, "
             "c.password_encrypted, c.extra_config "
             "FROM ingest_sources s "
             "JOIN dbt_projects p ON p.id = s.project_id "
-            "JOIN connections c ON c.id = s.source_connection_id "
+            # LEFT: a filesystem source has no connection, and a public API needs
+            # no credential. An inner join silently 404'd both.
+            "LEFT JOIN connections c ON c.id = s.source_connection_id "
             "WHERE s.id = CAST(:sid AS uuid) "
             "AND p.created_by = CAST(:uid AS uuid) AND p.deleted_at IS NULL"
         ),
@@ -193,16 +215,96 @@ def _pipelines_dir(project_id: str) -> Path:
     return path
 
 
+def _validated_source_type(source: Dict[str, Any]) -> str:
+    source_type = str(source.get("source_type") or "sql_database")
+    if source_type not in _SOURCE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source type '{source_type}'. "
+            f"Supported: {', '.join(_SOURCE_TYPES)}",
+        )
+    return source_type
+
+
+def _validated_cursor(source: Dict[str, Any]) -> tuple[str | None, str | None]:
+    """The incremental cursor, checked as an identifier.
+
+    A cursor becomes a column reference in the SQL dlt pushes to the source, so
+    it is validated here rather than quoted downstream.
+    """
+    cursor = str(source.get("cursor_field") or "").strip()
+    if not cursor:
+        return None, None
+    if not _CURSOR_RE.match(cursor):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cursor field '{cursor}' is not a usable column name",
+        )
+    initial = source.get("cursor_initial_value")
+    return cursor, str(initial) if initial not in (None, "") else None
+
+
+def _source_config(source: Dict[str, Any]) -> Dict[str, Any]:
+    raw = source.get("source_config")
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return dict(raw or {})
+
+
+def _build_source_block(
+    source: Dict[str, Any],
+    tables: list[str],
+    cursor: str | None,
+    cursor_initial: str | None,
+) -> Dict[str, Any]:
+    """The `source` half of a job config, per source type.
+
+    Each branch delegates to the module that owns that type's validation, so the
+    checks a type needs live with the code that renders it - the router decides
+    which type, never what a given type may contain.
+    """
+    source_type = _validated_source_type(source)
+
+    if source_type == "sql_database":
+        if not source.get("connection_type"):
+            raise UnsupportedSource(
+                "a SQL source needs a connection to read from - this source has none"
+            )
+        secret = decrypt_secret_or_plaintext(source.get("password_encrypted"))
+        return {
+            "type": "sql_database",
+            "url": build_source_url(source, secret),
+            "tables": tables,
+        }
+
+    if source_type == "rest_api":
+        # The LEFT JOIN flattened the connection onto this row, so the row is
+        # the connection: an API with no credential simply has no columns here.
+        connection = source if source.get("connection_type") else None
+        secret = decrypt_secret_or_plaintext(source.get("password_encrypted"))
+        return build_rest_source(
+            _source_config(source), tables, connection, secret, cursor, cursor_initial
+        )
+
+    if len(tables) != 1:
+        raise UnsupportedFileSource(
+            "a filesystem source loads one directory into one table - configure "
+            "exactly one table name"
+        )
+    return build_file_source(_source_config(source), tables[0])
+
+
 def _build_job_config(
     source: Dict[str, Any],
     destination_connection: Dict[str, Any] | None,
     tables: list[str],
     dataset: str,
     write_disposition: str,
+    lake: lakehouse.LakeRef | None = None,
 ) -> Dict[str, Any]:
     project_id = str(source["project_id"])
-    source_secret = decrypt_secret_or_plaintext(source.get("password_encrypted"))
-    source_url = build_source_url(source, source_secret)
+    cursor, cursor_initial = _validated_cursor(source)
+    source_block = _build_source_block(source, tables, cursor, cursor_initial)
 
     kind = str(source.get("destination") or DESTINATION_LAKEHOUSE)
     connection_type = None
@@ -226,7 +328,7 @@ def _build_job_config(
 
     destination = build_destination(
         kind,
-        project_id=project_id,
+        lake=lake,
         connection_type=connection_type,
         connection_config=connection_config,
         connection_secret=connection_secret,
@@ -251,7 +353,12 @@ def _build_job_config(
         "write_disposition": write_disposition,
         "primary_key": primary_key or None,
         "partition_by": partition_by or None,
-        "source": {"type": "sql_database", "url": source_url, "tables": tables},
+        # The cursor travels beside the source block rather than inside it: it
+        # applies to every source kind, and only rest_api needs it baked into
+        # its own config (an HTTP cursor has to become a request parameter).
+        "cursor_field": cursor,
+        "cursor_initial_value": cursor_initial,
+        "source": source_block,
         "destination": destination,
     }
 
@@ -260,8 +367,13 @@ def _build_job_config(
 async def ingest_meta() -> Dict[str, Any]:
     """What this deployment can ingest from, and write to."""
     return {
-        "source_types": ["sql_database"],
+        "source_types": list(_SOURCE_TYPES),
         "source_connection_types": supported_source_types(),
+        # A filesystem source is off unless an operator fenced it to a root:
+        # dbt-runner can read anywhere its uid reaches.
+        "file_roots_configured": bool(settings.ingest_file_roots),
+        "file_formats": list(file_formats),
+        "rest_auth_types": list(rest_auth_types),
         "destinations": ["connection", DESTINATION_LAKEHOUSE],
         "write_dispositions": list(_WRITE_DISPOSITIONS),
         "lakehouse_configured": lakehouse.is_configured(),
@@ -309,14 +421,30 @@ async def list_connection_tables(
     except HostNotAllowed as exc:
         return IngestTableList(success=False, message=str(exc))
 
+    secret = decrypt_secret_or_plaintext(connection.get("password_encrypted"))
+
+    if connection["connection_type"] in SOURCE_ONLY_TYPES:
+        # These types have no dbt adapter on purpose, so there is nothing to ask
+        # for a schema. The table list comes from the same SQLAlchemy connection
+        # dlt will read through, which is a truer answer anyway.
+        try:
+            url = build_source_url(connection, secret)
+            names = await asyncio.to_thread(inspect_tables, url)
+        except Exception as exc:
+            logger.warning(
+                "Could not list tables for connection %s: %s", connection_id, exc
+            )
+            return IngestTableList(success=False, message=str(exc))
+        return IngestTableList(
+            success=True,
+            tables=sorted({n for n in names if _TABLE_RE.match(str(n))}),
+        )
+
     conn_type, config, needs_secret = build_adapter_config_from_connection_row(
         connection, secret_value=None
     )
     if needs_secret:
-        config = {
-            **config,
-            "password": decrypt_secret_or_plaintext(connection.get("password_encrypted")),
-        }
+        config = {**config, "password": secret}
     try:
         adapter = get_adapter(conn_type, config)
         schema = await adapter.extract_schema()
@@ -363,13 +491,15 @@ async def dbt_sources_snippet(
         )
         project_type = (project_connection or {}).get("connection_type")
         if project_type != "duckdb":
+            lake = await resolve_project_lake(session, str(source["project_id"]))
+            lake_path = lake.data_path if lake else "this project's lakehouse"
             warning = (
                 f"# WARNING: this project runs dbt on {project_type or 'no connection'}, "
                 "which cannot attach a DuckLake catalog.\n"
                 "# The load succeeds, but dbt models here cannot read these tables. Either\n"
                 "# switch the source's destination to 'connection', or point the project at a\n"
                 "# DuckDB connection. Engines outside dbt (Dremio, Spark, DuckDB CLI) can still\n"
-                f"# read the Parquet under {lakehouse.data_dir(str(source['project_id']))}.\n\n"
+                f"# read the Parquet under {lake_path}.\n\n"
             )
 
     content = (
@@ -700,11 +830,19 @@ async def ingest_sse(
 
     try:
         config = _build_job_config(
-            source, destination_connection, tables, dataset, write_disposition
+            source, destination_connection, tables, dataset, write_disposition,
+            lake=await resolve_project_lake(session, str(source["project_id"]))
+            if destination_kind == DESTINATION_LAKEHOUSE
+            else None,
         )
     except HostNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except (UnsupportedSource, UnsupportedDestination) as exc:
+    except (
+        UnsupportedSource,
+        UnsupportedDestination,
+        UnsupportedFileSource,
+        UnsupportedRestSource,
+    ) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except lakehouse.LakehouseError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

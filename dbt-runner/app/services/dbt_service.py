@@ -45,6 +45,7 @@ from app.services.command import CommandService
 from app.services.dbt_worker import DbtWarmWorkerError, DbtWarmWorkerPool, warm_worker_pool
 from app.services.project import ProjectService
 from app.core import duckdb_resources
+from app.services.lakes import resolve_project_lake
 from ingest import lakehouse
 
 logger = logging.getLogger(__name__)
@@ -128,8 +129,46 @@ SPARK_EXTRA_CONFIG_KEYS = {
 }
 
 
+# dbt's own ceiling is a warehouse question, not ours: a Dremio coordinator with
+# a large catalog answers every list_relations with a full information_schema
+# scan, so four of them in parallel is four scans. dbt-dremio's own template
+# ships threads: 1 for that reason.
+DEFAULT_THREADS = {"dremio": 1}
+MAX_THREADS = 32
+
+
+def _threads(extra_cfg: Dict[str, Any], conn_type: str) -> int:
+    """Thread count for a profile output, taken from the connection if it set one."""
+    raw = extra_cfg.pop("threads", None)
+    default = DEFAULT_THREADS.get(conn_type, 4)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, MAX_THREADS))
+
+
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+class InvalidTarget(ValueError):
+    """Raised when a caller names a target that cannot be a profiles.yml key."""
+
+
+def append_target(cmd: List[str], target: Optional[str]) -> List[str]:
+    """Append --target, shape-checked rather than quoted.
+
+    Every path that runs dbt on a chosen environment goes through here. A
+    per-caller append is how preview, compile and explain ended up silently on
+    `dev` while the toolbar said `prod`: the target is a property of the
+    request, not of the run command alone.
+    """
+    if not target:
+        return cmd
+    if not TARGET_NAME_RE.match(target):
+        raise InvalidTarget(f"invalid target name '{target}'")
+    return [*cmd, "--target", target]
 
 
 def build_adapter_config_from_connection_row(
@@ -154,14 +193,14 @@ def build_adapter_config_from_connection_row(
             "password": secret_value,
             "dbname": conn_row["database"],
             "schema": extra_cfg.get("schema") or "public",
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "duckdb":
         return conn_type, {
             "path": conn_row["database"] or "",
             "schema": extra_cfg.get("schema") or "main",
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "oracle":
@@ -174,7 +213,7 @@ def build_adapter_config_from_connection_row(
             "password": secret_value,
             "service": extra_cfg.get("service") or conn_row["database"],
             "schema": extra_cfg.get("schema") or username.upper(),
-            "threads": 4,
+            "threads": _threads(extra_cfg, conn_type),
         }, needs_secret
 
     if conn_type == "dremio":
@@ -185,7 +224,8 @@ def build_adapter_config_from_connection_row(
             "port": conn_row["port"],
             "user": conn_row["username"],
             "dremio_space": conn_row["database"] or f"@{conn_row['username']}",
-            "threads": 4,
+            # _threads pops, so the spread below cannot put a raw string back.
+            "threads": _threads(extra_cfg, conn_type),
             **extra_cfg,
         }
         if auth_type == "password":
@@ -211,6 +251,28 @@ def build_adapter_config_from_connection_row(
             needs_secret = True
         return conn_type, adapter_config, needs_secret
 
+    if conn_type == "ducklake":
+        # A lakehouse is attached alongside a warehouse, never used as one: dbt
+        # still needs a DuckDB database to open, and DuckLake is reached through
+        # that connection's `attach:` block. Assigning one as a project's
+        # warehouse is a UI mistake, so it gets a message rather than a
+        # ValueError about an unsupported type.
+        raise ValueError(
+            "A lakehouse is not a warehouse. Point the project at a DuckDB "
+            "connection and attach the lakehouse to it in Project Settings."
+        )
+
+    if conn_type in ("mysql", "rest"):
+        # Read-only ingest sources. Neither has a dbt adapter in this image, in
+        # the same way `ducklake` has none - a message rather than an
+        # unsupported-type error, because assigning one as a project's warehouse
+        # is a UI mistake and not a missing mapping here.
+        raise ValueError(
+            f"A {conn_type} connection is an ingest source, not a warehouse. Use "
+            "it on the Sources page; point the project at a warehouse dbt can "
+            "run against."
+        )
+
     # Adding a warehouse means: an adapter in adapters/__init__.py, its dbt
     # plugin in pyproject.toml, and the type in CONNECTION_TYPES on the
     # frontend. A mapping here alone only produces failed runs.
@@ -228,7 +290,7 @@ def build_adapter_config_from_dremio_source_row(
         "user": username,
         "pat": secret_value,
         "dremio_space": src_row["catalog"] or (f"@{username}" if username else "@dremio"),
-        "threads": 4,
+        "threads": DEFAULT_THREADS["dremio"],
     }, True
 
 
@@ -307,6 +369,7 @@ class DbtService:
             raise ValueError("_run_dbt_command expects a dbt command")
 
         start = time.perf_counter()
+        cancel_epoch = self.worker_pool.cancellation_epoch(project_id)
         try:
             returncode, stdout, stderr, queue_wait_ms = await self.worker_pool.run(
                 cmd[1:],
@@ -324,6 +387,12 @@ class DbtService:
             )
             return returncode, stdout, stderr
         except (DbtWarmWorkerError, TimeoutError, asyncio.TimeoutError) as exc:
+            if self.worker_pool.cancellation_epoch(project_id) != cancel_epoch:
+                # Stop killed this project's workers. Falling back would re-run
+                # the whole command as a subprocess, which is how Stop came to
+                # look like it did nothing but add a minute.
+                logger.info("dbt command cancelled for project %s: %s", project_id, " ".join(cmd))
+                return -1, "", "Cancelled by user"
             if isinstance(exc, asyncio.TimeoutError) and not fallback_on_worker_timeout:
                 timeout_seconds = timeout or settings.dbt_warm_worker_timeout
                 logger.warning(
@@ -449,6 +518,63 @@ class DbtService:
         ]
 
     @staticmethod
+    async def _render_target(
+        session: AsyncSession,
+        *,
+        project_id: str,
+        profile_name: str,
+        target_name: str,
+        connection_id: Optional[str],
+        dremio_source_id: Optional[str],
+        lake: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """One profiles.yml output, its env, and whether it holds a DuckDB file."""
+        import yaml as _yaml
+
+        secret_env = DbtService.target_secret_env(target_name)
+        conn_type, adapter_config, target_env = await DbtService._build_target_config(
+            session,
+            connection_id=connection_id,
+            dremio_source_id=dremio_source_id,
+            secret_env=secret_env,
+        )
+        env = dict(target_env)
+        env.update(DbtService._apply_lakehouse_attach(lake, conn_type, adapter_config))
+        DbtService._apply_duckdb_resources(project_id, conn_type, adapter_config)
+
+        try:
+            adapter = _load_connection_adapter_factory()(conn_type, adapter_config)
+            rendered = _yaml.safe_load(
+                adapter.generate_profiles_yml(profile_name, target_name)
+            )
+        except Exception as exc:
+            raise DbtOperationError(
+                "profile setup",
+                f"could not render target '{target_name}' for the "
+                f"{conn_type} connection: {exc}",
+            ) from exc
+
+        # Adapters own their own YAML, so read the output back out of it rather
+        # than assuming the key they used.
+        rendered_outputs = ((rendered or {}).get(profile_name) or {}).get("outputs") or {}
+        output = rendered_outputs.get(target_name) or next(
+            iter(rendered_outputs.values()), None
+        )
+        if output is None:
+            raise DbtOperationError(
+                "profile setup",
+                f"the {conn_type} adapter produced no output for target '{target_name}'",
+            )
+
+        return {
+            "output": output,
+            "env": env,
+            "conn_type": conn_type,
+            "release_duckdb_file": conn_type == "duckdb"
+            and (adapter_config.get("path") or "") not in ("", ":memory:"),
+        }
+
+    @staticmethod
     async def _build_target_config(
         session: AsyncSession,
         *,
@@ -527,7 +653,6 @@ class DbtService:
         warehouse.
         """
         import yaml as _yaml
-        get_adapter = _load_connection_adapter_factory()
 
         try:
             result = await session.execute(
@@ -571,70 +696,69 @@ class DbtService:
                 if target["name"] != DEFAULT_TARGET_NAME
             )
 
+            # Once, not once per target: it is a database read, and every target
+            # of a project shares the same lake.
+            lake = await DbtService._resolve_lakehouse(session, project_id)
+
             dbt_env: Dict[str, str] = {}
             outputs: Dict[str, Any] = {}
             default_target: Optional[str] = None
             release_duckdb_file = False
             conn_types: List[str] = []
+            # Targets that could not be rendered, and why. Reported rather than
+            # raised: before this, one unusable target meant no profile at all,
+            # so profiles.yml froze at whatever it last held and no amount of
+            # regenerating could fix the disagreement with the connections.
+            skipped: Dict[str, str] = {}
 
             for target_name, target_connection_id, target_dremio_id in specs:
-                secret_env = DbtService.target_secret_env(target_name)
-                conn_type, adapter_config, target_env = (
-                    await DbtService._build_target_config(
+                try:
+                    rendered = await DbtService._render_target(
                         session,
+                        project_id=project_id,
+                        profile_name=profile_name,
+                        target_name=target_name,
                         connection_id=target_connection_id,
                         dremio_source_id=target_dremio_id,
-                        secret_env=secret_env,
-                    )
-                )
-                dbt_env.update(target_env)
-                dbt_env.update(
-                    await DbtService._apply_lakehouse_attach(
-                        session, project_id, conn_type, adapter_config
-                    )
-                )
-                DbtService._apply_duckdb_resources(
-                    project_id, conn_type, adapter_config
-                )
-                if conn_type == "duckdb" and (
-                    adapter_config.get("path") or ""
-                ) not in ("", ":memory:"):
-                    release_duckdb_file = True
-
-                try:
-                    adapter = get_adapter(conn_type, adapter_config)
-                    rendered = _yaml.safe_load(
-                        adapter.generate_profiles_yml(profile_name, target_name)
+                        lake=lake,
                     )
                 except Exception as exc:
-                    raise DbtOperationError(
-                        "profile setup",
-                        f"could not render target '{target_name}' for the "
-                        f"{conn_type} connection: {exc}",
-                    ) from exc
-
-                # Adapters own their own YAML, so read the output back out of it
-                # rather than assuming the key they used.
-                rendered_outputs = (
-                    ((rendered or {}).get(profile_name) or {}).get("outputs") or {}
-                )
-                output = rendered_outputs.get(target_name) or next(
-                    iter(rendered_outputs.values()), None
-                )
-                if output is None:
-                    raise DbtOperationError(
-                        "profile setup",
-                        f"the {conn_type} adapter produced no output for target "
-                        f"'{target_name}'",
+                    # `dev` is the project's own connection and the file's
+                    # default target: a profile written without it would run
+                    # somewhere else without saying so. Any other target is one
+                    # row in a list, and skipping it costs that target only.
+                    if target_name == DEFAULT_TARGET_NAME:
+                        raise
+                    skipped[target_name] = str(exc)
+                    logger.warning(
+                        "Skipping target '%s' of project %s: %s", target_name, project_id, exc
                     )
-                outputs[target_name] = output
-                conn_types.append(conn_type)
+                    continue
+
+                outputs[target_name] = rendered["output"]
+                dbt_env.update(rendered["env"])
+                conn_types.append(rendered["conn_type"])
+                if rendered["release_duckdb_file"]:
+                    release_duckdb_file = True
                 if default_target is None:
                     default_target = target_name
 
             if not outputs:
                 _fix_in_memory_duckdb_profile(project_path)
                 return {}
+
+            # A lake nobody can attach is a misconfiguration worth naming here:
+            # left alone, every model referencing `lake.*` fails with "not found
+            # within 'lake'", which reads as the connection having reverted.
+            if lake is not None and "duckdb" not in conn_types:
+                raise DbtOperationError(
+                    "profile setup",
+                    "this project has a lakehouse attached, but none of its "
+                    f"targets runs on DuckDB ({', '.join(sorted(set(conn_types)))}). "
+                    "Only DuckDB can read a DuckLake catalog - detach the "
+                    "lakehouse in Project Settings, or give the project a DuckDB "
+                    "connection.",
+                )
 
             # Every path that runs dbt regenerates the profile first, so this is
             # the one place all of them pass through. A warm worker holding the
@@ -693,53 +817,44 @@ class DbtService:
             adapter_config["settings"] = values
 
     @staticmethod
-    async def _apply_lakehouse_attach(
-        session: AsyncSession,
-        project_id: str,
+    async def _resolve_lakehouse(session: AsyncSession, project_id: str):
+        """The lakehouse this project attaches, resolved once per regeneration.
+
+        The lake is whichever `ducklake` connection the project points at, so a
+        project can read a lake it never ingests into - the old gate on having a
+        lakehouse-bound ingest source made "read someone else's lake" impossible
+        to express.
+        """
+        try:
+            return await resolve_project_lake(session, project_id)
+        except lakehouse.LakehouseError as exc:
+            raise DbtOperationError("profile setup", str(exc)) from exc
+
+    @staticmethod
+    def _apply_lakehouse_attach(
+        lake,
         conn_type: str,
         adapter_config: Dict[str, Any],
     ) -> Dict[str, str]:
-        """Attach the project's DuckLake catalog to its dbt profile, if it has one.
+        """Add the lake's `attach:` block to one target, if that target can hold it.
 
-        Only DuckDB projects with a lakehouse-bound ingest source get the attach
-        block: attaching opens a Postgres connection on every dbt invocation, and
-        a project with no ingest source has nothing there to read.
+        Per target, because a project's targets need not share a warehouse: a
+        `dev` on DuckDB reading the lake beside a `prod` on Dremio is an ordinary
+        setup, and only the DuckDB one can attach a DuckLake catalog. A target
+        that cannot is skipped here and reported by the caller, which is the only
+        place that can see whether *any* target took it.
 
         Returns the env carrying the catalog password, so the secret reaches dbt
         through env_var() instead of being written into profiles.yml.
         """
-        if conn_type != "duckdb" or not lakehouse.is_configured():
-            return {}
-
-        # Ask whether the table exists before querying it. A failed statement
-        # aborts the transaction, and rolling this session back would discard the
-        # oidc_sub update resolve_user_id may have made earlier in the request.
-        # The table is absent until the ingest migration is applied, and a dbt run
-        # must not break over a feature the deployment has not enabled yet.
-        exists = await session.execute(
-            text("SELECT to_regclass('ingest_sources') IS NOT NULL")
-        )
-        if not exists.scalar():
-            logger.debug("No ingest_sources table; skipping lakehouse attach")
-            return {}
-
-        result = await session.execute(
-            text(
-                "SELECT 1 FROM ingest_sources "
-                "WHERE project_id = CAST(:pid AS uuid) AND destination = 'ducklake' "
-                "LIMIT 1"
-            ),
-            {"pid": project_id},
-        )
-        if result.first() is None:
+        if lake is None or conn_type != "duckdb":
             return {}
 
         try:
-            entry = lakehouse.dbt_attach_entry(project_id)
-            password = lakehouse.catalog_password()
+            entry = lakehouse.dbt_attach_entry(lake)
+            password = lakehouse.catalog_password(lake.catalog_url)
         except lakehouse.LakehouseError as exc:
-            logger.warning("Lakehouse attach unavailable for %s: %s", project_id, exc)
-            return {}
+            raise DbtOperationError("profile setup", str(exc)) from exc
 
         extensions = list(adapter_config.get("extensions") or [])
         for extension in lakehouse.DUCKDB_EXTENSIONS:
@@ -1330,6 +1445,10 @@ class DbtService:
                 "--select",
                 model_name,
             ]
+            try:
+                cmd = append_target(cmd, request.target)
+            except InvalidTarget as exc:
+                return {"success": False, "model": model_name, "error": str(exc)}
             if request.additional_args:
                 cmd.extend(shlex.split(request.additional_args))
 
@@ -1496,6 +1615,17 @@ class DbtService:
             "--output",
             "json",
         ]
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {
+                "success": False,
+                "model": model_name,
+                "data": [],
+                "columns": [],
+                "row_count": 0,
+                "error": str(exc),
+            }
         if request.additional_args:
             cmd.extend(shlex.split(request.additional_args))
 
@@ -1636,6 +1766,7 @@ class DbtService:
                 model_path=request.model_path,
                 additional_args=request.additional_args,
                 environment_variables=request.environment_variables,
+                target=request.target,
             ),
             session=session,
             user_id=user_id,
@@ -1711,6 +1842,7 @@ class DbtService:
                 sql=explain_sql,
                 limit=1000,
                 environment_variables=request.environment_variables,
+                target=request.target,
             ),
             session=session,
             user_id=user_id,
@@ -2123,19 +2255,16 @@ class DbtService:
             "--profiles-dir",
             str(project_path),
         ]
-        if request.target:
-            # Shape-checked, not quoted: it becomes a CLI argument. Same rule as
-            # run_command - an ad-hoc query must be able to read prod without
-            # being a second way to smuggle arguments into dbt.
-            if not TARGET_NAME_RE.match(request.target):
-                return {
-                    "success": False,
-                    "data": [],
-                    "columns": [],
-                    "row_count": 0,
-                    "error": f"invalid target name '{request.target}'",
-                }
-            cmd.extend(["--target", request.target])
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {
+                "success": False,
+                "data": [],
+                "columns": [],
+                "row_count": 0,
+                "error": str(exc),
+            }
         start_time = time.time()
         try:
             # A console query is a DuckDB instance doing work, so it takes a slot
@@ -2419,6 +2548,12 @@ class DbtService:
 
         if request.select:
             cmd.extend(["--select", request.select])
+        # docs generate reads the warehouse catalog, so it documents whichever
+        # target it ran against.
+        try:
+            cmd = append_target(cmd, request.target)
+        except InvalidTarget as exc:
+            return {"success": False, "message": str(exc), "error": str(exc)}
 
         returncode, stdout, stderr = await self._run_dbt_command(
             cmd,

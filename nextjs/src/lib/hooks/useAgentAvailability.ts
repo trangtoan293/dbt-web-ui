@@ -7,8 +7,6 @@ export interface AgentHealth {
     model?: string
     /** Whether the deployment has a shared fallback key. */
     model_configured?: boolean
-    /** The harness's own web UI, when the deployment runs one. */
-    web_url?: string | null
 }
 
 export interface AgentAvailability {

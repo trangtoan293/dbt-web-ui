@@ -17,8 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from adapters.duckdb import DuckDBAdapter
 from ingest import lakehouse
 
-PROJECT_ID = "3f8b1c2d-0000-4000-8000-abcdefabcdef"
+LAKE_ID = "3f8b1c2d-0000-4000-8000-abcdefabcdef"
 CATALOG_URL = "postgresql://lake_user:s3cret@postgres:5432/dbtcraft"
+
+
+def managed_lake() -> lakehouse.LakeRef:
+    """The LakeRef a managed `ducklake` connection row resolves to."""
+    defaults = lakehouse.managed_defaults(LAKE_ID)
+    return lakehouse.LakeRef(
+        catalog_url=lakehouse.catalog_url(),
+        data_path=defaults["data_path"],
+        metadata_schema=defaults["metadata_schema"],
+    )
 
 
 @pytest.fixture
@@ -32,15 +42,15 @@ def lake_settings(tmp_path):
 
 
 def test_attach_entry_matches_what_the_runner_writes(lake_settings):
-    entry = lakehouse.dbt_attach_entry(PROJECT_ID)
-    assert entry["options"]["metadata_schema"] == lakehouse.metadata_schema(PROJECT_ID)
-    assert entry["options"]["data_path"] == f"{lakehouse.data_dir(PROJECT_ID)}/"
+    entry = lakehouse.dbt_attach_entry(managed_lake())
+    assert entry["options"]["metadata_schema"] == lakehouse.metadata_schema(LAKE_ID)
+    assert entry["options"]["data_path"] == f"{lakehouse.data_dir(LAKE_ID)}/"
     assert entry["is_ducklake"] is True
     assert entry["alias"] == lakehouse.ATTACH_ALIAS
 
 
 def test_catalog_password_never_appears_in_the_attach_path(lake_settings):
-    entry = lakehouse.dbt_attach_entry(PROJECT_ID)
+    entry = lakehouse.dbt_attach_entry(managed_lake())
     assert "s3cret" not in entry["path"]
     assert lakehouse.CATALOG_PASSWORD_ENV in entry["path"]
     # ...but it is still available to hand to dbt through the environment.
@@ -48,7 +58,7 @@ def test_catalog_password_never_appears_in_the_attach_path(lake_settings):
 
 
 def test_profiles_yml_with_attach_block_is_valid_yaml(lake_settings):
-    entry = lakehouse.dbt_attach_entry(PROJECT_ID)
+    entry = lakehouse.dbt_attach_entry(managed_lake())
     adapter = DuckDBAdapter(
         {
             "path": "/data/storage/dbt-projects/p/dev.duckdb",
@@ -67,9 +77,7 @@ def test_profiles_yml_with_attach_block_is_valid_yaml(lake_settings):
     assert set(lakehouse.DUCKDB_EXTENSIONS).issubset(output["extensions"])
     attached = output["attach"][0]
     assert attached["alias"] == lakehouse.ATTACH_ALIAS
-    assert attached["options"]["metadata_schema"] == lakehouse.metadata_schema(
-        PROJECT_ID
-    )
+    assert attached["options"]["metadata_schema"] == lakehouse.metadata_schema(LAKE_ID)
 
 
 def test_profiles_yml_without_a_lake_is_unchanged(lake_settings):
@@ -88,7 +96,7 @@ def test_sqlite_catalog_is_supported(tmp_path):
         settings.lake_catalog_url = f"sqlite:///{tmp_path}/catalog.sqlite"
         settings.lake_data_dir = str(tmp_path / "lake")
         settings.storage_dir = str(tmp_path)
-        path = lakehouse.dbt_attach_entry(PROJECT_ID)["path"]
+        path = lakehouse.dbt_attach_entry(managed_lake())["path"]
     assert path == f"ducklake:sqlite:{tmp_path}/catalog.sqlite"
 
 
@@ -98,7 +106,7 @@ def test_unsupported_catalog_scheme_is_refused(tmp_path):
         settings.lake_data_dir = str(tmp_path)
         settings.storage_dir = str(tmp_path)
         with pytest.raises(lakehouse.LakehouseError):
-            lakehouse.dbt_attach_entry(PROJECT_ID)
+            lakehouse.dbt_attach_entry(managed_lake())
 
 
 def test_empty_lake_catalog_url_falls_back_to_the_app_database(tmp_path):

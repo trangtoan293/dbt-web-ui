@@ -32,6 +32,12 @@ dependencies = [
     "httpx>=0.28.1",
     "oracledb>=2.5.0",
     "asyncpg>=0.31.0",
+    # Synchronous drivers, for the ingest side only: dlt reads a source through
+    # blocking SQLAlchemy while the application itself uses asyncpg. psycopg2
+    # arrived transitively through pyiceberg[sql-postgres] until now, which meant
+    # Postgres ingest depended on another library's extra.
+    "psycopg2-binary>=2.9.9",
+    "pymysql>=1.1.1",
     "sqlalchemy[asyncio]>=2.0.0",
     "PyJWT[crypto]>=2.13.0",
     "duckdb>=1.4.3",
@@ -51,7 +57,10 @@ dependencies = [
     # Ingest: dlt loads source tables into DuckLake / the project warehouse.
     # The ducklake extra needs no pyiceberg of its own - duckdb and pyarrow are
     # already here, and the Iceberg publisher above brings pyiceberg.
-    "dlt[ducklake]>=1.30.0",
+    # The filesystem extra is fsspec, for the CSV/JSONL/Parquet ingest source.
+    # CSV is read through duckdb rather than pandas, which is already a
+    # dependency here and pandas is not.
+    "dlt[ducklake,filesystem]>=1.30.0",
 ]
 
 [project.optional-dependencies]

@@ -3,6 +3,7 @@ import { getCurrentUserId } from '@/lib/session'
 import {
   CATALOG_ROUTES,
   PROTOCOLS,
+  PROVIDER_PRESETS,
   deleteProvider,
   listProviders,
   upsertProvider,
@@ -31,6 +32,7 @@ export async function GET() {
       // a list that can drift from it.
       protocols: PROTOCOLS,
       catalogRoutes: CATALOG_ROUTES,
+      providerPresets: PROVIDER_PRESETS,
     })
   } catch (err: unknown) {
     return errorResponse(err)

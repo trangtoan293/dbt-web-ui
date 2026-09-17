@@ -1,10 +1,11 @@
-"""_apply_lakehouse_attach must not disturb the session it borrows.
+"""What _apply_lakehouse_attach puts in a profile, and when.
 
-It runs inside the same transaction as the rest of a dbt request, where
-resolve_user_id may already have updated `users.oidc_sub`. A failed statement
-aborts a Postgres transaction, so probing for a table that does not exist yet -
-every deployment before the ingest migration - must not be done by letting the
-query fail and rolling back.
+The lake a project uses is a row it points at, not something derived from its
+own id - so a project can read a lake it never ingests into, and several
+projects can share one. Two things must stay true: a project with no lake gains
+no attach block (attaching opens a catalog connection on every dbt invocation),
+and a project *with* one on a warehouse that cannot read it fails loudly rather
+than leaving every model to fail with "not found within 'lake'".
 """
 
 import sys
@@ -14,76 +15,72 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.dbt_service import DbtService
+from app.services.dbt_service import DbtOperationError, DbtService
+from ingest import lakehouse
+from ingest.lakehouse import LakehouseError
+
+LAKE = lakehouse.LakeRef(
+    catalog_url="postgresql://u:s3cret@catalog:5432/db",
+    data_path="/data/storage/lake/abc",
+    metadata_schema="lake_abc",
+)
 
 
-def _session(*results):
-    """A session whose execute() returns the given results in order."""
+def _session():
     session = MagicMock()
-    session.execute = AsyncMock(side_effect=list(results))
+    session.execute = AsyncMock()
     session.rollback = AsyncMock()
     return session
 
 
-def _result(scalar=None, first=None):
-    result = MagicMock()
-    result.scalar.return_value = scalar
-    result.first.return_value = first
-    return result
+class LakehouseAttachTest(unittest.TestCase):
+    """Per target: the lake goes on the targets that can hold it, and no others."""
 
-
-class LakehouseAttachQueryTest(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_table_does_not_roll_the_session_back(self):
-        session = _session(_result(scalar=False))
+    def test_a_project_without_a_lake_gets_no_attach(self):
         config = {}
-        with patch("app.services.dbt_service.lakehouse") as lake:
-            lake.is_configured.return_value = True
-            env = await DbtService._apply_lakehouse_attach(
-                session, "p1", "duckdb", config
-            )
-
-        self.assertEqual(env, {})
-        self.assertEqual(config, {}, "no attach block for a deployment without the table")
-        session.rollback.assert_not_awaited()
-
-    async def test_project_without_a_lake_source_gets_no_attach(self):
-        session = _session(_result(scalar=True), _result(first=None))
-        config = {}
-        with patch("app.services.dbt_service.lakehouse") as lake:
-            lake.is_configured.return_value = True
-            env = await DbtService._apply_lakehouse_attach(
-                session, "p1", "duckdb", config
-            )
-
+        env = DbtService._apply_lakehouse_attach(None, "duckdb", config)
         self.assertEqual(env, {})
         self.assertNotIn("attach", config)
 
-    async def test_lake_source_adds_attach_and_password_env(self):
-        session = _session(_result(scalar=True), _result(first=(1,)))
+    def test_an_attached_lake_adds_attach_and_password_env(self):
         config = {"extensions": ["httpfs"]}
-        with patch("app.services.dbt_service.lakehouse") as lake:
-            lake.is_configured.return_value = True
-            lake.DUCKDB_EXTENSIONS = ("ducklake", "postgres")
-            lake.CATALOG_PASSWORD_ENV = "DBT_ENV_SECRET_LAKE_CATALOG_PASSWORD"
-            lake.dbt_attach_entry.return_value = {"alias": "lake"}
-            lake.catalog_password.return_value = "s3cret"
-            env = await DbtService._apply_lakehouse_attach(
-                session, "p1", "duckdb", config
-            )
+        env = DbtService._apply_lakehouse_attach(LAKE, "duckdb", config)
 
-        self.assertEqual(env, {"DBT_ENV_SECRET_LAKE_CATALOG_PASSWORD": "s3cret"})
-        self.assertEqual(config["attach"], [{"alias": "lake"}])
+        self.assertEqual(env, {lakehouse.CATALOG_PASSWORD_ENV: "s3cret"})
         self.assertEqual(config["extensions"], ["httpfs", "ducklake", "postgres"])
+        attached = config["attach"][0]
+        self.assertEqual(attached["alias"], "lake")
+        self.assertEqual(attached["options"]["metadata_schema"], "lake_abc")
+        # The secret reaches dbt through the environment, never through the file.
+        self.assertNotIn("s3cret", attached["path"])
 
-    async def test_non_duckdb_project_never_queries_at_all(self):
-        session = _session()
-        with patch("app.services.dbt_service.lakehouse") as lake:
-            lake.is_configured.return_value = True
-            env = await DbtService._apply_lakehouse_attach(session, "p1", "postgresql", {})
+    def test_a_non_duckdb_target_is_skipped_not_refused(self):
+        """A dev on DuckDB beside a prod on Dremio is an ordinary project.
 
+        Refusing here failed the whole profile - and therefore every dbt command
+        - for a project whose lake target was perfectly fine.
+        """
+        config = {}
+        env = DbtService._apply_lakehouse_attach(LAKE, "dremio", config)
         self.assertEqual(env, {})
-        session.execute.assert_not_awaited()
+        self.assertNotIn("attach", config)
 
+
+class LakehouseResolutionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_missing_lake_row_fails_the_profile_rather_than_the_models(self):
+        with patch(
+            "app.services.dbt_service.resolve_project_lake",
+            AsyncMock(side_effect=LakehouseError("no longer exists")),
+        ):
+            with self.assertRaises(DbtOperationError):
+                await DbtService._resolve_lakehouse(_session(), "p1")
+
+    async def test_no_lake_resolves_to_none(self):
+        with patch(
+            "app.services.dbt_service.resolve_project_lake",
+            AsyncMock(return_value=None),
+        ):
+            self.assertIsNone(await DbtService._resolve_lakehouse(_session(), "p1"))
 
 
 class WarmWorkerReleaseTest(unittest.IsolatedAsyncioTestCase):

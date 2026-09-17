@@ -5,6 +5,10 @@ import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
 import { isPlausibleCron } from '@/lib/cron'
 import { revalidatePath } from 'next/cache'
+import {
+  type IngestSourceInput,
+  validateIngestSource,
+} from '@/lib/ingest-source-validation'
 import { Prisma } from '@prisma/client'
 import type { RunCommand } from '@prisma/client'
 
@@ -137,6 +141,16 @@ export async function deleteDremioSource(id: string) {
 
 // --- Connections ---
 
+/**
+ * `mysql` and `rest` are ingest sources, not warehouses: neither has a dbt
+ * adapter, so dbt-runner refuses them as a project's connection with a message.
+ * They live in the same table because a credential should be encrypted, owned
+ * and rotated in exactly one place.
+ */
+type ConnectionTypeName =
+  | 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark' | 'ducklake'
+  | 'mysql' | 'rest' 
+
 export async function getConnections() {
   const userId = await getCurrentUserId()
   return db.connection.findMany({
@@ -146,8 +160,12 @@ export async function getConnections() {
 }
 
 export async function createConnection(data: {
+  // A lakehouse is created with an explicit id: a managed lake's metadata
+  // schema and data directory are derived from it, so dbt-runner has to be
+  // asked what to store *before* the row exists.
+  id?: string
   name: string
-  connectionType: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark'
+  connectionType: ConnectionTypeName
   host: string
   port: number
   database: string
@@ -189,7 +207,7 @@ export async function getDremioSourceById(id: string) {
 export async function updateConnection(
   id: string,
   data: {
-    connectionType?: 'postgresql' | 'duckdb' | 'dremio' | 'oracle' | 'spark'
+    connectionType?: ConnectionTypeName
     name: string
     host: string
     port: number
@@ -464,61 +482,7 @@ async function ensureOwnership(model: string, id: string, userId: string) {
 // already owns the encrypted password. Nothing here needs encryptSecret.
 // ---------------------------------------------------------------------------
 
-const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
-const TABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
-const WRITE_DISPOSITIONS = new Set(['append', 'replace', 'merge'])
-// A partition term reaches DuckLake as DDL, not as a bound parameter: a bare
-// column, or one date-part function over one. Kept in step with
-// dbt-runner/ingest/lakehouse.py:_PARTITION_TERM_RE, which is the enforcing side.
-const PARTITION_TERM_PATTERN =
-  /^(?:(?:year|month|day|hour)\([A-Za-z_][A-Za-z0-9_$]{0,62}\)|[A-Za-z_][A-Za-z0-9_$]{0,62})$/i
-const PARTITION_FUNCTIONS = ['year', 'month', 'day', 'hour']
-
-export type IngestSourceInput = {
-  projectId: string
-  sourceConnectionId: string
-  name: string
-  dataset: string
-  tables: string[]
-  destination?: 'connection' | 'ducklake'
-  writeDisposition?: string
-  primaryKey?: string[]
-  partitionBy?: string[]
-}
-
-/** Reject anything that would reach SQL as an identifier, before it is stored. */
-function validateIngestSource(input: IngestSourceInput) {
-  if (!input.name?.trim()) throw new Error('Name is required')
-  if (!DATASET_PATTERN.test(input.dataset ?? '')) {
-    throw new Error(
-      'Dataset must start with a letter and use only lowercase letters, digits and underscores (max 40 characters)',
-    )
-  }
-  if (!Array.isArray(input.tables) || input.tables.length === 0) {
-    throw new Error('Select at least one table')
-  }
-  const badTables = input.tables.filter((t) => !TABLE_PATTERN.test(t))
-  if (badTables.length) throw new Error(`Invalid table name(s): ${badTables.slice(0, 5).join(', ')}`)
-
-  const disposition = input.writeDisposition ?? 'append'
-  if (!WRITE_DISPOSITIONS.has(disposition)) {
-    throw new Error(`writeDisposition must be one of ${[...WRITE_DISPOSITIONS].join(', ')}`)
-  }
-  if (disposition === 'merge' && !input.primaryKey?.length) {
-    throw new Error('A primary key is required for merge')
-  }
-
-  for (const term of input.partitionBy ?? []) {
-    if (!PARTITION_TERM_PATTERN.test(term)) {
-      throw new Error(
-        `Invalid partition term "${term}": use a column name, or ${PARTITION_FUNCTIONS.join('/')}(column)`,
-      )
-    }
-  }
-  if (input.partitionBy?.length && (input.destination ?? 'ducklake') !== 'ducklake') {
-    throw new Error('Partitioning applies to the lakehouse destination only')
-  }
-}
+export type { IngestSourceInput, IngestSourceType } from '@/lib/ingest-source-validation'
 
 export async function getIngestSources(projectId?: string) {
   const userId = await getCurrentUserId()
@@ -535,15 +499,21 @@ export async function createIngestSource(input: IngestSourceInput) {
   // Both the project and the connection must belong to the caller; without this
   // a user could ingest another user's warehouse into their own project.
   await ensureOwnership('dbtProject', input.projectId, userId)
-  await ensureOwnership('connection', input.sourceConnectionId, userId)
+  if (input.sourceConnectionId) {
+    await ensureOwnership('connection', input.sourceConnectionId, userId)
+  }
 
   const created = await db.ingestSource.create({
     data: {
       projectId: input.projectId,
-      sourceConnectionId: input.sourceConnectionId,
+      sourceConnectionId: input.sourceConnectionId ?? null,
+      sourceType: input.sourceType ?? 'sql_database',
       name: input.name.trim(),
       dataset: input.dataset,
       tables: input.tables,
+      sourceConfig: (input.sourceConfig ?? undefined) as Prisma.InputJsonValue | undefined,
+      cursorField: input.cursorField?.trim() || null,
+      cursorInitialValue: input.cursorInitialValue?.trim() || null,
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
@@ -559,15 +529,21 @@ export async function updateIngestSource(id: string, input: IngestSourceInput) {
   const userId = await getCurrentUserId()
   validateIngestSource(input)
   await ensureOwnership('ingestSource', id, userId)
-  await ensureOwnership('connection', input.sourceConnectionId, userId)
+  if (input.sourceConnectionId) {
+    await ensureOwnership('connection', input.sourceConnectionId, userId)
+  }
 
   const updated = await db.ingestSource.update({
     where: { id },
     data: {
-      sourceConnectionId: input.sourceConnectionId,
+      sourceConnectionId: input.sourceConnectionId ?? null,
+      sourceType: input.sourceType ?? 'sql_database',
       name: input.name.trim(),
       dataset: input.dataset,
       tables: input.tables,
+      sourceConfig: (input.sourceConfig ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
+      cursorField: input.cursorField?.trim() || null,
+      cursorInitialValue: input.cursorInitialValue?.trim() || null,
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,

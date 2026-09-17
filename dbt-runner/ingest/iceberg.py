@@ -134,21 +134,13 @@ def _validated(name: str, kind: str) -> str:
     return name
 
 
-def _lake_connection(project_id: str):
-    """Attach the project's lake read-only-ish, for listing files and schemas."""
-    import duckdb
+def _lake_connection(lake: lakehouse.LakeRef):
+    """Attach the lake for listing files and schemas.
 
-    connection = duckdb.connect()
-    for extension in lakehouse.DUCKDB_EXTENSIONS:
-        connection.execute(f"LOAD {extension}")
-    # No DATA_PATH, as in lakehouse.maintain: the catalog already records where
-    # its files live, and passing a path that disagrees makes the attach fail.
-    connection.execute(
-        f"ATTACH IF NOT EXISTS '{lakehouse.attach_string(lakehouse.catalog_url())}' "
-        f"AS {lakehouse.ATTACH_ALIAS} "
-        f"(METADATA_SCHEMA '{lakehouse.metadata_schema(project_id)}')"
-    )
-    return connection
+    No DATA_PATH: the catalog already records where its files live, and passing
+    a path that disagrees makes the attach fail outright.
+    """
+    return lakehouse._connect(lake)
 
 
 def _lake_tables(connection, schema: str) -> List[str]:
@@ -263,6 +255,7 @@ def _copy(source: str, target_dir: Path) -> str:
 
 def publish(
     project_id: str,
+    lake: lakehouse.LakeRef,
     *,
     schema: str,
     tables: Optional[List[str]] = None,
@@ -278,7 +271,7 @@ def publish(
     schema = _validated(schema, "schema")
     warehouse = warehouse_dir(project_id)
 
-    connection = _lake_connection(project_id)
+    connection = _lake_connection(lake)
     try:
         available = _lake_tables(connection, schema)
         if tables is None:

@@ -11,7 +11,7 @@ version below is pinned on purpose.
 | | |
 |---|---|
 | Pinned | `@deepseek-ai/dsh@0.1.1-rc.2`, `dsh-sdk-jsonrpc-server@0.0.1-rc.5`, `dsh-sdk-protocol@0.0.1-rc.5` |
-| Services | `dsh-agent` (default stack), `dsh-web` (profile `dsh-web`, off by default) |
+| Services | `dsh-agent` (default stack) |
 | Tests | 69 in `dsh-agent`, 109 in `nextjs` (22 of them new here) |
 | Migrations | `20260824090000_add_ai_credentials`, `20260824100000_add_ai_providers` |
 
@@ -85,7 +85,6 @@ cannot drift from the first.
 | `app/model_config.py` | The caller's provider routes and secrets, off the request |
 | `app/sessions.py` | Reading conversations back out of the harness's session log (zstd) |
 | `app/authz.py` | Ownership delegated to dbt-runner |
-| `app/harness_ui.py` | Mirrors providers/keys into the harness UI's own documents |
 | `dbt_mcp/__main__.py` | MCP server: `list_models`, `compile_model`, `query`, `run_dbt` |
 | `profile/cordis.patch.yml` | The profile layer over `dsh-base` |
 | `plugins/dsh-session-resume/` | Upstream gap fix — see finding 4 |
@@ -164,9 +163,9 @@ one of these is a bug that unit tests alone would not have surfaced.
 11. **An empty environment variable is not an unset one.** Compose writes `""` for
     optional variables and the DeepSeek adapter used an empty `DEEPSEEK_BASE_URL`
     verbatim: *"DeepSeek API request to  failed"*. → empty values are dropped
-    before spawn. The same trap hit `dsh-web`: the harness ranks the inherited
-    environment **above** its own credential file, so an empty `DEEPSEEK_API_KEY`
-    read as "configured with nothing" and that UI kept asking for a key it had.
+    before spawn. Note the harness ranks the inherited environment **above** its
+    own credential file, so an empty `DEEPSEEK_API_KEY` reads as "configured with
+    nothing" rather than as absent.
 12. **`compression: none` on the session log is not free**: the backend refuses a
     root already holding zstd logs, which would abandon every existing
     conversation. → keep the harness's default and decode zstd here
@@ -211,11 +210,6 @@ model, unless noted.
   isolation the harness cannot provide from configuration: a container per project
   (Docker socket) or a mount namespace per session (`bwrap`/`unshare`, needs
   userns or `SYS_ADMIN`, not portable).
-- **`dsh-web` has no authentication** and can run code in every project on the
-  volume — which is why `dsh web` refuses to bind `0.0.0.0` upstream. It is off by
-  default, published on loopback only, and reached through a socat bridge because
-  Docker cannot publish a loopback-bound port. Do not expose it; use an SSH tunnel.
-  Its credential mirroring is refused unless `AUTH_DISABLED=true`.
 - **Developer preview.** The integration rests on `ctx.agents.create/resume`,
   `ctx.sessionPersistence.list()`, the three-method JSON-RPC wire, `llm-pi-ai`'s
   `providers` dict, and the session log format. Run
@@ -246,7 +240,6 @@ model, unless noted.
 
 ```bash
 docker compose up -d                      # dsh-agent is part of the default stack
-docker compose --profile dsh-web up -d dsh-web   # optional harness UI, loopback only
 
 cd dsh-agent && uv venv && uv pip install -e ".[test]" && uv run pytest -q
 cd nextjs && npx vitest run
