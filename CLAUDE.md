@@ -188,5 +188,7 @@ Warm worker pools are reclaimed idle-first then LRU, never mid-job.
   `mysql`, `rest` and `ducklake` are the exception: read-only ingest types with
   no adapter on purpose, refused as a warehouse with a message.
 - Accept Python source for an ingest source — configuration is declarative only.
-- Skip `host_guard` on any endpoint that connects to a user-supplied host.
+- Skip a host guard on any endpoint that connects to a user-supplied host:
+  `app/core/host_guard.py` in dbt-runner, `src/lib/host-guard.ts` in the
+  frontend (a provider's Base URL is fetched by the server too).
 - Give dsh-agent database access or let it shell out to dbt.

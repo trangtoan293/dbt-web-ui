@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { checkProviderConnection } from "@/lib/ai-provider-connection"
+import { assertUrlHostAllowed } from "@/lib/host-guard"
 import {
   defaultApiKeyEnv,
   readProviderCredentialForTest,
@@ -19,6 +20,13 @@ export async function POST(request: Request) {
 
     const problem = validateProvider(body)
     if (problem) return NextResponse.json({ error: problem }, { status: 400 })
+
+    // The server fetches this URL, so it is the same surface dbt-runner guards
+    // for connection hosts. A preset's own endpoint is ours; only an override
+    // is user input. The fetch itself sets redirect: "error", so a public URL
+    // cannot bounce into the private range afterwards.
+    const overrideUrl = body.baseUrl?.trim()
+    if (overrideUrl) await assertUrlHostAllowed(overrideUrl)
 
     const credentialName = (body.apiKeyEnv ?? defaultApiKeyEnv(body.route)).trim()
     const apiKey = body.apiKey?.trim() || await readProviderCredentialForTest(

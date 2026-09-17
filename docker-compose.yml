@@ -299,6 +299,9 @@ services:
       # browser never uses it - it calls the /api/agent proxy, which forwards
       # here over the compose network. Set it empty to hide the panel.
       AGENT_URL: ${AGENT_URL-http://dsh-agent:8090}
+      # Checking a model provider makes this container fetch a URL the user
+      # typed, so private addresses are refused unless a deployment opts in.
+      AI_PROVIDER_ALLOW_PRIVATE_HOSTS: ${AI_PROVIDER_ALLOW_PRIVATE_HOSTS:-false}
       NEXT_PUBLIC_PRODUCT_NAME: ${NEXT_PUBLIC_PRODUCT_NAME:-dbt-craft}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
