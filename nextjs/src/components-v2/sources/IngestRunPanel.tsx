@@ -76,7 +76,7 @@ export default function IngestRunPanel({ sourceId, sourceName, writeDisposition 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => run(sourceId, { fullRefresh })} disabled={running}>
           {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-          Run ingest
+          Run load
         </Button>
         {running && (
           <Button size="sm" variant="outline" onClick={handleStop}>

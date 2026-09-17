@@ -222,7 +222,7 @@ function ProjectRow({ project }: { project: DbtProject }) {
 function QuickActions() {
   const actions = [
     { href: "/develop/new", icon: Plus, title: "Create project", note: "Initialize or clone a repository" },
-    { href: "/data", icon: Server, title: "Manage connections", note: "Configure your query engines" },
+    { href: "/data?tab=connections", icon: Server, title: "Manage connections", note: "Configure your query engines" },
     { href: "/orchestrate", icon: Rocket, title: "Review history", note: "Inspect run history and jobs" },
     { href: "/settings", icon: Settings2, title: "Workspace settings", note: "Manage your preferences" },
   ]
@@ -299,7 +299,7 @@ function GettingStarted({ connectionCount }: { connectionCount: number }): React
       icon: Server,
       title: "Connect your warehouse",
       description: connectionCount > 0 ? `${connectionCount} connection${connectionCount === 1 ? "" : "s"} ready to use.` : "Add PostgreSQL, DuckDB, Dremio, Oracle, or Spark.",
-      href: "/data",
+      href: "/data?tab=connections",
       action: connectionCount > 0 ? "Review connections" : "Add connection",
       done: connectionCount > 0,
     },
@@ -336,7 +336,7 @@ function GettingStarted({ connectionCount }: { connectionCount: number }): React
             </p>
             <div className="mt-6 flex flex-wrap gap-2">
               <Button asChild><Link href="/develop/new"><Plus /> Create Project</Link></Button>
-              <Button variant="outline" asChild><Link href="/data"><Server /> Manage Connections</Link></Button>
+              <Button variant="outline" asChild><Link href="/data?tab=connections"><Server /> Manage Connections</Link></Button>
             </div>
           </div>
         </CardContent>

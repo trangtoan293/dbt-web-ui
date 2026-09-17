@@ -224,6 +224,7 @@ export async function getIngestMeta() {
     destinations: string[]
     write_dispositions: string[]
     lakehouse_configured: boolean
+    file_roots_configured?: boolean
   }>('/api/dbt-runner/ingest/meta')
 }
 

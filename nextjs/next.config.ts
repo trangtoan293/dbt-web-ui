@@ -57,7 +57,7 @@ const nextConfig: NextConfig = {
     return [
       { source: "/runs", destination: "/orchestrate", permanent: false },
       { source: "/schedules", destination: "/orchestrate?tab=schedules", permanent: false },
-      { source: "/connections", destination: "/data", permanent: false },
+      { source: "/connections", destination: "/data?tab=connections", permanent: false },
       { source: "/sources", destination: "/data?tab=sources", permanent: false },
     ];
   },

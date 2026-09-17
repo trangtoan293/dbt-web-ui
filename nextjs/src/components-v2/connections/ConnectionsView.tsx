@@ -43,6 +43,7 @@ const TYPE_LABELS: Record<string, string> = {
 
 export default function ConnectionsView() {
   const [connections, setConnections] = useState<Connection[]>([])
+  const [query, setQuery] = useState("")
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
@@ -132,7 +133,8 @@ export default function ConnectionsView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <input aria-label="Search connections" placeholder="Search connections…" value={query} onChange={(event) => setQuery(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4] sm:max-w-xs" />
         <ConnectionDialog onSaved={handleCreated} />
       </div>
 
@@ -172,12 +174,13 @@ export default function ConnectionsView() {
         <EmptyState
           icon={PlugZap}
           title="No connections configured"
-          description="Add a database connection to start running dbt models."
+          description="Save access to a source database or a dbt warehouse. Then create an ingestion source to load data, or connect a project to start modeling."
           action={<ConnectionDialog onSaved={load} />}
         />
       ) : !loadError ? (
         <div className="grid gap-4">
-          {connections.map((c) => (
+          {!connections.some((c) => `${c.name} ${c.connectionType} ${c.host} ${c.database}`.toLowerCase().includes(query.trim().toLowerCase())) && <p className="py-8 text-center text-sm text-slate-500">No connections match your search.</p>}
+          {connections.filter((c) => `${c.name} ${c.connectionType} ${c.host} ${c.database}`.toLowerCase().includes(query.trim().toLowerCase())).map((c) => (
             <Card key={c.id} className="transition-[border-color,box-shadow] hover:border-slate-300 hover:shadow-md">
               <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-50 ring-1 ring-inset ring-blue-100">
@@ -206,6 +209,7 @@ export default function ConnectionsView() {
                     </span>
                   </div>
                   <p className="mt-1 truncate text-sm text-gray-500">{c.host || c.database || "Local connection"}{c.port ? `:${c.port}` : ""}</p>
+                  <p className="mt-1 text-xs text-slate-500">{c.connectionType === "ducklake" ? "Lakehouse catalog · attach in project settings" : c.connectionType === "rest" ? "API credentials · use with an ingestion source" : "System connection · use with compatible sources or dbt projects"}</p>
                 </div>
                 <div className="flex items-center gap-2 sm:shrink-0">
                   <Button
@@ -274,7 +278,7 @@ export default function ConnectionsView() {
                         <li key={s.id}>{s.name} — {s.project_name} → {s.dataset}</li>
                       ))}
                     </ul>
-                    <p className="mt-1">Delete those sources first, on the Sources page.</p>
+                    <p className="mt-1">Delete those loads first, under Data → Data loads.</p>
                   </div>
                 )}
                 {!usage?.blocked && usage?.project_count ? (

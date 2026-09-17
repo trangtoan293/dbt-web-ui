@@ -9,7 +9,7 @@ import { APP_NAVIGATION } from "@/components-v2/layout/navigation"
 const RETIRED_ROUTES: Record<string, string> = {
   "/runs": "/orchestrate",
   "/schedules": "/orchestrate?tab=schedules",
-  "/connections": "/data",
+  "/connections": "/data?tab=connections",
   "/sources": "/data?tab=sources",
 }
 
@@ -23,7 +23,7 @@ describe("retired route redirects", () => {
 
   it("never redirects to a path that is not itself in the sidebar", async () => {
     const redirects = await nextConfig.redirects!()
-    const sidebarHrefs = new Set(APP_NAVIGATION.map((item) => item.href))
+    const sidebarHrefs = new Set<string>(APP_NAVIGATION.map((item) => item.href))
 
     for (const rule of redirects) {
       const path = String(rule.destination).split("?")[0]
