@@ -277,6 +277,17 @@ class ProjectLakehouseRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def _warehouse_supports_lake(record: Any) -> bool:
+    """Whether this project's dbt profile can attach a DuckLake catalog."""
+    row = record or {}
+    warehouse_type = row.get("warehouse_type")
+    if warehouse_type is not None:
+        return warehouse_type == "duckdb"
+    # No warehouse row: a placeholder DuckDB profile, unless the project runs on
+    # a Dremio source instead, which has no row in `connections` either.
+    return not row.get("dremio_source_id")
+
+
 @router.get("/lakehouse/project/{project_id}")
 async def get_project_lakehouse(
     project_id: str,
@@ -290,7 +301,8 @@ async def get_project_lakehouse(
 
     row = await session.execute(
         text(
-            "SELECT p.lakehouse_connection_id, c.name AS lakehouse_name, "
+            "SELECT p.lakehouse_connection_id, p.dremio_source_id, "
+            "       c.name AS lakehouse_name, "
             "       c.extra_config, w.connection_type AS warehouse_type "
             "FROM dbt_projects p "
             "LEFT JOIN connections c ON c.id = p.lakehouse_connection_id "
@@ -317,8 +329,10 @@ async def get_project_lakehouse(
         "maintained": extra.get("maintained"),
         "buildIntoLake": builds,
         # Only dbt-duckdb can attach a DuckLake catalog, so the UI can say why
-        # rather than offering a choice that produces failed runs.
-        "warehouseSupportsLake": (record or {}).get("warehouse_type") == "duckdb",
+        # rather than offering a choice that produces failed runs. A project with
+        # no connection counts: its placeholder profile is DuckDB, and that
+        # profile gets the attach block too.
+        "warehouseSupportsLake": _warehouse_supports_lake(record),
     }
 
 

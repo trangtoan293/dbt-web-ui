@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import {
@@ -14,10 +14,12 @@ import {
 } from "@/components-v2/ui/dialog"
 import { Input } from "@/components-v2/ui/input"
 import {
+  createConnection,
   createIngestSource,
   getConnections,
   getIngestConnectionTables,
   getProjects,
+  setProjectLakehouse,
   updateIngestSource,
 } from "@/lib/api-client"
 import FileSourceFields, { type FileSourceConfig } from "./FileSourceFields"
@@ -72,8 +74,8 @@ interface Props {
   /** Connection types dbt-runner can read from, from /ingest/meta. */
   sourceConnectionTypes: string[]
   lakehouseConfigured: boolean
-  /** From /ingest/meta: whether INGEST_FILE_ROOTS is set server-side. */
-  fileRootsConfigured?: boolean
+  /** From /ingest/meta: the server directories a filesystem source may read. */
+  fileRoots?: string[]
 }
 
 const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
@@ -82,8 +84,18 @@ const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
 const PARTITION_TERM_PATTERN =
   /^(?:(?:year|month|day|hour)\([A-Za-z_][A-Za-z0-9_$]{0,62}\)|[A-Za-z_][A-Za-z0-9_$]{0,62})$/i
 
-// Mirrors _CURSOR_RE in dbt-runner/app/routers/ingest.py, the enforcing side.
+// Mirrors _CURSOR_RE / _JSON_CURSOR_RE in dbt-runner/app/routers/ingest.py, the
+// enforcing side. A REST cursor is a path into the JSON response, so dots are
+// ordinary there and are not a column name anywhere else.
 const CURSOR_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
+const JSON_CURSOR_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62}){0,9}$/
+
+const DESTINATION_HELP: Record<string, string> = {
+  ducklake:
+    "Parquet files on shared storage, with a catalog (DuckLake) that dbt and other engines read. The usual home for raw loads.",
+  connection:
+    "The database this project runs dbt on. Only DuckDB and PostgreSQL warehouses can be loaded into directly.",
+}
 
 const DISPOSITION_HELP: Record<string, string> = {
   append: "Adds rows on every run. Safest default; duplicates if the source has no cursor.",
@@ -98,10 +110,10 @@ export default function SourceDialog({
   existing,
   sourceConnectionTypes,
   lakehouseConfigured,
-  fileRootsConfigured = false,
+  fileRoots = [],
 }: Props): React.ReactElement {
   const [step, setStep] = useState(0)
-  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null }>>([])
   const [connections, setConnections] = useState<Array<{ id: string; name: string; connectionType: string }>>([])
   const [projectId, setProjectId] = useState("")
   const [connectionId, setConnectionId] = useState("")
@@ -120,6 +132,7 @@ export default function SourceDialog({
   const [primaryKey, setPrimaryKey] = useState("")
   const [partitionBy, setPartitionBy] = useState("")
   const [saving, setSaving] = useState(false)
+  const [creatingLake, setCreatingLake] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const allowedConnectionTypes = useMemo(
@@ -127,22 +140,25 @@ export default function SourceDialog({
     [sourceType, sourceConnectionTypes],
   )
 
+  const loadFormData = useCallback(async () => {
+    const [p, c] = await Promise.all([getProjects(), getConnections()])
+    setProjects(Array.isArray(p) ? p : [])
+    setConnections(
+      (Array.isArray(c) ? c : []).filter(
+        (row: { connectionType: string; _sourceTable?: string }) =>
+          row._sourceTable === "connection" &&
+          allowedConnectionTypes.includes(row.connectionType),
+      ),
+    )
+  }, [allowedConnectionTypes])
+
   useEffect(() => {
     if (!open) return
     setError(null)
-    Promise.all([getProjects(), getConnections()])
-      .then(([p, c]) => {
-        setProjects(Array.isArray(p) ? p : [])
-        setConnections(
-          (Array.isArray(c) ? c : []).filter(
-            (row: { connectionType: string; _sourceTable?: string }) =>
-              row._sourceTable === "connection" &&
-              allowedConnectionTypes.includes(row.connectionType),
-          ),
-        )
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load form data"))
-  }, [open, allowedConnectionTypes])
+    loadFormData().catch((e) =>
+      setError(e instanceof Error ? e.message : "Failed to load form data"),
+    )
+  }, [open, loadFormData])
 
   useEffect(() => {
     if (!open) return
@@ -186,6 +202,54 @@ export default function SourceDialog({
 
   const datasetValid = useMemo(() => DATASET_PATTERN.test(dataset), [dataset])
 
+  // Whether *this project* can receive a lakehouse load. `lakehouseConfigured`
+  // only says the deployment has a catalog URL, which is true almost always -
+  // relying on it let a load be saved against a project with no lake attached
+  // and fail with a 400 on the first run, after the whole wizard.
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === projectId),
+    [projects, projectId],
+  )
+  // Keyed on the resolved project, not the raw id: `projects` arrives a tick
+  // after `projectId` when editing, and an id with no row yet is not a project
+  // with no lake.
+  const lakeBlocked = Boolean(selectedProject) && !selectedProject?.lakehouseConnectionId
+  const lakeUnavailable = destination === "ducklake" && lakeBlocked
+
+  /**
+   * Create a lakehouse for this project and attach it, without leaving the form.
+   *
+   * A **managed** lake needs nothing from the user: dbt-runner derives the
+   * catalog schema and the data directory from the connection id it is given,
+   * so the only real input is a name. Asking someone to leave a half-filled
+   * wizard, find Connections, pick "Lakehouse" out of eight connection types,
+   * choose a mode, come back through Project Settings and attach it is the
+   * whole feature's cliff - and every one of those steps had one right answer.
+   */
+  async function createLakehouseForProject() {
+    if (!selectedProject) return
+    setCreatingLake(true)
+    setError(null)
+    try {
+      const lake = await createConnection({
+        connectionType: "ducklake",
+        name: `${selectedProject.name} lakehouse`,
+        // A managed lake is located by dbt-runner; these stay empty on purpose.
+        host: "",
+        port: 0,
+        database: "",
+        username: "",
+        extraConfig: { mode: "managed" },
+      })
+      await setProjectLakehouse(selectedProject.id, { connectionId: lake.id })
+      await loadFormData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create the lakehouse")
+    } finally {
+      setCreatingLake(false)
+    }
+  }
+
   /** The chosen type's own fields only - a stale glob must not reach a REST source. */
   function normalisedSourceConfig(): Record<string, unknown> {
     if (sourceType === "filesystem") {
@@ -197,11 +261,17 @@ export default function SourceDialog({
       }
     }
     const config = sourceConfig as RestSourceConfig
+    const byName = new Map((config.resources ?? []).map((r) => [r.name, r]))
     return {
-      base_url: config.base_url ?? "",
+      // Trimmed: a pasted URL often carries a leading space, and the stored
+      // value is what the form shows back.
+      base_url: (config.base_url ?? "").trim(),
       paginator: config.paginator ?? { type: "auto" },
-      resources: (config.resources ?? [])
-        .filter((r) => tables.includes(r.name))
+      // Driven by the table list so every table gets an endpoint, defaulting to
+      // its own name. Deriving it from `resources` instead dropped any table the
+      // user never typed a field for.
+      resources: tables
+        .map((table) => byName.get(table) ?? { name: table })
         .map((r) => ({
           name: r.name,
           path: r.path || r.name,
@@ -228,14 +298,15 @@ export default function SourceDialog({
       if (sourceType === "sql_database" && !connectionId) return setError("Choose a source connection")
       if (!tables.length) return setError("Select at least one table or resource")
       if (sourceType === "filesystem") {
-        if (!fileRootsConfigured) return setError("File access is not configured for this workspace")
+        if (!fileRoots.length) return setError("File access is not configured for this workspace")
         if (tables.length !== 1) return setError("File loads write to one destination table")
         if (!String(sourceConfig.bucket_url ?? "").trim()) return setError("Choose a directory to read from")
       }
       if (sourceType === "rest_api") {
         if (!String(sourceConfig.base_url ?? "").trim() && !connectionId) return setError("Enter an API base URL or choose a connection")
-        const resources = (sourceConfig as RestSourceConfig).resources ?? []
-        if (tables.some((table) => !resources.some((resource) => resource.name === table))) return setError("Configure an endpoint for each API resource")
+        // No per-resource check: an endpoint path defaults to the resource name,
+        // so there is nothing left for the user to supply.
+        if (String((sourceConfig as RestSourceConfig).paginator?.type ?? "auto") === "offset" && !String((sourceConfig as RestSourceConfig).paginator?.limit ?? "").trim()) return setError("The offset paginator needs a records-per-page value")
       }
     }
     if (step === 1) {
@@ -243,6 +314,7 @@ export default function SourceDialog({
       if (!name.trim()) return setError("Give this load a name")
       if (!datasetValid) return setError("Schema must start with a lowercase letter and contain only lowercase letters, digits and underscores")
       if (destination === "ducklake" && !lakehouseConfigured) return setError("Choose an available destination")
+      if (lakeUnavailable) return setError("This project has no lakehouse attached. Attach one, or load into the project's own warehouse.")
     }
     setStep(step + 1)
   }
@@ -259,11 +331,19 @@ export default function SourceDialog({
       )
     }
     if (tables.length === 0) return setError("Add at least one table")
+    if (lakeUnavailable) {
+      return setError("This project has no lakehouse attached. Attach one, or load into the project's own warehouse.")
+    }
     if (writeDisposition === "merge" && !primaryKey.trim()) {
       return setError("Merge needs a primary key")
     }
-    if (cursorField.trim() && !CURSOR_PATTERN.test(cursorField.trim())) {
-      return setError(`Invalid cursor field "${cursorField.trim()}": it must be a column name`)
+    const cursorPattern = sourceType === "rest_api" ? JSON_CURSOR_PATTERN : CURSOR_PATTERN
+    if (cursorField.trim() && !cursorPattern.test(cursorField.trim())) {
+      return setError(
+        sourceType === "rest_api"
+          ? `Invalid cursor "${cursorField.trim()}": use field names separated by dots`
+          : `Invalid cursor field "${cursorField.trim()}": it must be a column name`,
+      )
     }
     if (sourceType === "filesystem") {
       if (tables.length !== 1) {
@@ -274,15 +354,12 @@ export default function SourceDialog({
       }
     }
     if (sourceType === "rest_api") {
-      const resources = ((sourceConfig as RestSourceConfig).resources ?? []).filter((r) =>
-        tables.includes(r.name),
-      )
-      const missing = tables.filter((t) => !resources.some((r) => r.name === t))
-      if (missing.length) {
-        return setError(`Give an endpoint path for: ${missing.slice(0, 5).join(", ")}`)
-      }
       if (!String((sourceConfig as RestSourceConfig).base_url ?? "").trim() && !connectionId) {
         return setError("A REST source needs a base URL, or a connection that carries one")
+      }
+      const paginator = (sourceConfig as RestSourceConfig).paginator
+      if (String(paginator?.type ?? "auto") === "offset" && !String(paginator?.limit ?? "").trim()) {
+        return setError("The offset paginator needs a records-per-page value")
       }
     }
     const partitionTerms = partitionBy
@@ -470,7 +547,7 @@ export default function SourceDialog({
             <FileSourceFields
               config={sourceConfig as FileSourceConfig}
               onChange={(next) => setSourceConfig(next as Record<string, unknown>)}
-              rootsConfigured={fileRootsConfigured}
+              roots={fileRoots}
             />
           )}
 
@@ -479,8 +556,8 @@ export default function SourceDialog({
               tables={tables}
               config={sourceConfig as RestSourceConfig}
               onChange={(next) => setSourceConfig(next as Record<string, unknown>)}
-              hasCursor={false}
               baseUrlFromConnection={Boolean(connectionId)}
+              connectionId={connectionId}
             />
           )}
 
@@ -512,11 +589,39 @@ export default function SourceDialog({
                 onChange={(e) => setDestination(e.target.value as "connection" | "ducklake")}
               >
                 <option value="ducklake" disabled={!lakehouseConfigured}>
-                  Lakehouse (DuckLake){lakehouseConfigured ? "" : " — not configured"}
+                  Lakehouse{lakehouseConfigured ? "" : " — not available on this server"}
                 </option>
                 <option value="connection">The project&apos;s own warehouse</option>
               </select>
+              <span className="mt-1 block text-xs text-gray-500">
+                {!projectId
+                  ? "Choose a project first — each project has its own lakehouse."
+                  : DESTINATION_HELP[destination]}
+              </span>
             </label>
+
+            {lakeUnavailable && (
+              <div role="alert" className="space-y-2 rounded-md bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <p>
+                  “{selectedProject?.name}” doesn&apos;t have a lakehouse yet. Set one up and this
+                  load can write to it — storage and catalog are created for you.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" onClick={createLakehouseForProject} disabled={creatingLake}>
+                    {creatingLake ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Set up a lakehouse
+                  </Button>
+                  <button
+                    type="button"
+                    className="text-xs font-medium underline"
+                    onClick={() => setDestination("connection")}
+                    disabled={creatingLake}
+                  >
+                    or load into the project&apos;s own warehouse
+                  </button>
+                </div>
+              </div>
+            )}
 
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -566,6 +671,9 @@ export default function SourceDialog({
               />
               <span className="mt-1 block text-xs text-gray-500">
                 Use a timestamp or increasing ID, such as updated_at. Leave blank to read all rows on every run. Adding rows without tracking changes can create duplicates.
+                {sourceType === "rest_api" && (
+                  <> For an API this is a path into each record, so a nested field is written <code>attributes.updated_at</code>.</>
+                )}
               </span>
             </label>
             <label className="block text-sm">

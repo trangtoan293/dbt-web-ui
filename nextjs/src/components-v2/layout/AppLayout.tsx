@@ -52,6 +52,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
   }
 
   const isProjectWorkspace = /^\/develop\/(?!new$)[^/]+$/.test(pathname)
+  const isCompactWorkspace = pathname === "/explore" || pathname === "/orchestrate"
 
   return (
     <TopBarProvider>
@@ -77,6 +78,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
               "min-h-0 flex-1",
               isProjectWorkspace
                 ? "overflow-hidden"
+                : isCompactWorkspace
+                ? "overflow-auto p-2 sm:p-3"
                 : "overflow-auto px-4 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-6 sm:px-6 lg:px-8 lg:pt-7"
             )}
           >

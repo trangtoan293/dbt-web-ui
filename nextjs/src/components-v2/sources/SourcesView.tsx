@@ -35,7 +35,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 
 export default function SourcesView(): React.ReactElement {
   const [sources, setSources] = useState<IngestSource[]>([])
-  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null }>>([])
   const [projectFilter, setProjectFilter] = useState("")
   const [metaError, setMetaError] = useState(false)
   const [query, setQuery] = useState("")
@@ -49,11 +49,11 @@ export default function SourcesView(): React.ReactElement {
   const [meta, setMeta] = useState<{
     source_connection_types: string[]
     lakehouse_configured: boolean
-    file_roots_configured?: boolean
+    file_roots: string[]
   }>({
     source_connection_types: [],
     lakehouse_configured: false,
-    file_roots_configured: false,
+    file_roots: [],
   })
 
   const load = useCallback(async () => {
@@ -77,7 +77,7 @@ export default function SourcesView(): React.ReactElement {
         setMeta({
           source_connection_types: m.source_connection_types ?? [],
           lakehouse_configured: Boolean(m.lakehouse_configured),
-          file_roots_configured: Boolean(m.file_roots_configured),
+          file_roots: m.file_roots ?? [],
         }),
       )
       .catch(() => setMetaError(true))
@@ -96,6 +96,10 @@ export default function SourcesView(): React.ReactElement {
       setDeleting(false)
     }
   }
+
+  const needsLakehouse = (source: IngestSource) =>
+    source.destination === "ducklake" &&
+    !projects.find((project) => project.id === source.projectId)?.lakehouseConnectionId
 
   const visibleSources = sources.filter((source) =>
     (!projectFilter || source.projectId === projectFilter) &&
@@ -157,7 +161,7 @@ export default function SourcesView(): React.ReactElement {
               <div className="grid items-center gap-4 p-5 xl:grid-cols-[1.2fr_1fr_1.2fr_0.9fr_200px]">
                 <div className="min-w-0"><p className="break-words font-medium text-slate-900">{source.name}</p><p className="mt-1 text-xs text-slate-500">{projects.find((project) => project.id === source.projectId)?.name ?? "Project unavailable"}</p></div>
                 <div className="min-w-0"><p className="text-[11px] text-slate-400 xl:hidden">SOURCE</p><p className="break-words text-sm text-slate-700">{source.sourceConnection?.name ?? SOURCE_TYPE_LABELS[source.sourceType ?? "sql_database"]}</p><p className="mt-1 text-xs text-slate-500">{source.tables.length} {source.sourceType === "rest_api" ? "resources" : "tables"}</p></div>
-                <div className="min-w-0"><p className="text-[11px] text-slate-400 xl:hidden">DESTINATION</p><p className="flex items-center gap-1 text-sm text-slate-700"><ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />{DESTINATION_LABELS[source.destination]}</p><p className="mt-1 break-words font-mono text-xs text-slate-500">{source.dataset}</p></div>
+                <div className="min-w-0"><p className="text-[11px] text-slate-400 xl:hidden">DESTINATION</p><p className="flex items-center gap-1 text-sm text-slate-700"><ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />{DESTINATION_LABELS[source.destination]}</p><p className="mt-1 break-words font-mono text-xs text-slate-500">{source.dataset}</p>{needsLakehouse(source) && <p className="mt-1 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-800">Needs a lakehouse — edit to set one up</p>}</div>
                 <div><p className="text-sm text-slate-700">{{ append: "Add rows", replace: "Replace all rows", merge: "Update matching rows" }[source.writeDisposition] ?? source.writeDisposition}</p><p className="mt-1 text-xs text-slate-500">{source.cursorField ? `Track: ${source.cursorField}` : "Read all rows"}</p></div>
                 <div className="flex items-center justify-end gap-1">
                   <Button size="sm" variant="outline" aria-expanded={expanded === source.id} aria-controls={`load-${source.id}`} onClick={() => setExpanded(expanded === source.id ? null : source.id)}>{expanded === source.id ? "Close" : "Run / history"}</Button>
@@ -215,7 +219,7 @@ export default function SourcesView(): React.ReactElement {
         onSaved={load}
         sourceConnectionTypes={meta.source_connection_types}
         lakehouseConfigured={meta.lakehouse_configured}
-        fileRootsConfigured={Boolean(meta.file_roots_configured)}
+        fileRoots={meta.file_roots}
       />
     </div>
   )

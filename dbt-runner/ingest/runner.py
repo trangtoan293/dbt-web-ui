@@ -133,20 +133,23 @@ def _apply_hints(
     warehouse is read in full either way. dlt turns the cursor into
     `WHERE cursor > last_value` pushed down to the source.
 
-    `rest_api` is excluded because its incremental is part of the config the
-    router built - an HTTP cursor has to become a request parameter to save any
-    work, which a hint applied here cannot do.
+    Only the *incremental* is skipped for `rest_api`: its cursor is part of the
+    config the router built, because an HTTP cursor has to become a request
+    parameter to save any work, which a hint applied here cannot do. The merge
+    hints still apply - `run()` passes write_disposition=None for a merge and
+    leaves it to this function, so excluding rest_api outright turned every
+    REST merge into an append and duplicated the source on each run.
     """
     import dlt
 
     cursor = config.get("cursor_field")
     primary_key = config.get("primary_key")
     is_merge = config.get("write_disposition") == "merge"
-    if kind == "rest_api" or not (cursor or is_merge):
+    if not (cursor or is_merge):
         return
 
     incremental = None
-    if cursor:
+    if cursor and kind != "rest_api":
         incremental = dlt.sources.incremental(
             cursor, initial_value=config.get("cursor_initial_value") or None
         )

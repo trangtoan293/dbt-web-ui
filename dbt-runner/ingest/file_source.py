@@ -35,7 +35,7 @@ class UnsupportedFileSource(ValueError):
     """Raised when a filesystem source's configuration is refused."""
 
 
-def _roots() -> list[Path]:
+def roots() -> list[Path]:
     raw = settings.ingest_file_roots or ""
     return [Path(r.strip()).resolve() for r in raw.split(",") if r.strip()]
 
@@ -59,21 +59,21 @@ def validate_bucket_url(raw: str) -> str:
     if candidate.startswith("file://"):
         candidate = candidate[len("file://") :]
 
-    roots = _roots()
-    if not roots:
+    allowed = roots()
+    if not allowed:
         raise UnsupportedFileSource(
             "no ingest file roots are configured. Set INGEST_FILE_ROOTS to the "
             "mount points a filesystem source may read from."
         )
 
     resolved = Path(candidate).resolve()
-    for root in roots:
+    for root in allowed:
         if resolved == root or root in resolved.parents:
             return f"file://{resolved}"
 
     raise UnsupportedFileSource(
         f"'{raw}' is not under any configured ingest root "
-        f"({', '.join(str(r) for r in roots)})."
+        f"({', '.join(str(r) for r in allowed)})."
     )
 
 

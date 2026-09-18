@@ -245,18 +245,27 @@ export default function NewProjectForm() {
                 }}
                 className="flex h-9 w-full rounded-md border border-gray-300 bg-white px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0078D4] focus-visible:ring-offset-2"
               >
-                <option value="">No connection (manual profiles.yml)</option>
+                <option value="">Built-in DuckDB — nothing to set up</option>
                 {connections.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} ({TYPE_LABELS[c.connectionType] ?? c.connectionType}{c.host ? ` — ${c.host}` : ""})
                   </option>
                 ))}
               </select>
-              {connections.length === 0 && (
-                <p className="mt-1 text-xs text-gray-500">
-                  No connections configured. <Link href="/data?tab=connections" className="text-[#0078D4] hover:underline">Add one</Link>
-                </p>
-              )}
+              {/* The default said "No connection (manual profiles.yml)", which reads
+                  as a gap to fill rather than the working DuckDB profile it
+                  actually creates - so new projects looked broken on purpose. */}
+              <p className="mt-1 text-xs text-gray-500">
+                {formData.selected_connection_id
+                  ? "dbt runs against this connection. Add more targets later in Project Settings."
+                  : "dbt runs against a DuckDB file inside the project — enough to build models and read a lakehouse. Point it at a warehouse whenever you need one."}
+                {connections.length === 0 && (
+                  <>
+                    {" "}
+                    <Link href="/data?tab=connections" className="text-[#0078D4] hover:underline">Add a connection</Link>
+                  </>
+                )}
+              </p>
             </Field>
           </FormSection>
 

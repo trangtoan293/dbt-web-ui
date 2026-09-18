@@ -372,6 +372,31 @@ class IncrementalHintTest(unittest.TestCase):
         self.assertEqual(hints["write_disposition"], "merge")
         self.assertEqual(hints["primary_key"], ["id"])
 
+    def test_the_offset_paginator_is_refused_without_a_page_size(self):
+        """dlt's OffsetPaginator takes `limit` as a required argument.
+
+        Without this the UI's own paginator list contained an option that always
+        died inside dlt with a TypeError, well after the load had started.
+        """
+        from ingest.rest_source import UnsupportedRestSource, _validate_paginator
+
+        with self.assertRaises(UnsupportedRestSource) as caught:
+            _validate_paginator({"type": "offset"})
+        self.assertIn("page size", str(caught.exception))
+
+        self.assertEqual(
+            _validate_paginator({"type": "offset", "limit": 100}),
+            {"type": "offset", "limit": 100},
+        )
+        # A form field sends a string; dlt builds from it and then fails on the
+        # second page, so the number has to arrive as a number.
+        self.assertEqual(
+            _validate_paginator({"type": "offset", "limit": "100"}),
+            {"type": "offset", "limit": 100},
+        )
+        with self.assertRaises(UnsupportedRestSource):
+            _validate_paginator({"type": "offset", "limit": "many"})
+
     def test_rest_api_keeps_its_cursor_in_its_own_config(self):
         """An HTTP cursor has to be sent, which a hint applied here cannot do."""
         from ingest import runner
@@ -533,16 +558,41 @@ class JobConfigDispatchTest(unittest.TestCase):
         from fastapi import HTTPException
 
         cursor, initial = self.router._validated_cursor(
-            self._row(cursor_field="updated_at", cursor_initial_value="2026-01-01")
+            self._row(cursor_field="updated_at", cursor_initial_value="2026-01-01"),
+            "sql_database",
         )
         self.assertEqual((cursor, initial), ("updated_at", "2026-01-01"))
         with self.assertRaises(HTTPException):
-            self.router._validated_cursor(self._row(cursor_field="updated_at; DROP TABLE x"))
+            self.router._validated_cursor(
+                self._row(cursor_field="updated_at; DROP TABLE x"), "sql_database"
+            )
+
+    def test_a_rest_cursor_is_a_json_path_and_a_sql_one_is_not(self):
+        """One stored field, two meanings.
+
+        For rest_api the cursor is dlt's `cursor_path` into the response body, so
+        `attributes.updated_at` is ordinary. For a SQL source the same string
+        would be a column reference, and a dot there is not a column name.
+        """
+        from fastapi import HTTPException
+
+        row = self._row(cursor_field="attributes.updated_at")
+        self.assertEqual(
+            self.router._validated_cursor(row, "rest_api")[0], "attributes.updated_at"
+        )
+        with self.assertRaises(HTTPException):
+            self.router._validated_cursor(row, "sql_database")
+        # A path is still a path: nothing that could carry a quote or a space.
+        with self.assertRaises(HTTPException):
+            self.router._validated_cursor(
+                self._row(cursor_field="a.b; DROP TABLE x"), "rest_api"
+            )
 
     def test_no_cursor_reads_as_no_cursor_rather_than_an_empty_string(self):
-        self.assertEqual(self.router._validated_cursor(self._row()), (None, None))
+        self.assertEqual(self.router._validated_cursor(self._row(), "sql_database"), (None, None))
         self.assertEqual(
-            self.router._validated_cursor(self._row(cursor_field="")), (None, None)
+            self.router._validated_cursor(self._row(cursor_field=""), "sql_database"),
+            (None, None),
         )
 
     def test_an_unknown_source_type_is_a_400_not_a_crash(self):

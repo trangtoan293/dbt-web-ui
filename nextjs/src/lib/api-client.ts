@@ -224,7 +224,7 @@ export async function getIngestMeta() {
     destinations: string[]
     write_dispositions: string[]
     lakehouse_configured: boolean
-    file_roots_configured?: boolean
+    file_roots?: string[]
   }>('/api/dbt-runner/ingest/meta')
 }
 
@@ -264,6 +264,32 @@ export async function getIngestConnectionTables(connectionId: string) {
   return apiFetch<{ success: boolean; tables: string[]; message?: string }>(
     `/api/dbt-runner/ingest/connections/${connectionId}/tables`,
   )
+}
+
+export interface RestProbeResult {
+  success: boolean
+  url?: string
+  status?: number
+  record_count?: number
+  data_selector?: string
+  fields?: string[]
+  message?: string
+}
+
+/** Fetch one REST endpoint through dbt-runner, to check it before saving. */
+export async function probeRestEndpoint(body: {
+  connectionId?: string | null
+  baseUrl?: string
+  path?: string
+}) {
+  return apiFetch<RestProbeResult>('/api/dbt-runner/ingest/rest/probe', {
+    method: 'POST',
+    body: JSON.stringify({
+      connection_id: body.connectionId || null,
+      base_url: body.baseUrl || null,
+      path: body.path ?? '',
+    }),
+  })
 }
 
 export async function getIngestDbtSources(sourceId: string) {

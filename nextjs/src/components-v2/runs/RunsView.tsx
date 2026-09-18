@@ -3,18 +3,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { useSession } from "next-auth/react"
 import {
-  Activity,
   AlertTriangle,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  CircleGauge,
   FilterX,
   Loader2,
   RefreshCw,
   Search,
   Terminal,
-  Timer,
 } from "lucide-react"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import RunDetail from "@/components-v2/runs/RunDetail"
@@ -56,44 +52,11 @@ function rangeStart(range: string): string | null {
   return durations[range] ? new Date(Date.now() - durations[range]).toISOString() : null
 }
 
-function SummaryCard({
-  icon: Icon,
-  label,
-  value,
-  note,
-  tone,
-}: {
-  icon: React.ElementType
-  label: string
-  value: string
-  note: string
-  tone: "blue" | "green" | "red" | "amber"
-}) {
-  const styles = {
-    blue: "bg-sky-50 text-sky-700 ring-sky-100",
-    green: "bg-emerald-50 text-emerald-700 ring-emerald-100",
-    red: "bg-red-50 text-red-700 ring-red-100",
-    amber: "bg-amber-50 text-amber-700 ring-amber-100",
-  }
-  return (
-    <Card>
-      <CardContent className="flex items-start gap-3 p-4">
-        <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg ring-1", styles[tone])}><Icon className="h-4 w-4" /></div>
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-slate-500">{label}</p>
-          <p className="mt-0.5 text-xl font-semibold tracking-tight text-slate-950">{value}</p>
-          <p className="mt-0.5 truncate text-xs text-slate-400" title={note}>{note}</p>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
 function TableSkeleton() {
   return (
     <div className="space-y-1 p-3">
       {Array.from({ length: 7 }).map((_, index) => (
-        <div key={index} className="grid grid-cols-[1fr_1.4fr_0.7fr_0.6fr] gap-5 rounded-lg px-3 py-3">
+        <div key={index} className="grid grid-cols-[1fr_1.4fr_0.7fr_0.6fr] gap-5 rounded-lg px-3 py-2">
           <div className="h-4 animate-pulse rounded bg-slate-100" />
           <div className="h-4 animate-pulse rounded bg-slate-100" />
           <div className="h-4 animate-pulse rounded bg-slate-100" />
@@ -104,7 +67,7 @@ function TableSkeleton() {
   )
 }
 
-export default function RunsView() {
+export default function RunsView({ navigation }: { navigation?: React.ReactNode }) {
   const { data: session, status: sessionStatus } = useSession()
   const [dashboard, setDashboard] = useState<RunLogDashboardResponse>(EMPTY_DASHBOARD)
   const [loading, setLoading] = useState(true)
@@ -295,49 +258,44 @@ export default function RunsView() {
   const rowEnd = Math.min(dashboard.pagination.page * dashboard.pagination.pageSize, dashboard.pagination.total)
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {dashboard.summary.running > 0 && (
-          <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700">
-            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" /></span>
-            Auto-refresh 5s
-          </span>
-        )}
-        <Button variant="outline" onClick={refreshAll} disabled={refreshing || sessionStatus !== "authenticated"}>
-          <RefreshCw className={cn(refreshing && "animate-spin")} /> Refresh
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+        {navigation}
+        <div aria-label="Run summary" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+          <span title="Invocations in the selected time range"><strong className="text-slate-800">{dashboard.summary.total.toLocaleString()}</strong> runs</span>
+          <span title="Success rate of terminal runs"><strong className="text-emerald-700">{successRate.toFixed(1)}%</strong> success</span>
+          <span title={`${dashboard.summary.cancelled} cancelled`}><strong className="text-red-700">{dashboard.summary.error.toLocaleString()}</strong> failed</span>
+          <span title="Average duration of completed invocations"><strong className="text-slate-800">{formatDuration(dashboard.summary.averageDurationMs)}</strong> avg</span>
+          {dashboard.summary.running > 0 && <span className="text-blue-700" title="Auto-refresh every 5 seconds">{dashboard.summary.running} running · live</span>}
+        </div>
+        <Button className="ml-auto" size="sm" variant="ghost" aria-label="Refresh runs" title="Refresh runs" onClick={refreshAll} disabled={refreshing || sessionStatus !== "authenticated"}>
+          <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
         </Button>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard icon={Activity} label="Invocations" value={dashboard.summary.total.toLocaleString()} note={`${dashboard.summary.running} running · selected time range`} tone="blue" />
-        <SummaryCard icon={CheckCircle2} label="Success rate" value={`${successRate.toFixed(1)}%`} note={`${dashboard.summary.success} successful terminal runs`} tone="green" />
-        <SummaryCard icon={AlertTriangle} label="Failed runs" value={dashboard.summary.error.toLocaleString()} note={`${dashboard.summary.cancelled} cancelled`} tone="red" />
-        <SummaryCard icon={Timer} label="Average duration" value={formatDuration(dashboard.summary.averageDurationMs)} note="Completed invocations with timing" tone="amber" />
-      </div>
-
       <Card>
-        <CardContent className="p-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(18rem,1.6fr)_minmax(10rem,1fr)_10rem_10rem_9rem_auto]">
-            <div className="relative">
+        <CardContent className="p-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-48 flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} className="pl-9" placeholder="Search logs, selector, error, project or run ID…" aria-label="Search dbt run logs" />
+              <Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} className="h-8 pl-9 text-xs" placeholder="Search logs, selector, error, project or run ID…" aria-label="Search dbt run logs" />
             </div>
-            <select value={projectId} onChange={(event) => setFilter(setProjectId, event.target.value)} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by project">
+            <select value={projectId} onChange={(event) => setFilter(setProjectId, event.target.value)} className="h-8 min-w-0 max-w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by project">
               <option value="">All projects</option>
               {dashboard.facets.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
-            <select value={statusFilter} onChange={(event) => setFilter(setStatusFilter, event.target.value)} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm capitalize text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by run status">
+            <select value={statusFilter} onChange={(event) => setFilter(setStatusFilter, event.target.value)} className="h-8 min-w-0 max-w-full rounded-md border border-slate-300 bg-white px-2 text-xs capitalize text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by run status">
               <option value="">All statuses</option>
               {STATUS_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
-            <select value={command} onChange={(event) => setFilter(setCommand, event.target.value)} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by dbt command">
+            <select value={command} onChange={(event) => setFilter(setCommand, event.target.value)} className="h-8 min-w-0 max-w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by dbt command">
               <option value="">All commands</option>
               {COMMANDS.map((value) => <option key={value} value={value}>dbt {value}</option>)}
             </select>
-            <select value={range} onChange={(event) => setFilter(setRange, event.target.value)} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by time range">
+            <select value={range} onChange={(event) => setFilter(setRange, event.target.value)} className="h-8 min-w-0 max-w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20" aria-label="Filter by time range">
               <option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="all">All time</option>
             </select>
-            <Button variant="ghost" onClick={resetFilters} disabled={!hasFilters}><FilterX /> Clear</Button>
+            <Button size="sm" variant="ghost" onClick={resetFilters} disabled={!hasFilters}><FilterX /> Clear</Button>
           </div>
         </CardContent>
       </Card>
@@ -349,11 +307,8 @@ export default function RunsView() {
       )}
 
       <Card className="overflow-hidden">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900">Run history</h2>
-            <p className="mt-0.5 text-xs text-slate-500">{dashboard.pagination.total.toLocaleString()} matching invocations</p>
-          </div>
+        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+          <p className="text-xs text-slate-500">{dashboard.pagination.total.toLocaleString()} matching runs · Select a run to inspect logs and results</p>
           {refreshing && <span className="flex items-center gap-2 text-xs text-slate-400"><Loader2 className="h-3.5 w-3.5 animate-spin" />Updating</span>}
         </div>
         {loading ? <TableSkeleton /> : !error && dashboard.items.length === 0 ? (
@@ -363,35 +318,35 @@ export default function RunsView() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1040px]">
                 <thead className="border-b border-slate-200 bg-slate-50/80 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                  <tr><th className="w-10 px-3 py-3" /><th className="px-3 py-3">Project</th><th className="px-3 py-3">Command</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Node results</th><th className="px-3 py-3">Duration</th><th className="px-3 py-3">Started</th></tr>
+                  <tr><th className="w-10 px-3 py-2" /><th className="px-3 py-2">Project</th><th className="px-3 py-2">Command</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Node results</th><th className="px-3 py-2">Duration</th><th className="px-3 py-2">Started</th></tr>
                 </thead>
                 <tbody>
                   {dashboard.items.map((run) => {
                     const selected = selectedId === run.id
                     return (
                       <tr key={run.id} className={cn("border-b border-slate-100 bg-white transition-colors hover:bg-sky-50/40", selected && "bg-sky-50/70")}>
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-2">
                           <button type="button" onClick={() => selectRun(run.id)} aria-label={`Inspect run ${run.id}`} aria-pressed={selected} className={cn("grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-white hover:text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-500/30", selected && "bg-white text-sky-700 shadow-sm")}><ChevronRight className={cn("h-4 w-4 transition-transform", selected && "rotate-90")} /></button>
                         </td>
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-2">
                           <p className="max-w-48 truncate text-sm font-semibold text-slate-900">{run.project?.name || "Unknown project"}</p>
                           <p className="mt-0.5 font-mono text-xs text-slate-400">{shortHash(run.gitCommit)} · {run.id.slice(0, 8)}</p>
                         </td>
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-2">
                           <button type="button" onClick={() => selectRun(run.id)} className="max-w-sm text-left">
                             <code className="block truncate rounded bg-slate-100 px-2 py-1 font-mono text-xs font-medium text-slate-700" title={getFullCommand(run)}>dbt {run.command}</code>
                             {run.selector && <p className="mt-1 max-w-sm truncate font-mono text-xs text-slate-400" title={run.selector}>--select {run.selector}</p>}
                           </button>
                         </td>
-                        <td className="px-3 py-3"><RunStatusBadge status={run.status} /></td>
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-2"><RunStatusBadge status={run.status} /></td>
+                        <td className="px-3 py-2">
                           <div className="flex items-center gap-2 text-xs tabular-nums">
                             <span className="font-semibold text-emerald-700">{run.modelsSuccess ?? 0} passed</span><span className="text-slate-300">/</span><span className={cn("font-semibold", (run.modelsError || 0) > 0 ? "text-red-700" : "text-slate-500")}>{run.modelsError ?? 0} failed</span>
                           </div>
                           <p className="mt-0.5 text-xs text-slate-400">{run.modelsTotal ?? run._count?.artifacts ?? 0} executed</p>
                         </td>
-                        <td className="px-3 py-3 font-mono text-sm tabular-nums text-slate-600">{formatDuration(run.durationMs)}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600"><span className="block">{formatDateTime(run.startedAt)}</span>{run.errorMessage && <span className="mt-0.5 block max-w-56 truncate text-xs text-red-500" title={run.errorMessage}>{run.errorMessage}</span>}</td>
+                        <td className="px-3 py-2 font-mono text-sm tabular-nums text-slate-600">{formatDuration(run.durationMs)}</td>
+                        <td className="px-3 py-2 text-sm text-slate-600"><span className="block">{formatDateTime(run.startedAt)}</span>{run.errorMessage && <span className="mt-0.5 block max-w-56 truncate text-xs text-red-500" title={run.errorMessage}>{run.errorMessage}</span>}</td>
                       </tr>
                     )
                   })}
@@ -426,11 +381,7 @@ export default function RunsView() {
         {detail && !detailLoading && detail.id === selectedId && (
           <RunDetail run={detail} liveLogs={liveLogs} onCancel={() => cancelRun(detail.id)} />
         )}
-        {!selectedId && !loading && dashboard.items.length > 0 && (
-          <div className="grid min-h-32 place-items-center rounded-xl border border-dashed border-slate-300 bg-white/60 text-center text-sm text-slate-500">
-            <div><CircleGauge className="mx-auto mb-2 h-5 w-5 text-slate-400" />Select a run to inspect invocation context, node results, logs, and artifacts.</div>
-          </div>
-        )}
+
       </div>
     </div>
   )

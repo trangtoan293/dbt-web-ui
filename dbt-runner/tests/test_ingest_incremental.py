@@ -196,6 +196,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.end_headers()
             return
+        # 404 on anything else, like a real API: a probe's whole job is telling
+        # a wrong endpoint path apart from a right one.
+        if not self.path.split("?", 1)[0].rstrip("/").endswith("/items"):
+            self.send_response(404)
+            self.end_headers()
+            return
         since = ""
         if "?" in self.path:
             for part in self.path.split("?", 1)[1].split("&"):
@@ -293,3 +299,78 @@ def test_without_a_cursor_parameter_the_api_is_asked_for_everything(
     assert _run_job(job)[0] == 0
     assert _row_count(Path(job["destination"]["path"]), "items") == 3
     assert set(api_server.seen_since) == {""}
+
+
+def test_a_rest_source_configured_to_merge_actually_merges(
+    tmp_path, api_server, monkeypatch
+):
+    """The UI offers merge for a REST source, so it has to be a merge.
+
+    `run()` passes write_disposition=None for a merge and leaves the hint to
+    `_apply_hints`, which used to skip rest_api entirely - so every REST merge
+    ran as an append and doubled the table on the second load.
+    """
+    base = f"http://127.0.0.1:{api_server.server_port}"
+    job = _rest_job(tmp_path, base, with_param=False, monkeypatch=monkeypatch)
+    job["pipeline_name"] = "rest_merge_test"
+    job["write_disposition"] = "merge"
+    job["primary_key"] = ["id"]
+    job["cursor_field"] = None
+
+    assert _run_job(job)[0] == 0
+    assert _run_job(job)[0] == 0
+    assert _row_count(Path(job["destination"]["path"]), "items") == 3
+
+
+def test_probing_an_endpoint_answers_both_of_its_common_mistakes(
+    tmp_path, api_server, monkeypatch
+):
+    """A wrong path 404s and a wrong selector silently matches nothing.
+
+    Before the probe, the only way to learn either was to save the source and
+    run a load - a 404 after the wizard, or a green "success" that moved 0 rows.
+    """
+    import asyncio
+
+    from ingest import rest_source
+
+    monkeypatch.setattr(rest_source, "assert_host_allowed", lambda *_a, **_k: None)
+    base = f"http://127.0.0.1:{api_server.server_port}"
+    connection = {
+        "extra_config": {"auth_type": "api_key", "api_key_name": "X-API-Key"},
+        "username": None,
+    }
+
+    good = asyncio.run(
+        rest_source.probe_endpoint(
+            base_url=base, path="items", connection=connection, secret="sekret"
+        )
+    )
+    assert good["success"], good
+    assert good["record_count"] == 3
+    # The handler wraps its rows in {"data": [...]}, so that is the selector the
+    # form should store - found rather than guessed at by the user.
+    assert good["data_selector"] == "data"
+    assert "updated_at" in good["fields"]
+
+    missing = asyncio.run(
+        rest_source.probe_endpoint(
+            base_url=base, path="nope", connection=connection, secret="sekret"
+        )
+    )
+    assert missing["success"] is False
+
+    unauthenticated = asyncio.run(
+        rest_source.probe_endpoint(base_url=base, path="items")
+    )
+    assert unauthenticated["success"] is False
+    assert unauthenticated["status"] == 401
+
+
+def test_the_record_path_is_found_wherever_the_api_puts_it():
+    from ingest.rest_source import suggest_data_selector
+
+    assert suggest_data_selector([1, 2, 3]) == ("", 3)
+    assert suggest_data_selector({"data": [1, 2]}) == ("data", 2)
+    assert suggest_data_selector({"result": {"items": [1]}}) == ("result.items", 1)
+    assert suggest_data_selector({"meta": {"total": 0}}) == ("", 0)

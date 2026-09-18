@@ -74,7 +74,7 @@ function StatusPill({ status }: { status: string | null }): React.ReactElement |
   )
 }
 
-export default function SchedulesView(): React.ReactElement {
+export default function SchedulesView({ navigation }: { navigation?: React.ReactNode }): React.ReactElement {
   const [schedules, setSchedules] = useState<ScheduleRow[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
@@ -143,7 +143,7 @@ export default function SchedulesView(): React.ReactElement {
         selector: schedule.selector ?? undefined,
         target: schedule.target ?? undefined,
       })
-      setNotice(`Started ${schedule.name}. Follow it in History.`)
+      setNotice(`Started ${schedule.name}. Follow it in Runs.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run")
     } finally {
@@ -166,10 +166,13 @@ export default function SchedulesView(): React.ReactElement {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-gray-500">Cron is evaluated in UTC.</p>
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+        {navigation}
+        <p className="text-xs text-gray-500" title="Cron is evaluated in UTC">{schedules.length} schedules · UTC</p>
         <Button
+          className="ml-auto"
+          size="sm"
           onClick={() => {
             setEditing(null)
             setDialogOpen(true)
@@ -200,24 +203,12 @@ export default function SchedulesView(): React.ReactElement {
               ? "Create a project first — a schedule runs one project's dbt command."
               : "A schedule runs a dbt command on a cron and can POST a webhook when a run fails."
           }
-          action={
-            projects.length > 0 ? (
-              <Button
-                onClick={() => {
-                  setEditing(null)
-                  setDialogOpen(true)
-                }}
-              >
-                <Plus className="mr-2 h-4 w-4" /> New schedule
-              </Button>
-            ) : undefined
-          }
         />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {schedules.map((schedule) => (
             <Card key={schedule.id} className={schedule.isActive ? undefined : "opacity-70"}>
-              <CardContent className="space-y-3 p-4">
+              <CardContent className="space-y-2 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -282,7 +273,7 @@ export default function SchedulesView(): React.ReactElement {
                   </div>
                 </div>
 
-                <div className="grid gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500 sm:grid-cols-3">
+                <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2 text-xs text-slate-500">
                   <p>
                     <span className="text-slate-400">Next run </span>
                     {schedule.isActive ? formatWhen(schedule.nextRunAt) : "paused"}
@@ -320,7 +311,7 @@ export default function SchedulesView(): React.ReactElement {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{toDelete?.name}” stops running. Runs it already produced stay in History.
+              “{toDelete?.name}” stops running. Runs it already produced stay in Runs.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
