@@ -6,6 +6,7 @@ error), so this pins the frame format the frontend hook parses as well as the
 recorder being driven from the same events.
 """
 
+import asyncio
 import json
 import sys
 import unittest
@@ -160,3 +161,34 @@ class IngestSseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamProcessFailureTest(unittest.TestCase):
+    """A failed load reports what went wrong, not just that it went wrong.
+
+    The runner prints its exception to stdout and exits non-zero. Reporting only
+    the exit code put the one useful fact - the 404, the refused host, the
+    missing column - in a log tail, while the red box in the UI and the run
+    history both said "Ingest failed with exit code 1".
+    """
+
+    def _events(self, config):
+        async def collect():
+            return [
+                event
+                async for event in ingest_router._stream_process(config, "src-under-test")
+            ]
+
+        return asyncio.run(collect())
+
+    def test_the_error_event_carries_the_runner_s_own_message(self):
+        events = self._events(
+            {
+                "source": {"type": "definitely-not-a-source"},
+                "destination": {"kind": "duckdb", "path": "/tmp/unused.duckdb"},
+            }
+        )
+        error = events[-1]
+        self.assertEqual(error["type"], "error")
+        self.assertIn("Unknown ingest source type", error["message"])
+        self.assertNotIn("exit code", error["message"])

@@ -21,10 +21,12 @@ const SOURCE_TYPES = new Set(['sql_database', 'rest_api', 'filesystem'])
 /** Source kinds that carry no credential, so they need no connection row. */
 const CONNECTIONLESS_SOURCE_TYPES = new Set(['filesystem'])
 const FILE_FORMATS = new Set(['csv', 'jsonl', 'parquet'])
-// A cursor is a source column name (and for rest_api a JSON path segment), so it
-// is the same shape as a table name. Mirrors _CURSOR_RE in
+// A cursor is a source column name - it reaches SQL as an identifier. For
+// rest_api it is dlt's `cursor_path` into the response body instead, which never
+// reaches SQL and is usually dotted. Mirrors _CURSOR_RE / _JSON_CURSOR_RE in
 // dbt-runner/app/routers/ingest.py, which is the enforcing side.
 const CURSOR_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
+const JSON_CURSOR_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62}){0,9}$/
 
 export type IngestSourceType = 'sql_database' | 'rest_api' | 'filesystem'
 
@@ -93,8 +95,13 @@ export function validateIngestSource(input: IngestSourceInput) {
     throw new Error('A filesystem source reads a path, not a connection')
   }
 
-  if (input.cursorField && !CURSOR_PATTERN.test(input.cursorField)) {
-    throw new Error(`Invalid cursor field "${input.cursorField}": it must be a column name`)
+  const cursorPattern = sourceType === 'rest_api' ? JSON_CURSOR_PATTERN : CURSOR_PATTERN
+  if (input.cursorField && !cursorPattern.test(input.cursorField)) {
+    throw new Error(
+      sourceType === 'rest_api'
+        ? `Invalid cursor "${input.cursorField}": use field names separated by dots`
+        : `Invalid cursor field "${input.cursorField}": it must be a column name`,
+    )
   }
   if (input.cursorInitialValue && !input.cursorField) {
     throw new Error('An initial value needs a cursor field to apply to')
@@ -129,6 +136,13 @@ export function validateIngestSource(input: IngestSourceInput) {
     // one key serves several sources.
     if (!String(config.base_url ?? '').trim() && !input.sourceConnectionId) {
       throw new Error('A REST source needs a base URL, or a connection that carries one')
+    }
+    // dlt's offset paginator takes `limit` as a required argument, so without one
+    // the load dies inside dlt rather than here. Mirrors _validate_paginator in
+    // dbt-runner/ingest/rest_source.py, which is the enforcing side.
+    const paginator = (config.paginator ?? {}) as { type?: unknown; limit?: unknown }
+    if (String(paginator.type ?? 'auto') === 'offset' && !String(paginator.limit ?? '').trim()) {
+      throw new Error('The offset paginator needs a records-per-page value (limit)')
     }
   }
 }

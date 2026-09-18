@@ -26,6 +26,7 @@ dependencies = [
     "dbt-dremio==1.10.0",
     "dbt-postgres==1.10.0",
     "dbt-duckdb==1.10.0",
+    "dbt-charts==0.8.0",
     "dbt-oracle==1.10.0",
     "gitpython>=3.1.45",
     "pyyaml>=6.0.03",

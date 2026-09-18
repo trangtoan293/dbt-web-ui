@@ -157,8 +157,13 @@ class ApiClient {
         const data = await response.json();
 
         if (!response.ok) {
+            // FastAPI details come as a string, a {message, …} object or a validation array.
+            const detail = data?.detail;
+            const detailMessage = typeof detail === 'string' ? detail
+                : Array.isArray(detail) ? detail.map((item) => item?.msg).filter(Boolean).join('; ')
+                : detail?.message;
             throw {
-                message: data.message || data.detail || 'API request failed',
+                message: data?.message || detailMessage || 'API request failed',
                 status: response.status,
                 details: data,
             } as ApiError;

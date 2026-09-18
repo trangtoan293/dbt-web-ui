@@ -107,6 +107,79 @@ def _fix_in_memory_duckdb_profile(project_path: Path) -> None:
     logger.info("Repointed in-memory DuckDB profile at %s", profiles_file)
 
 
+# Header of a profiles.yml this deployment wrote for a project with no
+# connection. Used as a marker: once someone has edited the file, the header is
+# theirs to keep or drop, and nothing below rewrites a file that lost it.
+PLACEHOLDER_HEADER = (
+    "# Placeholder profile - no connection configured.\n"
+    "# Attach a connection in the Develop screen to regenerate this,\n"
+    "# or edit the target below manually.\n"
+)
+
+
+def _attach_lake_to_placeholder_profile(project_path: Path, lake: Any) -> Dict[str, str]:
+    """Give a connectionless project's placeholder profile the lake's attach block.
+
+    A project created with "No connection" gets a placeholder DuckDB profile and
+    then never goes through target rendering, which is the only place `attach:`
+    is added. Attaching a lakehouse to such a project therefore loaded data in
+    successfully and left every `lake.*` reference unresolvable - the one
+    combination where ingest reports success and dbt cannot see the rows. It is
+    also the combination a new deployment lands in by default, because "No
+    connection" is the first option on the new-project form.
+
+    Returns the env carrying the catalog password, like the rendered path does,
+    so the secret reaches dbt through env_var() rather than the file.
+    """
+    import yaml as _yaml
+
+    profiles_file = project_path / "profiles.yml"
+    try:
+        content = profiles_file.read_text()
+    except OSError:
+        return {}
+    if not content.startswith(PLACEHOLDER_HEADER):
+        return {}
+    try:
+        parsed = _yaml.safe_load(content) or {}
+    except _yaml.YAMLError:
+        return {}
+
+    try:
+        entry = lakehouse.dbt_attach_entry(lake)
+        password = lakehouse.catalog_password(lake.catalog_url)
+    except lakehouse.LakehouseError as exc:
+        raise DbtOperationError("profile setup", str(exc)) from exc
+
+    changed = False
+    for profile in parsed.values():
+        if not isinstance(profile, dict):
+            continue
+        for output in (profile.get("outputs") or {}).values():
+            # Only DuckDB can attach a DuckLake catalog; a placeholder is always
+            # DuckDB, but it may have been edited into something else.
+            if not isinstance(output, dict) or output.get("type") != "duckdb":
+                continue
+            kept = [
+                item
+                for item in (output.get("attach") or [])
+                if not (isinstance(item, dict) and item.get("alias") == lakehouse.ATTACH_ALIAS)
+            ]
+            output["attach"] = [*kept, entry]
+            extensions = list(output.get("extensions") or [])
+            extensions.extend(e for e in lakehouse.DUCKDB_EXTENSIONS if e not in extensions)
+            output["extensions"] = extensions
+            changed = True
+    if not changed:
+        return {}
+
+    # The header is re-emitted rather than preserved: a YAML round trip drops
+    # every comment, and without the marker this would run once and never again.
+    profiles_file.write_text(PLACEHOLDER_HEADER + _yaml.safe_dump(parsed, sort_keys=False))
+    logger.info("Attached lakehouse to placeholder profile at %s", profiles_file)
+    return {lakehouse.CATALOG_PASSWORD_ENV: password}
+
+
 SPARK_EXTRA_CONFIG_KEYS = {
     "method",
     "threads",
@@ -673,8 +746,13 @@ class DbtService:
 
             if not connection_id and not dremio_source_id and not extra_targets:
                 # manual profiles.yml – leave it alone, except for the broken
-                # in-memory DuckDB target older placeholders were written with.
+                # in-memory DuckDB target older placeholders were written with,
+                # and a lakehouse the project attached but the profile cannot
+                # reach because no target was ever rendered for it.
                 _fix_in_memory_duckdb_profile(project_path)
+                lake = await DbtService._resolve_lakehouse(session, project_id)
+                if lake is not None:
+                    return _attach_lake_to_placeholder_profile(project_path, lake)
                 return {}
 
             dbt_project_file = project_path / "dbt_project.yml"
@@ -2426,12 +2504,7 @@ class DbtService:
         target = get_adapter(
             "duckdb", {"settings": duckdb_resources.profile_settings()}
         ).generate_profiles_yml(profile_name)
-        return (
-            "# Placeholder profile - no connection configured.\n"
-            "# Attach a connection in the Develop screen to regenerate this,\n"
-            "# or edit the target below manually.\n"
-            f"{target}"
-        )
+        return f"{PLACEHOLDER_HEADER}{target}"
 
     async def init_project(self, request: DbtInitRequest) -> Dict[str, Any]:
         """

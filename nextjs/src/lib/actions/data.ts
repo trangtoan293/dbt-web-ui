@@ -482,8 +482,6 @@ async function ensureOwnership(model: string, id: string, userId: string) {
 // already owns the encrypted password. Nothing here needs encryptSecret.
 // ---------------------------------------------------------------------------
 
-export type { IngestSourceInput, IngestSourceType } from '@/lib/ingest-source-validation'
-
 export async function getIngestSources(projectId?: string) {
   const userId = await getCurrentUserId()
   return db.ingestSource.findMany({

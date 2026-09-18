@@ -43,6 +43,12 @@ _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 # resource cannot redirect the client at another host or escape the base path.
 _PATH_RE = re.compile(r"^[A-Za-z0-9_\-./{}~%]{0,300}$")
 _PARAM_KEY_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]{1,64}$")
+# dlt's `cursor_path`: a path into the response body, so dotted names are the
+# point. Never a SQL identifier - a REST cursor reaches an HTTP query parameter
+# and a JSON lookup, and nothing else.
+_CURSOR_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62}){0,9}$"
+)
 
 MAX_RESOURCES = 25
 
@@ -138,6 +144,28 @@ def _validate_paginator(raw: Any) -> Any:
             raise UnsupportedRestSource(
                 f"paginator field '{name}' must be a string, number or boolean"
             )
+    # dlt's OffsetPaginator takes `limit` as a required argument, so a bare
+    # {"type": "offset"} reaches it as a TypeError deep inside a load. Refused
+    # here instead, where the message can say which field is missing.
+    if kind == "offset":
+        raw_limit = paginator.get("limit")
+        if raw_limit in (None, ""):
+            raise UnsupportedRestSource(
+                "the offset paginator needs a page size - set 'limit' to the "
+                "number of records to request per page"
+            )
+        # Coerced, not just checked: dlt builds the paginator happily from the
+        # string a form field sends and then adds it to an int on the *second*
+        # page, so a one-page test passes and a real load does not.
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            raise UnsupportedRestSource(
+                f"paginator page size '{raw_limit}' is not a whole number"
+            ) from None
+        if limit < 1:
+            raise UnsupportedRestSource("paginator page size must be at least 1")
+        paginator["limit"] = limit
     return paginator
 
 
@@ -287,8 +315,11 @@ def _with_incremental(
     parameter form (`IncrementalParamConfig`) requires `type` and has no
     `start_param`. Using the endpoint form for both is why only one is built here.
     """
-    if not _NAME_RE.match(cursor):
-        raise UnsupportedRestSource(f"'{cursor}' is not a usable cursor field")
+    if not _CURSOR_PATH_RE.match(cursor):
+        raise UnsupportedRestSource(
+            f"'{cursor}' is not a usable cursor path - use field names separated "
+            "by dots, for example 'attributes.updated_at'"
+        )
 
     updated: List[Dict[str, Any]] = []
     for resource in resources:
@@ -345,25 +376,15 @@ def build_config(
     return {"type": "rest_api", "client": client, "resources": resources}
 
 
-def _test_headers_params(config: Dict[str, Any]) -> tuple[Dict[str, str], Dict[str, str]]:
-    """Render the auth for a connection *test*, whose config is a request body.
+def auth_to_request(
+    auth: Dict[str, Any] | None,
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Turn dlt's auth block into the headers and query parameters it stands for.
 
-    `build_auth` returns dlt's auth block, which dlt turns into a request. A test
-    has no dlt pipeline, so the same fields are rendered into headers and query
-    parameters here - through build_auth, so there is one place that decides what
-    each auth type means.
+    dlt does this itself inside a pipeline. A *probe* has no pipeline, so the
+    same block is rendered here - from build_auth, so there is still one place
+    that decides what each auth type means.
     """
-    auth = build_auth(
-        {
-            "extra_config": {
-                "auth_type": config.get("auth_type"),
-                "api_key_name": config.get("api_key_name"),
-                "api_key_location": config.get("api_key_location"),
-            },
-            "username": config.get("username"),
-        },
-        str(config.get("password") or config.get("token") or ""),
-    )
     if not auth:
         return {}, {}
     kind = auth["type"]
@@ -377,6 +398,45 @@ def _test_headers_params(config: Dict[str, Any]) -> tuple[Dict[str, str], Dict[s
     if auth["location"] == "query":
         return {}, {auth["name"]: auth["api_key"]}
     return {auth["name"]: auth["api_key"]}, {}
+
+
+def suggest_data_selector(payload: Any) -> tuple[str, int]:
+    """Where the records are in a response body, and how many came back.
+
+    dlt auto-detects this most of the time; when it guesses wrong the load
+    reports success and zero rows, which is the failure this exists to catch.
+    Two levels deep, because `{"result": {"items": [...]}}` is as nested as the
+    guess is worth making - past that, someone should read their own API docs.
+    """
+    if isinstance(payload, list):
+        return "", len(payload)
+    if not isinstance(payload, dict):
+        return "", 0
+    for key, value in payload.items():
+        if isinstance(value, list):
+            return str(key), len(value)
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            for inner_key, inner in value.items():
+                if isinstance(inner, list):
+                    return f"{key}.{inner_key}", len(inner)
+    return "", 0
+
+
+def _test_headers_params(config: Dict[str, Any]) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Render the auth for a connection *test*, whose config is a request body."""
+    auth = build_auth(
+        {
+            "extra_config": {
+                "auth_type": config.get("auth_type"),
+                "api_key_name": config.get("api_key_name"),
+                "api_key_location": config.get("api_key_location"),
+            },
+            "username": config.get("username"),
+        },
+        str(config.get("password") or config.get("token") or ""),
+    )
+    return auth_to_request(auth)
 
 
 async def probe_rest(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -410,4 +470,73 @@ async def probe_rest(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "success": True,
         "message": f"Reached {base_url} (HTTP {response.status_code})",
+    }
+
+
+async def probe_endpoint(
+    *,
+    base_url: str,
+    path: Any,
+    params: Any = None,
+    connection: Dict[str, Any] | None = None,
+    secret: str = "",
+) -> Dict[str, Any]:
+    """Fetch one endpoint the way a load would, and report what came back.
+
+    The whole reason a REST source is hard to configure is that nothing before
+    this told you whether the URL, the credential and the record path were right
+    - a wrong path is a 404 an hour later, and a wrong `data_selector` is a load
+    that reports success and moves no rows. Both are answered by one GET.
+
+    Every value goes through the same validators the real config does, so this
+    cannot reach a host, a path or a parameter a load could not.
+    """
+    import httpx
+
+    url = validate_base_url(base_url) + _validate_path(path)
+    headers, query = auth_to_request(build_auth(connection, secret))
+    query = {**query, **{k: str(v) for k, v in _validate_params(params).items()}}
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            response = await client.get(url, headers=headers, params=query)
+    except Exception as exc:
+        return {"success": False, "url": url, "message": f"{type(exc).__name__}: {exc}"}
+
+    if response.status_code >= 400:
+        return {
+            "success": False,
+            "url": url,
+            "status": response.status_code,
+            "message": f"{url} returned HTTP {response.status_code}",
+        }
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return {
+            "success": False,
+            "url": url,
+            "status": response.status_code,
+            "message": "the response is not JSON, so there are no records to read",
+        }
+
+    selector, count = suggest_data_selector(payload)
+    sample = payload if isinstance(payload, list) else None
+    if sample is None and selector:
+        sample = payload
+        for part in selector.split("."):
+            sample = sample.get(part, [])
+    first = sample[0] if isinstance(sample, list) and sample else None
+
+    return {
+        "success": True,
+        "url": url,
+        "status": response.status_code,
+        "record_count": count,
+        # Blank means "records are at the top level", which is a real answer and
+        # the one the form should store - not a missing value to fill in.
+        "data_selector": selector,
+        "fields": sorted(first.keys())[:40] if isinstance(first, dict) else [],
+        "message": f"HTTP {response.status_code}, {count} record(s) found",
     }

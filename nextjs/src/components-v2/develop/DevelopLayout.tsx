@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   ArrowLeft,
@@ -295,6 +295,15 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
     setSettingsTab(tab);
     setSettingsOpen(true);
   }, []);
+  // `?settings=lakehouse` opens this dialog straight from elsewhere in the app -
+  // the load wizard sends people here when a project has no lakehouse attached,
+  // and "open Develop, then find Project settings, then Lakehouse" is not a
+  // fixable instruction.
+  const searchParams = useSearchParams();
+  const settingsParam = searchParams.get("settings");
+  useEffect(() => {
+    if (settingsParam) openSettings(settingsParam as ProjectSettingsTab);
+  }, [settingsParam, openSettings]);
   const [dbtArgsDialogOpen, setDbtArgsDialogOpen] = useState(false);
   const [dbtCommandArgs, setDbtCommandArgs] = useState("");
   const [dbtFullRefresh, setDbtFullRefresh] = useState(false);

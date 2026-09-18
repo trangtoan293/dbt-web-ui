@@ -42,7 +42,7 @@ export default function LakehouseView(): React.ReactElement {
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load projects"))
     getIcebergMeta()
       .then((m) => setConfigured(Boolean(m?.configured)))
-      .catch(() => setConfigured(false))
+      .catch((e) => setError(e instanceof Error ? e.message : "Unable to check Iceberg publishing"))
   }, [])
 
   const publish = useCallback(async () => {
@@ -67,7 +67,7 @@ export default function LakehouseView(): React.ReactElement {
       <EmptyState
         icon={Snowflake}
         title="Iceberg publishing is not configured"
-        description="This deployment has no lakehouse catalog, so there is nothing to publish from. Set LAKE_CATALOG_URL (or ICEBERG_CATALOG_URL) and restart dbt-runner."
+        description="Ask your workspace administrator to configure Iceberg publishing. You can continue using connections, ingestion and Explore independently."
       />
     )
   }
@@ -76,6 +76,7 @@ export default function LakehouseView(): React.ReactElement {
     <div className="space-y-4">
       <Card>
         <CardContent className="space-y-4 pt-6">
+          <div><h3 className="font-semibold text-slate-900">Publish to Iceberg</h3><p className="mt-1 text-sm text-slate-500">Optional · Share lake tables with Spark, Trino or Athena.</p></div>
           <p className="text-sm text-gray-600">
             Copies a lake schema out as Iceberg tables, so Spark, Trino, Athena and the rest can
             read your marts &mdash; DuckLake itself is readable only by DuckDB. A schema that was
@@ -109,7 +110,7 @@ export default function LakehouseView(): React.ReactElement {
           </div>
 
           <div className="flex items-center gap-3">
-            <Button onClick={publish} disabled={publishing || !projectId}>
+            <Button onClick={publish} disabled={publishing || !projectId || configured !== true}>
               {publishing ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (

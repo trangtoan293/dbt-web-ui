@@ -30,7 +30,12 @@ from app.core.db import async_session, get_session
 from app.core.file_lock import AsyncFileLock
 from app.core.global_semaphore import global_run_semaphore
 from app.core.host_guard import HostNotAllowed, assert_host_allowed
-from app.models.ingest import DbtSourcesSnippet, IngestRunRequest, IngestTableList
+from app.models.ingest import (
+    DbtSourcesSnippet,
+    IngestRunRequest,
+    IngestTableList,
+    RestProbeRequest,
+)
 from app.services.dbt_service import build_adapter_config_from_connection_row
 from app.services.lakes import resolve_project_lake
 from ingest import lakehouse
@@ -41,11 +46,13 @@ from ingest.destination import (
 )
 from ingest.runner import RESULT_PREFIX
 from ingest.file_source import FORMATS as file_formats
+from ingest.file_source import roots as file_source_roots
 from ingest.file_source import UnsupportedFileSource
 from ingest.file_source import build_config as build_file_source
 from ingest.rest_source import AUTH_TYPES as rest_auth_types
 from ingest.rest_source import UnsupportedRestSource
 from ingest.rest_source import build_config as build_rest_source
+from ingest.rest_source import probe_endpoint as probe_rest_endpoint
 from ingest.sql_source import (
     SOURCE_ONLY_TYPES,
     UnsupportedSource,
@@ -72,11 +79,25 @@ _WRITE_DISPOSITIONS = ("append", "replace", "merge")
 # nullable rather than every type being forced to have one.
 _SOURCE_TYPES = ("sql_database", "rest_api", "filesystem")
 
-# A cursor field is a source column name, and for rest_api a JSON path segment.
-# Same shape as a table name: it reaches SQL as an identifier.
+# A cursor field for a SQL or filesystem source is a column name: dlt puts it
+# straight into `WHERE <cursor> > ...` against the source, so it is validated
+# here rather than quoted downstream.
 _CURSOR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
+# A REST cursor is dlt's `cursor_path` - a path into the JSON response, which
+# never reaches SQL. Dots are the common case (`attributes.updated_at`), and
+# refusing them made every API that nests its timestamp impossible to express.
+_JSON_CURSOR_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9_$]{0,62}){0,9}$"
+)
 
 MAX_LINE_BYTES = 16 * 1024
+
+# How much of a failed run's own output is reported as the error. The runner
+# prints why it failed and then exits non-zero, so reporting only the exit code
+# leaves the one useful fact - a 404, a refused host, a missing column - buried
+# in a log tail nobody opens.
+MAX_ERROR_CHARS = 1200
+MAX_ERROR_LINES = 40
 
 # Live ingest subprocesses on this runner, keyed by source id. Deliberately not
 # CommandService's registry: cancelling a dbt run must not kill an ingest job,
@@ -226,16 +247,27 @@ def _validated_source_type(source: Dict[str, Any]) -> str:
     return source_type
 
 
-def _validated_cursor(source: Dict[str, Any]) -> tuple[str | None, str | None]:
-    """The incremental cursor, checked as an identifier.
+def _validated_cursor(
+    source: Dict[str, Any], source_type: str
+) -> tuple[str | None, str | None]:
+    """The incremental cursor, checked as whatever this source type makes of it.
 
-    A cursor becomes a column reference in the SQL dlt pushes to the source, so
-    it is validated here rather than quoted downstream.
+    Per type on purpose: the same stored field becomes a SQL column reference for
+    `sql_database` and `filesystem`, and a JSON path for `rest_api`. Validating
+    all three as a column name kept the SQL sources safe and made a nested REST
+    cursor unexpressible.
     """
     cursor = str(source.get("cursor_field") or "").strip()
     if not cursor:
         return None, None
-    if not _CURSOR_RE.match(cursor):
+    if source_type == "rest_api":
+        if not _JSON_CURSOR_RE.match(cursor):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cursor field '{cursor}' is not a usable JSON path - use "
+                "field names separated by dots",
+            )
+    elif not _CURSOR_RE.match(cursor):
         raise HTTPException(
             status_code=400,
             detail=f"Cursor field '{cursor}' is not a usable column name",
@@ -303,7 +335,7 @@ def _build_job_config(
     lake: lakehouse.LakeRef | None = None,
 ) -> Dict[str, Any]:
     project_id = str(source["project_id"])
-    cursor, cursor_initial = _validated_cursor(source)
+    cursor, cursor_initial = _validated_cursor(source, _validated_source_type(source))
     source_block = _build_source_block(source, tables, cursor, cursor_initial)
 
     kind = str(source.get("destination") or DESTINATION_LAKEHOUSE)
@@ -369,9 +401,11 @@ async def ingest_meta() -> Dict[str, Any]:
     return {
         "source_types": list(_SOURCE_TYPES),
         "source_connection_types": supported_source_types(),
-        # A filesystem source is off unless an operator fenced it to a root:
-        # dbt-runner can read anywhere its uid reaches.
-        "file_roots_configured": bool(settings.ingest_file_roots),
+        # The roots themselves, not a flag. A filesystem source is off unless an
+        # operator fenced it to a root - and the form has to say *which* root a
+        # path may sit under, because the only thing that named them was the
+        # refusal at run time, which is too late to type a path against.
+        "file_roots": [str(root) for root in file_source_roots()],
         "file_formats": list(file_formats),
         "rest_auth_types": list(rest_auth_types),
         "destinations": ["connection", DESTINATION_LAKEHOUSE],
@@ -458,6 +492,55 @@ async def list_connection_tables(
         if name and _TABLE_RE.match(str(name)):
             tables.append(str(name))
     return IngestTableList(success=True, tables=sorted(set(tables)))
+
+
+@router.post("/ingest/rest/probe")
+async def probe_rest_source(
+    request: RestProbeRequest,
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, Any]:
+    """Fetch one REST endpoint and report what it returned.
+
+    The counterpart of the table picker, for the source type that had none: a
+    SQL source can browse its tables before saving, while a REST source could
+    only be saved and run. Its two commonest mistakes - a path that 404s and a
+    record selector that silently matches nothing - are both answered here.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+
+    connection: Dict[str, Any] | None = None
+    secret = ""
+    if request.connection_id:
+        result = await session.execute(
+            text(
+                "SELECT connection_type, host, username, password_encrypted, "
+                "extra_config FROM connections "
+                "WHERE id = CAST(:cid AS uuid) AND created_by = CAST(:uid AS uuid)"
+            ),
+            {"cid": request.connection_id, "uid": user_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        connection = dict(row)
+        secret = decrypt_secret_or_plaintext(connection.get("password_encrypted"))
+
+    base_url = request.base_url or str(
+        (connection or {}).get("extra_config", {}).get("base_url") or ""
+    )
+    try:
+        return await probe_rest_endpoint(
+            base_url=base_url,
+            path=request.path,
+            params=request.params,
+            connection=connection,
+            secret=secret,
+        )
+    except UnsupportedRestSource as exc:
+        return {"success": False, "message": str(exc)}
+    except HostNotAllowed as exc:
+        return {"success": False, "message": str(exc)}
 
 
 @router.get("/ingest/sources/{source_id}/dbt-sources", response_model=DbtSourcesSnippet)
@@ -561,6 +644,10 @@ async def _stream_process(
         process.stdin.close()
 
         result: Dict[str, Any] = {}
+        # Everything from the runner's first `[error]` line onward: dlt reports a
+        # failure over several lines and the cause is usually the last of them,
+        # so the first line alone would say "PipelineStepFailed" and no more.
+        failure: list[str] = []
         async with asyncio.timeout(settings.ingest_subprocess_timeout):
             while True:
                 raw = await process.stdout.readline()
@@ -575,15 +662,18 @@ async def _stream_process(
                     except json.JSONDecodeError:
                         pass
                     continue
+                if (failure or line.startswith("[error]")) and len(failure) < MAX_ERROR_LINES:
+                    failure.append(line)
                 yield {"type": "log", "message": line}
             await process.wait()
 
         if process.returncode == 0:
             yield {"type": "completed", **result}
         else:
+            detail = "\n".join(failure).strip()[:MAX_ERROR_CHARS]
             yield {
                 "type": "error",
-                "message": f"Ingest failed with exit code {process.returncode}",
+                "message": detail or f"Ingest failed with exit code {process.returncode}",
             }
     except TimeoutError:
         process.kill()

@@ -4,8 +4,8 @@ import {
   deleteIngestSource,
   getIngestSources,
   updateIngestSource,
-  type IngestSourceInput,
 } from '@/lib/actions/data'
+import type { IngestSourceInput } from '@/lib/ingest-source-validation'
 
 function errorResponse(err: unknown) {
   const msg = err instanceof Error ? err.message : 'Unknown error'

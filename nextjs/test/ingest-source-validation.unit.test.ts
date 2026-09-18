@@ -101,6 +101,25 @@ describe('ingest source validation', () => {
     it('is optional - a source with no cursor is valid, just a full read', () => {
       expect(() => validateIngestSource(sqlSource({ cursorField: null }))).not.toThrow()
     })
+
+    it('for a REST source it is a JSON path, so a dotted field is ordinary', () => {
+      // dlt takes it as `cursor_path` into the response body; it never reaches
+      // SQL, and plenty of APIs nest their timestamp.
+      expect(() =>
+        validateIngestSource(restSource({ cursorField: 'attributes.updated_at' })),
+      ).not.toThrow()
+      expect(() =>
+        validateIngestSource(sqlSource({ cursorField: 'attributes.updated_at' })),
+      ).toThrow(/column name/i)
+    })
+
+    it('a REST path is still a path - nothing that could carry a quote', () => {
+      for (const bad of ['a.b; DROP TABLE x', 'a..b', 'a.', "a.b'c"]) {
+        expect(() => validateIngestSource(restSource({ cursorField: bad }))).toThrow(
+          /cursor/i,
+        )
+      }
+    })
   })
 
   describe('filesystem sources', () => {

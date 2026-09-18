@@ -12,25 +12,41 @@ export interface FileSourceConfig {
 interface Props {
   config: FileSourceConfig
   onChange: (next: FileSourceConfig) => void
-  /** From /ingest/meta: false means no INGEST_FILE_ROOTS is set server-side. */
-  rootsConfigured: boolean
+  /** The server directories a source may read, from /ingest/meta. */
+  roots: string[]
 }
 
 const FORMATS = ["csv", "jsonl", "parquet"] as const
 
 const SELECT_CLS = "w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
 
+/**
+ * Whether a typed directory sits under one of the allowed roots.
+ *
+ * The same check the server does, minus symlink resolution - it exists to say
+ * "this path is outside" while someone is typing, not to decide anything.
+ * dbt-runner refuses for real in file_source.validate_bucket_url.
+ */
+function underARoot(path: string, roots: string[]): boolean {
+  const target = path.trim().replace(/^file:\/\//, "").replace(/\/+$/, "")
+  if (!target) return true
+  return roots.some((root) => {
+    const base = root.replace(/\/+$/, "")
+    return target === base || target.startsWith(`${base}/`)
+  })
+}
+
 export default function FileSourceFields({
   config,
   onChange,
-  rootsConfigured,
+  roots,
 }: Props): React.ReactElement {
   const set = (field: keyof FileSourceConfig) => (value: string) =>
     onChange({ ...config, [field]: value })
 
   return (
     <div className="space-y-4 rounded-md border border-gray-200 p-3">
-      {!rootsConfigured && (
+      {!roots.length && (
         <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
           No ingest file roots are configured on the server, so a filesystem source
           cannot run yet. Set <code>INGEST_FILE_ROOTS</code> to the directories a
@@ -44,11 +60,23 @@ export default function FileSourceFields({
         <Input
           value={config.bucket_url ?? ""}
           onChange={(e) => set("bucket_url")(e.target.value)}
-          placeholder="/data/drop/crm"
+          placeholder={roots[0] ? `${roots[0].replace(/\/+$/, "")}/crm` : "/data/drop/crm"}
         />
-        <span className="mt-1 block text-xs text-gray-500">
-          Must be inside one of the server&apos;s configured ingest roots.
-        </span>
+        {/* Naming the roots here rather than only in the refusal: "must be inside
+            a configured root" is unusable advice when the roots are invisible. */}
+        {roots.length > 0 && (
+          <span className="mt-1 block text-xs text-gray-500">
+            Must be inside {roots.length > 1 ? "one of" : ""}{" "}
+            {roots.map((root) => (
+              <code key={root} className="mr-1 rounded bg-gray-100 px-1">{root}</code>
+            ))}
+          </span>
+        )}
+        {!underARoot(config.bucket_url ?? "", roots) && (
+          <span className="mt-1 block text-xs text-amber-700">
+            This path is outside those directories — the load will be refused.
+          </span>
+        )}
       </label>
 
       <div className="grid gap-4 sm:grid-cols-2">
