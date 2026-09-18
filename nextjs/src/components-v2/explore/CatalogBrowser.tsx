@@ -1,7 +1,6 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import Link from "next/link"
 import { Boxes, Database, Loader2, RefreshCw, Search } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
@@ -221,11 +220,6 @@ export default function CatalogBrowser({ projectId }: CatalogBrowserProps): Reac
                 <p className="mt-0.5 font-mono text-xs text-gray-400">{active.path}</p>
                 {active.description && (
                   <p className="mt-2 text-sm text-gray-600">{active.description}</p>
-                )}
-                {active.kind === "model" && (
-                  <Button variant="ghost" size="sm" className="mt-2 -ml-2" asChild>
-                    <Link href={`/develop/${projectId}`}>Open in Develop</Link>
-                  </Button>
                 )}
               </div>
 

@@ -60,6 +60,7 @@ def _log_engine_configuration() -> None:
 
 # Import all routers
 from app.routers import (
+    charts_router,
     client_logs_router,
     connection_router,
     dbt_router,
@@ -184,6 +185,7 @@ def create_app() -> FastAPI:
 
     # Register routers
     app.include_router(health_router)
+    app.include_router(charts_router)
     app.include_router(client_logs_router)
     app.include_router(process_router)
     app.include_router(dbt_router)

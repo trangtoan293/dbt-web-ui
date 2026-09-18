@@ -11,6 +11,10 @@ The authoritative dependency inventories are:
 - `dbt-runner/uv.lock`
 - base images and tool images pinned in Dockerfiles and GitHub workflows
 
+Query visualization uses [dbt-charts](https://github.com/dbt-labs/dbt-charts)
+0.8.0 by Fivetran, Inc., licensed under Apache-2.0. Its distribution and bundled
+renderer assets retain their upstream license notices in the Python environment.
+
 The release audit found predominantly MIT, ISC, BSD, Apache-2.0, MPL-2.0,
 BlueOak, PSF, and similarly permissive dependencies. Items requiring explicit
 distribution review include:

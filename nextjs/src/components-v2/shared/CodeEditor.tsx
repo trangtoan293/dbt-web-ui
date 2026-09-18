@@ -1,13 +1,21 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useCallback, useRef } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import type { editor, languages } from "monaco-editor"
+import { sqlSuggestions, type DataEntry } from "@/lib/explore-data"
 
 const Editor = dynamic(
   () => import("@/lib/monaco-loader").then(({ loadMonacoEditor }) => loadMonacoEditor()),
   { ssr: false }
 )
+
+const LANGUAGES: Record<string, string> = {
+  sql: "sql", yml: "yaml", yaml: "yaml", md: "markdown",
+  json: "json", py: "python", csv: "plaintext",
+  shell: "shell", sh: "shell", bash: "shell",
+}
+const getLanguage = (lang: string) => LANGUAGES[lang] || "sql"
 
 let completionProviderRegistered = false
 
@@ -51,6 +59,8 @@ interface CodeEditorProps {
   onPreview?: () => void
   onRun?: () => void
   fileName?: string
+  dataEntries?: DataEntry[]
+  onEditorReady?: (editor: editor.IStandaloneCodeEditor) => void
 }
 
 export default function CodeEditor({
@@ -64,9 +74,19 @@ export default function CodeEditor({
   onPreview,
   onRun,
   fileName: _fileName,
+  dataEntries,
+  onEditorReady,
 }: CodeEditorProps) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null)
+  const entriesRef = useRef(dataEntries)
+  entriesRef.current = dataEntries
+  const languageRef = useRef(language)
+  languageRef.current = language
+  const readyRef = useRef(onEditorReady)
+  readyRef.current = onEditorReady
+  const providerRef = useRef<{ dispose: () => void } | null>(null)
+  useEffect(() => () => { providerRef.current?.dispose() }, [])
 
   const onSaveRef = useRef(onSave)
   const onPreviewRef = useRef(onPreview)
@@ -75,19 +95,28 @@ export default function CodeEditor({
   onPreviewRef.current = onPreview
   onRunRef.current = onRun
 
-  const getLanguage = (lang: string) => {
-    const mapping: Record<string, string> = {
-      sql: "sql", yml: "yaml", yaml: "yaml", md: "markdown",
-      json: "json", py: "python", csv: "plaintext",
-      shell: "shell", sh: "shell", bash: "shell",
-    }
-    return mapping[lang] || "sql"
-  }
-
   const handleEditorDidMount = useCallback(
     (editor: editor.IStandaloneCodeEditor, monaco: typeof import("monaco-editor")) => {
       editorRef.current = editor
       monacoRef.current = monaco
+      readyRef.current?.(editor)
+      providerRef.current?.dispose()
+      // Board YAML embeds the same SQL, so model and column completion follows the editor's language.
+      providerRef.current = monaco.languages.registerCompletionItemProvider(getLanguage(languageRef.current), {
+        triggerCharacters: [".", " "],
+        provideCompletionItems: (model, position) => {
+          if (model !== editor.getModel() || !entriesRef.current) return { suggestions: [] }
+          const word = model.getWordUntilPosition(position)
+          const before = model.getValueInRange({ startLineNumber: 1, startColumn: 1, endLineNumber: position.lineNumber, endColumn: position.column })
+          return { suggestions: sqlSuggestions(before, entriesRef.current, model.getValue()).map(item => ({
+            ...item, kind: item.kind === "table" ? monaco.languages.CompletionItemKind.Class : monaco.languages.CompletionItemKind.Field,
+            sortText: `0_${item.label}`,
+            range: { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
+              startColumn: item.kind === "table" ? position.column - (before.match(/\b(?:from|join)\s+([\w.]*)$/i)?.[1]?.length ?? 0) : word.startColumn,
+              endColumn: word.endColumn },
+          })) }
+        },
+      })
 
       if (!completionProviderRegistered) {
         completionProviderRegistered = true

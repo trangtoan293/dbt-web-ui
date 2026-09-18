@@ -1,8 +1,14 @@
 'use client';
 
 import React from 'react';
+import dynamic from 'next/dynamic';
 import { Check, Copy, Download, XCircle } from 'lucide-react';
 import { copyTextToClipboard } from '@/lib/clipboard';
+
+const QueryChart = dynamic(() => import('@/components-v2/explore/QueryChart'), {
+    ssr: false,
+    loading: () => <p className="p-4 text-sm text-slate-500">Loading chart controls…</p>,
+});
 
 interface QueryResultsTableProps {
     data: Record<string, unknown>[];
@@ -13,6 +19,8 @@ interface QueryResultsTableProps {
     isLoading?: boolean;
     error?: string;
     onCancel?: () => void;  // Cancel handler for Stop button
+    onChartView?: () => void;
+    onAddToDashboard?: (yaml: string) => void;
 }
 
 export default function QueryResultsTable({
@@ -23,9 +31,12 @@ export default function QueryResultsTable({
     executionTime,
     isLoading,
     error,
-    onCancel
+    onCancel,
+    onChartView,
+    onAddToDashboard
 }: QueryResultsTableProps) {
     const [copied, setCopied] = React.useState(false);
+    const [view, setView] = React.useState<'table' | 'chart'>('table');
 
     if (isLoading) {
         return (
@@ -158,6 +169,9 @@ export default function QueryResultsTable({
             {/* Results info bar */}
             <div className="flex items-center justify-between gap-3 px-3 py-1 text-xs text-[#616161] border-b border-[#E6E6E6] flex-shrink-0 bg-[#FAF9F8]">
                 <div className="flex items-center gap-1">
+                    <div className="mr-2 flex gap-1" aria-label="Result display">
+                        {(['table', 'chart'] as const).map((mode) => <button key={mode} type="button" aria-pressed={view === mode} onClick={() => { setView(mode); if (mode === 'chart') onChartView?.(); }} className={`rounded px-2 py-1 capitalize ${view === mode ? 'bg-blue-100 font-medium text-blue-700' : 'hover:bg-slate-100'}`}>{mode}</button>)}
+                    </div>
                     <button
                         onClick={handleDownload}
                         className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[#242424] hover:text-[#0078D4] hover:bg-[#E6E6E6] rounded"
@@ -185,6 +199,7 @@ export default function QueryResultsTable({
 
             {/* Table container - scrollable both horizontally and vertically */}
             <div className="flex-1 overflow-auto min-w-0">
+                {view === 'chart' ? <QueryChart data={data} columns={columns} onAddToDashboard={onAddToDashboard} /> : (
                 <table className="text-sm border-collapse min-w-full">
                     <thead className="sticky top-0 bg-[#F3F2F1]">
                         <tr>
@@ -232,6 +247,7 @@ export default function QueryResultsTable({
                         ))}
                     </tbody>
                 </table>
+                )}
             </div>
         </div>
     );

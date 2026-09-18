@@ -1,17 +1,14 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import Link from "next/link"
-import { AlertCircle, Boxes, ExternalLink, FileText, Loader2, RefreshCw, Search, Terminal } from "lucide-react"
+import { AlertCircle, Boxes, ExternalLink, FileText, Loader2, RefreshCw, Terminal, MoreHorizontal } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
-import { Card, CardContent } from "@/components-v2/ui/card"
-import { Input } from "@/components-v2/ui/input"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import { dbtApi } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import PageHeader from "@/components-v2/layout/PageHeader"
-import CatalogBrowser from "@/components-v2/explore/CatalogBrowser"
+import DashboardWorkspace, { type BoardAddition } from "@/components-v2/explore/DashboardWorkspace"
 import SqlConsole from "@/components-v2/explore/SqlConsole"
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components-v2/ui/dropdown-menu"
 
 type Project = {
   id: string
@@ -24,12 +21,12 @@ type Project = {
 }
 
 type DocsStatus = "idle" | "checking" | "ready" | "missing" | "error" | "generating"
-type ExploreView = "docs" | "sql" | "catalog"
+type ExploreView = "docs" | "sql" | "dashboards"
 
 const VIEWS: { id: ExploreView; label: string; icon: React.ElementType }[] = [
-  { id: "docs", label: "Docs", icon: FileText },
-  { id: "catalog", label: "Catalog", icon: Boxes },
   { id: "sql", label: "SQL", icon: Terminal },
+  { id: "docs", label: "Docs", icon: FileText },
+  { id: "dashboards", label: "Dashboards", icon: Boxes },
 ]
 
 export default function ExplorePage() {
@@ -37,26 +34,18 @@ export default function ExplorePage() {
   const [projectsLoading, setProjectsLoading] = useState(true)
   const [projectsError, setProjectsError] = useState<string | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [query, setQuery] = useState("")
   const [docsStatus, setDocsStatus] = useState<DocsStatus>("idle")
   const [docsError, setDocsError] = useState<string | null>(null)
   const [docsUrl, setDocsUrl] = useState<string | null>(null)
-  const [view, setView] = useState<ExploreView>("docs")
+  const [view, setView] = useState<ExploreView>("sql")
+  const [addition, setAddition] = useState<BoardAddition | null>(null)
+  const [boardDirty, setBoardDirty] = useState(false)
+  const consumeAddition = useCallback(() => setAddition(null), [])
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId]
   )
-
-  const filteredProjects = useMemo(() => {
-    const value = query.trim().toLowerCase()
-    if (!value) return projects
-    return projects.filter((project) =>
-      [project.name, project.description, project.git_branch]
-        .filter(Boolean)
-        .some((field) => field?.toLowerCase().includes(value))
-    )
-  }, [projects, query])
 
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true)
@@ -132,202 +121,46 @@ export default function ExplorePage() {
   const busy = docsStatus === "checking" || docsStatus === "generating"
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <PageHeader
-        title="Explore"
-        description="Browse documentation and model lineage"
-        actions={
-          view !== "docs" ? undefined : (
-          <>
-          <Button variant="outline" onClick={() => selectedProject && checkDocs(selectedProject.id)} disabled={!selectedProject || busy}>
-            <RefreshCw className={cn(busy && "animate-spin")} />
-            Refresh
-          </Button>
-          <Button onClick={generateDocs} disabled={!selectedProject || busy}>
-            {docsStatus === "generating" ? <Loader2 className="animate-spin" /> : <FileText />}
-            Generate Docs
-          </Button>
-          {docsUrl && (
-            <Button variant="outline" asChild>
-              <a href={docsUrl} target="_blank" rel="noreferrer">
-                <ExternalLink />
-                Open
-              </a>
-            </Button>
-          )}
-          </>
-          )
-        }
-      />
-
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-        <Card className="min-h-0 overflow-hidden">
-          <CardContent className="flex h-full min-h-0 flex-col gap-3 p-4">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search projects"
-                className="pl-8"
-              />
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-auto">
-              {projectsLoading && (
-                <div className="space-y-2">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="h-20 animate-pulse rounded-md border border-gray-200 bg-gray-50" />
-                  ))}
-                </div>
-              )}
-
-              {!projectsLoading && projectsError && (
-                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{projectsError}</div>
-              )}
-
-              {!projectsLoading && !projectsError && filteredProjects.length === 0 && (
-                <div className="rounded-md border border-gray-200 p-4 text-sm text-gray-500">No projects found.</div>
-              )}
-
-              {!projectsLoading && !projectsError && filteredProjects.length > 0 && (
-                <div className="space-y-2">
-                  {filteredProjects.map((project) => (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={() => setSelectedProjectId(project.id)}
-                      className={cn(
-                        "w-full rounded-md border p-3 text-left transition-colors",
-                        selectedProjectId === project.id
-                          ? "border-[#0078D4] bg-blue-50"
-                          : "border-gray-200 bg-white hover:bg-gray-50"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-gray-900">{project.name}</p>
-                          <p className="mt-1 line-clamp-2 text-xs text-gray-500">
-                            {project.description || project.git_branch || "dbt project"}
-                          </p>
-                        </div>
-                        {project.sync_status && (
-                          <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
-                            {project.sync_status}
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="min-h-[34rem] overflow-hidden">
-          <CardContent className="flex h-full min-h-0 flex-col p-0">
-            <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-gray-200 px-4">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-gray-900">{selectedProject?.name || "Data Explorer"}</p>
-                <p className="text-xs text-gray-500">
-                  {view === "sql" && "Ad-hoc read-only SQL through this project's dbt profile"}
-                  {view === "catalog" && "Models, sources and columns from the project manifest"}
-                  {view === "docs" && docsStatus === "ready" && "dbt documentation is available"}
-                  {view === "docs" && docsStatus === "missing" && "No generated docs found"}
-                  {view === "docs" && docsStatus === "checking" && "Checking documentation"}
-                  {view === "docs" && docsStatus === "generating" && "Generating documentation"}
-                  {view === "docs" && docsStatus === "error" && "Documentation failed to load"}
-                  {view === "docs" && docsStatus === "idle" && "Select a project"}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <div className="flex rounded-lg border border-gray-200 p-0.5">
-                  {VIEWS.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setView(item.id)}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                        view === item.id
-                          ? "bg-[#0078D4] text-white"
-                          : "text-gray-600 hover:bg-gray-100"
-                      )}
-                    >
-                      <item.icon className="h-3.5 w-3.5" />
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-                {selectedProject && (
-                  <Button variant="ghost" size="sm" asChild>
-                    <Link href={`/develop/${selectedProject.id}`}>Develop</Link>
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 bg-white">
-              {view === "sql" && selectedProject && (
-                <SqlConsole projectId={selectedProject.id} projectName={selectedProject.name} />
-              )}
-              {view === "catalog" && selectedProject && (
-                <CatalogBrowser projectId={selectedProject.id} />
-              )}
-              {view !== "docs" && !selectedProject && (
-                <div className="flex h-full min-h-[34rem] items-center justify-center p-6">
-                  <EmptyState
-                    icon={FileText}
-                    title="No project selected"
-                    description="Pick a dbt project on the left."
-                  />
-                </div>
-              )}
-              {view === "docs" && (
-              <>
-              {docsUrl && docsStatus === "ready" ? (
-                <iframe
-                  key={docsUrl}
-                  src={docsUrl}
-                  title={`${selectedProject?.name || "dbt"} docs`}
-                  className="h-full min-h-[34rem] w-full border-0"
-                />
-              ) : (
-                <div className="flex h-full min-h-[34rem] items-center justify-center p-6">
-                  {busy ? (
-                    <div className="flex items-center gap-3 text-sm text-gray-600">
-                      <Loader2 className="h-5 w-5 animate-spin text-[#0078D4]" />
-                      {docsStatus === "generating" ? "Running dbt docs generate..." : "Loading docs status..."}
-                    </div>
-                  ) : docsStatus === "missing" ? (
-                    <EmptyState
-                      icon={FileText}
-                      title="Docs not generated"
-                      description="Run dbt docs generate to create manifest.json, catalog.json, and the docs site for this project."
-                      action={<Button onClick={generateDocs}>Generate Docs</Button>}
-                    />
-                  ) : docsStatus === "error" ? (
-                    <EmptyState
-                      icon={AlertCircle}
-                      title="Unable to load docs"
-                      description={docsError || "Check dbt-runner and project documentation output."}
-                      action={<Button variant="outline" onClick={() => selectedProject && checkDocs(selectedProject.id)}>Retry</Button>}
-                    />
-                  ) : (
-                    <EmptyState
-                      icon={FileText}
-                      title="Data Explorer"
-                      description="Select a dbt project to view generated documentation and lineage."
-                    />
-                  )}
-                </div>
-              )}
-              </>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <h1 className="sr-only">Explore</h1>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2">
+        <select aria-label="Project" title={selectedProject?.description || "Select project"} value={selectedProjectId ?? ""} disabled={projectsLoading} onChange={event => { if (boardDirty && !window.confirm('Discard unsaved dashboard changes and switch project?')) return; setBoardDirty(false); setAddition(null); setSelectedProjectId(event.target.value || null) }} className="h-8 w-44 min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800 sm:w-52">
+          <option value="" disabled>{projectsLoading ? "Loading projects…" : "Select a project"}</option>
+          {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <nav aria-label="Explore sections" className="flex items-center gap-1">
+          {VIEWS.map(item => <button key={item.id} type="button" aria-pressed={view === item.id} onClick={() => setView(item.id)}
+            className={cn("flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium", view === item.id ? "bg-blue-50 text-blue-700" : "text-slate-500 hover:bg-slate-100")}>
+            <item.icon className="h-3.5 w-3.5" />{item.label}
+          </button>)}
+        </nav>
+        {view === "docs" && <div className="ml-auto flex items-center gap-2">
+          {busy && <span role="status" className="flex items-center gap-1 text-xs text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" />{docsStatus === "generating" ? "Generating…" : "Loading…"}</span>}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button size="sm" variant="ghost" aria-label="Docs actions" title="Docs actions" disabled={!selectedProject}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={busy} onSelect={() => selectedProject && checkDocs(selectedProject.id)}><RefreshCw className="mr-2 h-4 w-4" />Refresh documentation</DropdownMenuItem>
+              <DropdownMenuItem disabled={busy} onSelect={generateDocs}><FileText className="mr-2 h-4 w-4" />Generate Docs</DropdownMenuItem>
+              {docsUrl && <DropdownMenuItem asChild><a href={docsUrl} target="_blank" rel="noreferrer"><ExternalLink className="mr-2 h-4 w-4" />Open in new tab</a></DropdownMenuItem>}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>}
+      </div>
+      {projectsError && <div role="alert" className="flex items-center gap-2 bg-red-50 px-3 py-2 text-xs text-red-700">{projectsError}<Button variant="ghost" size="sm" onClick={loadProjects}>Retry</Button></div>}
+      <div className="min-h-0 flex-1">
+        {selectedProject && <>
+          <div className={view === 'sql' ? 'h-full' : 'hidden'}><SqlConsole key={selectedProject.id} projectId={selectedProject.id} onAddToDashboard={item => { setAddition(item); setView('dashboards') }} /></div>
+          <div className={view === 'dashboards' ? 'h-full' : 'hidden'}><DashboardWorkspace key={selectedProject.id} projectId={selectedProject.id} addition={addition} onConsumed={consumeAddition} onDirty={setBoardDirty} /></div>
+        </>}
+        {!selectedProject ? <div className="flex h-full items-center justify-center p-4"><EmptyState icon={FileText} title={projectsLoading ? "Loading projects…" : "No project selected"} description="Choose a project above to explore its data." /></div>
+          : view !== 'docs' ? null
+          : docsUrl && docsStatus === "ready" ? <iframe key={docsUrl} src={docsUrl} title={`${selectedProject.name} docs`} className="h-full w-full border-0" />
+          : <div className="flex h-full items-center justify-center p-4">
+            {busy ? <Loader2 aria-label="Loading documentation" className="h-5 w-5 animate-spin text-blue-600" />
+              : docsStatus === "missing" ? <EmptyState icon={FileText} title="Docs not generated" description="Generate documentation for this project to browse models and lineage." action={<Button size="sm" onClick={generateDocs}>Generate Docs</Button>} />
+              : docsStatus === "error" ? <EmptyState icon={AlertCircle} title="Unable to load docs" description={docsError || "Check the project documentation output."} action={<Button size="sm" variant="outline" onClick={() => checkDocs(selectedProject.id)}>Retry</Button>} />
+              : null}
+          </div>}
       </div>
     </div>
   )
