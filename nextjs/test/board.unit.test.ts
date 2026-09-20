@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CHART_TYPES, acceptsSeries, boardDiagnostics, chartPayload, chartReady, diagnosticText, emptyChartDraft, suggestChart } from '@/lib/board'
+import { CHART_TYPES, acceptsSeries, boardDiagnostics, boardEmpty, boardNeedsRender, boardSource, chartPayload, chartProblem, chartReady, diagnosticText, emptyChartDraft, suggestChart } from '@/lib/board'
 
 describe('board diagnostics', () => {
   it('reads the engine diagnostics out of a 422 board response', () => {
@@ -54,5 +54,59 @@ describe('shared chart draft', () => {
     // A pie takes its category on x; the runner turns that into colour and theta.
     expect(chartPayload({ ...seeded, type: 'pie' })).toMatchObject({ x: 'month', y: 'revenue' })
     expect(chartPayload({ ...seeded, type: 'pie' }).color).toBeUndefined()
+  })
+})
+
+describe('published and draft versions of a board', () => {
+  const published = 'charts:\n  - type: bar\n'
+  const draft = published + '  - type: kpi\n'
+
+  it('shows the saved file to a reader and the buffer to an editor', () => {
+    expect(boardSource('view', draft, published)).toBe(published)
+    expect(boardSource('edit', draft, published)).toBe(draft)
+  })
+
+  it('counts a board of nothing but comments as empty', () => {
+    expect(boardEmpty('# a new dashboard\n#  start here\n')).toBe(true)
+    expect(boardEmpty('   \n')).toBe(true)
+    expect(boardEmpty(published)).toBe(false)
+  })
+
+  it('renders a published board on open, once, and never an empty or already-rendered one', () => {
+    expect(boardNeedsRender('view', published, '')).toBe(true)
+    expect(boardNeedsRender('view', published, published)).toBe(false)
+    expect(boardNeedsRender('view', '# empty\n', '')).toBe(false)
+    expect(boardNeedsRender('edit', published, '')).toBe(false)
+  })
+
+  it('renders again once the draft is published over it', () => {
+    expect(boardNeedsRender('view', draft, published)).toBe(true)
+  })
+})
+
+describe('what stops a chart being drawn', () => {
+  const bar = { ...emptyChartDraft(), type: 'bar', fields: { x: 'month', y: 'total' } }
+  const columns = ['month', 'total']
+  const numeric = ['total']
+
+  it('draws a complete chart', () => {
+    expect(chartProblem(bar, 12, columns, numeric)).toBeNull()
+    expect(chartProblem({ ...bar, type: 'table', fields: {} }, 12, columns, numeric)).toBeNull()
+  })
+
+  it('names the field that is missing before asking the renderer', () => {
+    expect(chartProblem({ ...bar, fields: { x: 'month', y: 'month' } }, 12, columns, numeric)).toMatch(/numeric value column/)
+    expect(chartProblem({ ...bar, fields: { x: '', y: 'total' } }, 12, columns, numeric)).toMatch(/X-axis/)
+  })
+
+  it('states the renderer limits rather than failing on them', () => {
+    expect(chartProblem(bar, 1001, columns, numeric)).toMatch(/1,000 result rows/)
+    expect(chartProblem({ ...bar, type: 'kpi', fields: { y: 'total' } }, 12, columns, numeric)).toMatch(/one row/)
+    expect(chartProblem({ ...bar, type: 'kpi', fields: { y: 'total' } }, 1, columns, numeric)).toBeNull()
+  })
+
+  it('says which chart types the preview cannot draw, before any other complaint', () => {
+    expect(chartProblem({ ...bar, type: 'histogram', fields: { x: 'total' } }, 12, columns, numeric)).toMatch(/drawn by the dashboard itself/)
+    expect(chartProblem({ ...bar, type: 'heatmap', fields: {} }, 2000, columns, numeric)).toMatch(/drawn by the dashboard itself/)
   })
 })

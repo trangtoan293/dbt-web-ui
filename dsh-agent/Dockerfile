@@ -32,6 +32,10 @@ RUN dsh plugin --profile dbtcraft add -w \
       "link:/opt/dsh-plugins/dsh-session-resume"
 
 COPY profile/cordis.patch.yml ${DSH_HOME}/profiles/dbtcraft/cordis.patch.yml
+# skill-filesystem scans $DSH_HOME/skills (rank 400, every project). A skill is
+# loaded only when the model asks for it, so deployment-specific depth costs
+# nothing until a dashboard is actually being built.
+COPY profile/skills ${DSH_HOME}/skills
 
 # Fail the build, not the first request, on a patch that names a row the
 # composition does not have.

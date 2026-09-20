@@ -48,6 +48,7 @@ runtime out of the dbt image.
 |---|---|
 | Read, search, edit project files | The harness's own `fs` and `glob`/`grep` tools, fenced to the project directory by `sandbox-policy` in `workspace-write` mode |
 | Run dbt, compile a model, query the warehouse | The `dbt` MCP server (`dbt_mcp/`), which calls dbt-runner |
+| Write a dashboard under `charts/` | `fs` for the file, plus `charts_reference` and `validate_dashboard` in the same MCP server: the board YAML is the renderer's spec, not something to recall |
 | Reach the database, decrypt a stored credential | Never. This service gets neither `DATABASE_URL` nor `APP_ENCRYPTION_KEY` |
 
 dbt never runs from the agent's shell: DuckDB is single-writer, a warm worker

@@ -8,6 +8,7 @@ import CodeEditor from "@/components-v2/shared/CodeEditor"
 import QueryResultsTable from "@/components-v2/develop/workspace/QueryResultsTable"
 import { dbtApi, filesApi } from "@/lib/api"
 import { metadataEntries, readDrafts, starterQuery, closeDraft, draftDirty, type DataEntry, type DraftState } from "@/lib/explore-data"
+import type { ExploreWorkspaceState } from "@/lib/explore-agent"
 import SqlDataBrowser from "./SqlDataBrowser"
 import ExecutionEnvironment from "./ExecutionEnvironment"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components-v2/ui/dropdown-menu"
@@ -19,6 +20,11 @@ const DRAFT_PREFIX = "explore-drafts:"
 
 interface SqlConsoleProps {
   projectId: string
+  /** A file the assistant wrote, to open in a tab. `id` makes a repeat open. */
+  openRequest?: { path: string; id: number } | null
+  onOpened?: () => void
+  /** What is open here, for the assistant to read when it is asked something. */
+  onState?: (state: ExploreWorkspaceState) => void
   onAddToDashboard?: (addition: BoardAddition) => void
 }
 
@@ -40,6 +46,9 @@ interface Results {
  */
 export default function SqlConsole({
   projectId,
+  openRequest,
+  onOpened,
+  onState,
   onAddToDashboard,
 }: SqlConsoleProps): React.ReactElement {
   const [draftState, setDraftState] = useState<DraftState>(() => readDrafts(null, null))
@@ -107,6 +116,17 @@ export default function SqlConsole({
       .finally(() => { if (!cancelled) setMetadataLoading(false) })
     return () => { cancelled = true }
   }, [projectId, reload])
+
+  useEffect(() => { onState?.({ queryName: draft.name, sql, target }) }, [onState, draft.name, sql, target])
+
+  // A file the assistant saved, opened in a tab. Reading the path directly
+  // means a query written seconds ago needs no listing refresh first.
+  const openedRef = useRef(0)
+  useEffect(() => {
+    if (!hydrated || !openRequest || openedRef.current === openRequest.id) return
+    openedRef.current = openRequest.id
+    void loadSaved(openRequest.path).finally(() => onOpened?.())
+  }, [hydrated, openRequest]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function saveDraft() {
     const name = window.prompt('Query name', draft.name)?.trim()

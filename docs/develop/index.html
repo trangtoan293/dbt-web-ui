@@ -1,0 +1,2153 @@
+<title>dbt-craft Develop</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --ground: #F4F7F7;
+  --surface: #FFFFFF;
+  --sunken: #EAF0F0;
+  --ink: #111A1C;
+  --ink-2: #48585B;
+  --ink-3: #75888B;
+  --rule: #D8E2E2;
+  --rule-soft: #E7EEEE;
+  --accent: #036E72;
+  --accent-soft: #E0F0F0;
+  --link: #0B6296;
+  --warn: #9C3A22;
+  --shadow: 0 1px 2px rgba(17, 26, 28, .05);
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --rail: 292px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0C1213;
+    --surface: #131C1E;
+    --sunken: #1A2426;
+    --ink: #DFE8E8;
+    --ink-2: #A3B4B6;
+    --ink-3: #74898C;
+    --rule: #223032;
+    --rule-soft: #1A2527;
+    --accent: #4CBFC1;
+    --accent-soft: #10292A;
+    --link: #74B9E4;
+    --warn: #E39273;
+    --shadow: none;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0C1213;
+  --surface: #131C1E;
+  --sunken: #1A2426;
+  --ink: #DFE8E8;
+  --ink-2: #A3B4B6;
+  --ink-3: #74898C;
+  --rule: #223032;
+  --rule-soft: #1A2527;
+  --accent: #4CBFC1;
+  --accent-soft: #10292A;
+  --link: #74B9E4;
+  --warn: #E39273;
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15.5px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* ---------- shell ---------- */
+
+.shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); }
+
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 26px 18px 40px 26px;
+  border-right: 1px solid var(--rule);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.brand { display: flex; flex-direction: column; gap: 4px; }
+.brand-mark {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.brand-name { font-family: var(--mono); font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.brand-note { font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+
+.nav { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.nav-link {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px 6px 8px;
+  border-radius: 5px;
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 14px;
+}
+.nav-link:hover { background: var(--rule-soft); color: var(--ink); }
+.nav-num { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.nav-doc.is-active > .nav-link { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.nav-doc.is-active .nav-num { color: var(--accent); }
+
+.nav-subs { list-style: none; margin: 2px 0 8px; padding: 0 0 0 44px; display: none; flex-direction: column; gap: 0; }
+.nav-doc.is-active .nav-subs { display: flex; }
+.nav-subs a {
+  display: block;
+  padding: 3px 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  text-decoration: none;
+  border-left: 1px solid var(--rule);
+  padding-left: 12px;
+  margin-left: -12px;
+}
+.nav-subs a:hover { color: var(--ink); border-left-color: var(--accent); }
+.nav-subs a.is-current { color: var(--accent); border-left-color: var(--accent); }
+
+.rail-foot { margin-top: auto; padding-top: 18px; border-top: 1px solid var(--rule-soft); display: flex; flex-direction: column; gap: 10px; }
+.theme-toggle {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  color: var(--ink-2);
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.theme-toggle:hover { border-color: var(--accent); color: var(--ink); }
+.rail-note { font-size: 11.5px; color: var(--ink-3); font-family: var(--mono); }
+
+/* ---------- mobile bar ---------- */
+
+.topbar { display: none; }
+
+/* ---------- content ---------- */
+
+.main { padding: 0 40px 120px; min-width: 0; }
+.doc { display: none; max-width: 106ch; padding-top: 44px; }
+.doc-head, .doc > p, .doc > ul, .doc > ol, .doc > blockquote,
+.doc h2, .doc h3 { max-width: 74ch; }
+.doc.is-active { display: block; }
+
+.doc-head { margin-bottom: 34px; padding-bottom: 22px; border-bottom: 1px solid var(--rule); }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 10px;
+}
+.doc-head h1 {
+  font-family: var(--mono);
+  font-size: clamp(27px, 4vw, 34px);
+  font-weight: 600;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+  margin: 0;
+  text-wrap: balance;
+}
+.doc-blurb { margin: 10px 0 0; color: var(--ink-2); font-size: 15px; }
+
+.doc h2 {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  line-height: 1.3;
+  margin: 46px 0 14px;
+  padding-top: 8px;
+  scroll-margin-top: 80px;
+  text-wrap: balance;
+}
+.doc h3 {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 30px 0 10px;
+  scroll-margin-top: 80px;
+}
+.doc p { margin: 0 0 14px; }
+.doc ul, .doc ol { margin: 0 0 16px; padding-left: 22px; }
+.doc li { margin-bottom: 5px; }
+.doc li > ul, .doc li > ol { margin-top: 5px; }
+.doc strong { font-weight: 650; }
+
+.doc blockquote {
+  margin: 0 0 26px;
+  padding: 13px 16px;
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.doc blockquote p { margin: 0 0 6px; }
+.doc blockquote p:last-child { margin: 0; }
+.doc blockquote code { background: transparent; padding: 0; }
+
+.doc code {
+  font-family: var(--mono);
+  font-size: .875em;
+  background: var(--sunken);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: .08em .34em;
+  word-break: break-word;
+}
+
+.doc pre {
+  margin: 0 0 22px;
+  padding: 16px 18px;
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12.8px;
+  line-height: 1.6;
+}
+.doc pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+  white-space: pre;
+  word-break: normal;
+  color: var(--ink-2);
+}
+
+.table-scroll { overflow-x: auto; margin: 0 0 24px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
+.doc table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.doc th, .doc td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--rule-soft); }
+.doc thead th {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--sunken);
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.doc tbody tr:last-child td { border-bottom: 0; }
+.doc td code { font-size: 12.4px; }
+.doc td:first-child { font-variant-numeric: tabular-nums; }
+
+.doc hr { border: 0; border-top: 1px solid var(--rule); margin: 40px 0; }
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+  }
+  .topbar .brand-name { font-size: 16px; }
+  .menu-btn {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    background: none;
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    color: var(--ink-2);
+    padding: 6px 10px;
+    cursor: pointer;
+    margin-left: auto;
+  }
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(320px, 86vw);
+    z-index: 40;
+    transform: translateX(-102%);
+    transition: transform .18s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, .18);
+  }
+  .rail.is-open { transform: none; }
+  .scrim { position: fixed; inset: 0; background: rgba(8, 16, 17, .4); z-index: 35; display: none; }
+  .scrim.is-open { display: block; }
+  .main { padding: 0 20px 90px; }
+  .doc { padding-top: 28px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+
+<noscript><style>.doc { display: block; } .rail .nav-subs { display: flex; }</style></noscript>
+
+<header class="topbar">
+  <span class="brand-name">dbt-craft Develop</span>
+  <button class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="rail">Mục lục</button>
+</header>
+
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="Mục lục tài liệu">
+    <div class="brand">
+      <span class="brand-mark">Tài liệu kỹ thuật</span>
+      <span class="brand-name">dbt-craft Develop</span>
+      <span class="brand-note">IDE dbt trên trình duyệt — chỉ phạm vi chức năng Develop.</span>
+    </div>
+
+    <ul class="nav" id="nav"><li class="nav-doc" data-doc="doc-00"><a class="nav-link" href="#doc-00"><span class="nav-num">00</span><span class="nav-label">Tổng quan</span></a><ul class="nav-subs"><li><a href="#README-1-develop-là-gì">1. Develop là gì</a></li><li><a href="#README-2-kiến-trúc-một-thao-tác">2. Kiến trúc một thao tác</a></li><li><a href="#README-3-mục-lục">3. Mục lục</a></li><li><a href="#README-4-quy-ước-đọc">4. Quy ước đọc</a></li></ul></li><li class="nav-doc" data-doc="doc-01"><a class="nav-link" href="#doc-01"><span class="nav-num">01</span><span class="nav-label">Workspace</span></a><ul class="nav-subs"><li><a href="#01-workspace-1-bố-cục">1. Bố cục</a></li><li><a href="#01-workspace-2-file-explorer">2. File Explorer</a></li><li><a href="#01-workspace-3-editor">3. Editor</a></li><li><a href="#01-workspace-4-tab--draft">4. Tab &amp;amp; draft</a></li><li><a href="#01-workspace-5-intellisense-metadata">5. IntelliSense metadata</a></li><li><a href="#01-workspace-6-terminal-panel">6. Terminal panel</a></li><li><a href="#01-workspace-7-phím-tắt">7. Phím tắt</a></li><li><a href="#01-workspace-8-dbt-assistant-tuỳ-chọn">8. dbt assistant (tuỳ chọn)</a></li><li><a href="#01-workspace-9-lưu-phiên-làm-việc">9. Lưu phiên làm việc</a></li></ul></li><li class="nav-doc" data-doc="doc-02"><a class="nav-link" href="#doc-02"><span class="nav-num">02</span><span class="nav-label">Chạy dbt</span></a><ul class="nav-subs"><li><a href="#02-chay-dbt-1-hai-đường-chạy-lệnh">1. Hai đường chạy lệnh</a></li><li><a href="#02-chay-dbt-2-ghép-câu-lệnh">2. Ghép câu lệnh</a></li><li><a href="#02-chay-dbt-3-menu-lệnh-rightpanel">3. Menu lệnh (RightPanel)</a></li><li><a href="#02-chay-dbt-4-chống-chạy-trùng">4. Chống chạy trùng</a></li><li><a href="#02-chay-dbt-5-preview--compile--explain">5. Preview / Compile / Explain</a></li><li><a href="#02-chay-dbt-6-lineage--post-dbtlineage">6. Lineage — POST /dbt/lineage</a></li><li><a href="#02-chay-dbt-7-docs">7. Docs</a></li><li><a href="#02-chay-dbt-8-biến-môi-trường-khi-chạy">8. Biến môi trường khi chạy</a></li><li><a href="#02-chay-dbt-9-lịch-sử-run">9. Lịch sử run</a></li></ul></li><li class="nav-doc" data-doc="doc-03"><a class="nav-link" href="#doc-03"><span class="nav-num">03</span><span class="nav-label">Cấu hình project</span></a><ul class="nav-subs"><li><a href="#03-cau-hinh-project-1-tạo-project--developnew">1. Tạo project — /develop/new</a></li><li><a href="#03-cau-hinh-project-2-project-settings">2. Project settings</a></li><li><a href="#03-cau-hinh-project-3-target-environments">3. Target (Environments)</a></li><li><a href="#03-cau-hinh-project-4-variables-biến-môi-trường">4. Variables (biến môi trường)</a></li><li><a href="#03-cau-hinh-project-5-sinh-profilesyml">5. Sinh profiles.yml</a></li><li><a href="#03-cau-hinh-project-6-lakehouse">6. Lakehouse</a></li><li><a href="#03-cau-hinh-project-7-danger-zone">7. Danger zone</a></li></ul></li><li class="nav-doc" data-doc="doc-04"><a class="nav-link" href="#doc-04"><span class="nav-num">04</span><span class="nav-label">Git</span></a><ul class="nav-subs"><li><a href="#04-git-1-sidebar-tab-git--source-control">1. Sidebar tab git — Source Control</a></li><li><a href="#04-git-2-credential">2. Credential</a></li><li><a href="#04-git-3-sidebar-tab-history">3. Sidebar tab history</a></li><li><a href="#04-git-4-gitexec-và-giới-hạn">4. /git/exec và giới hạn</a></li><li><a href="#04-git-5-clone">5. Clone</a></li><li><a href="#04-git-6-git-status-trong-phần-còn-lại-của-ide">6. Git status trong phần còn lại của IDE</a></li></ul></li><li class="nav-doc" data-doc="doc-05"><a class="nav-link" href="#doc-05"><span class="nav-num">05</span><span class="nav-label">API reference</span></a><ul class="nav-subs"><li><a href="#05-api-1-chạy-lệnh--stream">1. Chạy lệnh &amp;amp; stream</a></li><li><a href="#05-api-2-model-compile--preview--explain--lineage">2. Model: compile / preview / explain / lineage</a></li><li><a href="#05-api-3-metadata--docs">3. Metadata &amp;amp; docs</a></li><li><a href="#05-api-4-profile--chẩn-đoán-kết-nối">4. Profile &amp;amp; chẩn đoán kết nối</a></li><li><a href="#05-api-5-file">5. File</a></li><li><a href="#05-api-6-git">6. Git</a></li><li><a href="#05-api-7-project">7. Project</a></li><li><a href="#05-api-8-route-nextjs-dùng-bởi-develop">8. Route Next.js dùng bởi Develop</a></li><li><a href="#05-api-9-mã-lỗi-thường-gặp">9. Mã lỗi thường gặp</a></li></ul></li><li class="nav-doc" data-doc="doc-06"><a class="nav-link" href="#doc-06"><span class="nav-num">06</span><span class="nav-label">Xử lý sự cố</span></a><ul class="nav-subs"><li><a href="#06-su-co-chạy-lệnh">Chạy lệnh</a></li><li><a href="#06-su-co-profilesyml--kết-nối">profiles.yml &amp;amp; kết nối</a></li><li><a href="#06-su-co-file--editor">File &amp;amp; editor</a></li><li><a href="#06-su-co-git">Git</a></li><li><a href="#06-su-co-phiên--trạng-thái-ui">Phiên &amp;amp; trạng thái UI</a></li><li><a href="#06-su-co-nơi-đọc-tiếp">Nơi đọc tiếp</a></li></ul></li></ul>
+
+    <div class="rail-foot">
+      <button class="theme-toggle" id="theme-toggle" type="button">Đổi giao diện</button>
+      <span class="rail-note">Nguồn: docs/develop/*.md</span>
+    </div>
+  </nav>
+
+  <main class="main" id="main"><section class="doc" id="doc-00" data-num="00"><header class="doc-head"><p class="eyebrow">Develop · phần 00</p><h1>Tổng quan</h1><p class="doc-blurb">Develop là gì, kiến trúc một thao tác, mục lục</p></header><blockquote>
+<p>Phạm vi: <strong>chỉ</strong> chức năng Develop của dbt-craft (dbt
+Web UI). Các mục Orchestrate / Explore / Data / Settings không nằm trong
+tài liệu này.</p>
+<p>Mã nguồn tham chiếu: <code>nextjs/src/app/(app)/develop/</code>,
+<code>nextjs/src/components-v2/develop/</code>,
+<code>dbt-runner/app/routers/{dbt,files,git,sse,project}.py</code>,
+<code>dbt-runner/app/services/{dbt_service,file_service,git_service,project}.py</code>.</p>
+</blockquote>
+<h2 id="README-1-develop-là-gì">1. Develop là gì</h2>
+<p>Develop là IDE chạy trong trình duyệt cho một dbt project: duyệt
+file, sửa SQL/YAML, chạy lệnh dbt và xem log realtime, preview kết quả,
+xem compiled SQL, query plan, lineage, và commit/push qua Git — tất cả
+trong một màn hình.</p>
+<p>Hai màn hình:</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Thành phần</th>
+<th>Vai trò</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/develop</code></td>
+<td><code>app/(app)/develop/page.tsx</code> →
+<code>ProjectList</code></td>
+<td>Danh sách project, tìm kiếm, xoá</td>
+</tr>
+<tr>
+<td><code>/develop/new</code></td>
+<td><code>NewProjectForm</code></td>
+<td>Tạo project (clone Git hoặc <code>dbt init</code>)</td>
+</tr>
+<tr>
+<td><code>/develop/[projectId]</code></td>
+<td><code>DevelopLayout</code></td>
+<td>Toàn bộ IDE</td>
+</tr>
+</tbody>
+</table>
+<p><code>DevelopLayout.tsx</code> (~2.200 dòng) là component chủ: nó giữ
+<strong>toàn bộ state của IDE</strong> và truyền xuống các panel con.
+Muốn hiểu luồng nào cũng bắt đầu từ đây.</p>
+<h2 id="README-2-kiến-trúc-một-thao-tác">2. Kiến trúc một thao tác</h2>
+<pre><code>Browser (Next.js)                  dbt-runner (FastAPI)              Máy chủ
+────────────────────               ────────────────────              ───────
+DevelopLayout state
+   │
+   ├─ filesApi.*        ──HTTP──►  /files/{project_id}/*       ──►  workspace/{project_id}/
+   ├─ gitApi.*          ──HTTP──►  /git/*                      ──►  git CLI
+   ├─ dbtApi.*          ──HTTP──►  /dbt/{compile,preview,...}  ──►  dbt CLI / warm worker
+   ├─ useDbtRunStream   ──SSE ──►  POST /sse/dbt/{project_id}  ──►  subprocess dbt, stream stdout
+   └─ useFileWatcher    ──SSE ◄──  GET  /sse/files/{project_id} ◄──  watchdog</code></pre>
+<p>Điểm quan trọng:</p>
+<ul>
+<li><strong>Frontend không bao giờ gọi dbt trực tiếp.</strong> Mọi lệnh
+đi qua dbt-runner, nơi có khoá per-project, semaphore toàn cục, budget
+bộ nhớ DuckDB và ghi lịch sử run.</li>
+<li><strong><code>profiles.yml</code> được sinh lại từ database trước
+mỗi lệnh</strong>
+(<code>DbtService._regenerate_profiles_from_db</code>). File trên đĩa
+không phải nguồn sự thật khi project có connection.</li>
+<li><strong>Xác thực độc lập.</strong> dbt-runner tự verify JWT và tự
+kiểm tra quyền sở hữu project (<code>_verify_project_ownership</code>) —
+không tin frontend.</li>
+</ul>
+<h2 id="README-3-mục-lục">3. Mục lục</h2>
+<table>
+<thead>
+<tr>
+<th>Tài liệu</th>
+<th>Nội dung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#doc-01">01 — Workspace</a></td>
+<td>Bố cục IDE, File Explorer, Editor, tab, phím tắt, terminal panel,
+IntelliSense, lưu phiên</td>
+</tr>
+<tr>
+<td><a href="#doc-02">02 — Chạy dbt</a></td>
+<td>SSE log stream, menu lệnh, target &amp; args, Preview / Compile /
+Explain / Lineage, docs, concurrency</td>
+</tr>
+<tr>
+<td><a href="#doc-03">03 — Cấu hình project</a></td>
+<td>Tạo project, Project settings, Environments (targets), Variables,
+Lakehouse, Danger zone, cơ chế sinh <code>profiles.yml</code></td>
+</tr>
+<tr>
+<td><a href="#doc-04">04 — Git</a></td>
+<td>Source Control panel, credential, clone/pull/push, history</td>
+</tr>
+<tr>
+<td><a href="#doc-05">05 — API reference</a></td>
+<td>Bảng endpoint dbt-runner mà Develop dùng</td>
+</tr>
+<tr>
+<td><a href="#doc-06">06 — Xử lý sự cố</a></td>
+<td>Lỗi thường gặp và nguyên nhân gốc</td>
+</tr>
+</tbody>
+</table>
+<h2 id="README-4-quy-ước-đọc">4. Quy ước đọc</h2>
+<ul>
+<li>Đường dẫn file luôn tương đối từ gốc repo.</li>
+<li>"Runner" = service <code>dbt-runner</code>. "Frontend" = app
+Next.js.</li>
+<li>Mọi đường dẫn file trong project là <strong>tương đối so với thư mục
+project</strong> (<code>workspace/{project_id}/</code>), không bao giờ
+là đường dẫn tuyệt đối trên máy chủ.</li>
+</ul>
+</section><section class="doc" id="doc-01" data-num="01"><header class="doc-head"><p class="eyebrow">Develop · phần 01</p><h1>Workspace</h1><p class="doc-blurb">Bố cục IDE, file explorer, editor, tab, phím tắt, terminal</p></header><blockquote>
+<p>Tham chiếu:
+<code>nextjs/src/components-v2/develop/DevelopLayout.tsx</code>,
+<code>transforms/{FileExplorer,EditorTabs,TerminalPanel,RightPanel}/</code>,
+<code>workspace/CodeEditor.tsx</code>,
+<code>nextjs/src/lib/develop-session.ts</code>.</p>
+</blockquote>
+<h2 id="01-workspace-1-bố-cục">1. Bố cục</h2>
+<pre><code>┌─ TopBar: ◄ | tên project ▾ | branch / worktree | badge Clean|N changed|Deleted ─┐
+├──────────┬────────────────────────────────────────────────────────┬────────────┤
+│ Sidebar  │  EditorTabs                                            │ RightPanel │
+│ Files    │  ┌──────────────────────────────────────────────────┐  │  (rail)    │
+│ Git      │  │  CodeEditor (Monaco) / DiffEditor                │  │  ▸ dbt ▾   │
+│ History  │  │                                                  │  │  ▸ Docs    │
+│          │  └──────────────────────────────────────────────────┘  │  ▸ Save    │
+│ (resize  │  ────────────────── kéo để đổi cao ─────────────────   │  ▸ Terminal│
+│  220–520)│  TerminalPanel: Logs | Results | Compiled | Lineage    │  ▸ Settings│
+└──────────┴────────────────────────────────────────────────────────┴────────────┘
+                                        │ AgentPanel (dbt assistant, nếu bật) ────┘</code></pre>
+<ul>
+<li><strong>TopBar</strong> được <code>DevelopLayout</code> đẩy vào
+<code>TopBarContext</code>, không phải header riêng. Dropdown tên
+project hiển thị branch, worktree dir, remote, project ID, và lối vào
+<strong>Project settings</strong>. Badge trạng thái lấy từ
+<code>gitStatus.changes.length</code>.</li>
+<li><strong>Sidebar</strong> rộng 220–520px, kéo bằng pointer event
+(<code>startSidebarResize</code>), ghi lại vào phiên. Ba tab:
+<code>files</code> / <code>git</code> / <code>history</code>.</li>
+<li><strong>RightPanel</strong> là thanh dọc 56px chứa menu lệnh dbt và
+các nút tác vụ nhanh.</li>
+</ul>
+<h2 id="01-workspace-2-file-explorer">2. File Explorer</h2>
+<p><code>transforms/FileExplorer/index.tsx</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Tính năng</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lazy load</td>
+<td>API <code>/files/{id}</code> trả <strong>một cấp</strong> thư mục.
+Mở folder → <code>handleLoadChildren</code> gọi tiếp.</td>
+</tr>
+<tr>
+<td>Tìm kiếm</td>
+<td>Gõ vào ô search: lọc cục bộ trên cây đã nạp, đồng thời gọi
+<code>/files/{id}/search</code> cho kết quả toàn project.</td>
+</tr>
+<tr>
+<td>Multi-select</td>
+<td>Ctrl/Cmd+click. <code>anchorPath</code> = node click cuối, dùng làm
+thư mục đích khi tạo file.</td>
+</tr>
+<tr>
+<td>Đổi tên</td>
+<td><code>F2</code> hoặc menu chuột phải → input inline
+(<code>InlineInput.tsx</code>).</td>
+</tr>
+<tr>
+<td>Xoá</td>
+<td><code>Delete</code> — xoá cả selection, có confirm.</td>
+</tr>
+<tr>
+<td>Kéo thả trong cây</td>
+<td>Kéo file/folder vào folder khác →
+<code>/files/{id}/move</code>.</td>
+</tr>
+<tr>
+<td>Kéo thả từ OS</td>
+<td><code>osDrop.ts</code> — thả file từ máy vào cây để upload.</td>
+</tr>
+<tr>
+<td>Menu chuột phải</td>
+<td>Tạo file / tạo folder / rename / duplicate / copy / delete.</td>
+</tr>
+</tbody>
+</table>
+<p>Khi đổi tên hoặc di chuyển, <code>DevelopLayout</code> cập nhật
+<strong>cả cây lẫn tab đang mở</strong> bằng hai helper thuần:
+<code>renamePath()</code> / <code>renameNodes()</code> /
+<code>removeNodes()</code> — trạng thái được tạo mới chứ không sửa tại
+chỗ.</p>
+<h3 id="01-workspace-file-watcher">File watcher</h3>
+<p><code>useFileWatcher(projectId, …)</code> mở <code>EventSource</code>
+tới <code>GET /sse/files/{project_id}</code>. Sự kiện:
+<code>created | modified | deleted | moved | ping</code>.</p>
+<p>Xử lý trong <code>handleFileWatcherEvent</code>:</p>
+<ul>
+<li><code>created/deleted/moved</code> → nạp lại cây gốc, <strong>nạp
+lại mọi thư mục cha đã mở</strong> (<code>refreshAncestors</code>, vì
+API chỉ trả một cấp), nạp lại git status, hẹn refresh IntelliSense.</li>
+<li><code>modified</code> → nếu file đang mở và <strong>không
+dirty</strong> thì nạp lại nội dung; nếu file vừa được chính tab này lưu
+thì bỏ qua (<code>recentlySavedFilesRef</code>, tự hết hạn sau 3s) để
+tránh vòng lặp lưu → watcher → reload.</li>
+</ul>
+<p>Tự reconnect sau 2s khi mất kết nối.</p>
+<h2 id="01-workspace-3-editor">3. Editor</h2>
+<p><code>workspace/CodeEditor.tsx</code> — Monaco qua
+<code>@monaco-editor/react</code>.</p>
+<ul>
+<li>Ngôn ngữ suy ra từ đuôi file (<code>sql</code>, <code>yaml</code>,
+<code>markdown</code>, <code>python</code>, <code>json</code>…).</li>
+<li><strong>IntelliSense dbt</strong> (mục 5) đăng ký qua
+<code>registerCompletionItemProvider('sql', …)</code>: gợi ý
+<code>ref()</code>, <code>source()</code>, tên model, tên cột từ
+catalog, snippet Jinja và keyword SQL.</li>
+<li><strong>Go to definition</strong>:
+<code>registerDefinitionProvider('sql', …)</code> — Ctrl/Cmd+click lên
+tên model trong <code>ref()</code> để nhảy sang file model đó.</li>
+<li><strong>Format</strong>: <code>Shift+Alt+F</code>. Gọi
+<code>POST /dbt/format</code> (sqlglot phía server); nếu server
+<strong>từ chối</strong> (sqlglot không đoán bừa) thì dùng formatter cục
+bộ <code>formatFile()</code> và ghi một dòng <code>[INFO]</code> vào
+Logs.</li>
+</ul>
+<h3 id="01-workspace-diff">Diff</h3>
+<p><code>workspace/DiffEditor.tsx</code>. Mở từ Source Control panel
+(<code>onOpenDiff</code>) — so sánh nội dung HEAD với working tree cho
+một file.</p>
+<h2 id="01-workspace-4-tab--draft">4. Tab &amp; draft</h2>
+<p><code>transforms/EditorTabs/index.tsx</code>, state
+<code>openTabs: OpenTab[]</code> trong <code>DevelopLayout</code>.</p>
+<pre class="ts"><code>interface OpenTab {
+  path: string          // &quot;models/marts/dim_customer.sql&quot;, hoặc &quot;__draft__/…&quot; nếu là nháp
+  name: string
+  content: string
+  originalContent: string
+  isDirty: boolean      // content !== originalContent
+  isDraft?: boolean     // chưa từng được lưu xuống đĩa
+}</code></pre>
+<ul>
+<li><strong>Draft</strong> (<code>Cmd/Ctrl+N</code>) tạo tab
+<code>Untitled-N.sql</code> chỉ nằm trong bộ nhớ. Lần lưu đầu tiên
+<code>saveDraftAs()</code> hỏi đường dẫn; tên không có <code>/</code> sẽ
+mặc định vào <code>models/</code>, thiếu <code>.sql</code> sẽ được
+thêm.</li>
+<li><code>ensureSavedSqlFile()</code> là cổng chung cho Preview /
+Compile / Explain / Run: draft → hỏi lưu; dirty → lưu; sau đó mới chạy.
+<strong>Không có lệnh nào chạy trên nội dung chưa nằm trên đĩa</strong>
+vì dbt đọc file, không đọc editor.</li>
+</ul>
+<h2 id="01-workspace-5-intellisense-metadata">5. IntelliSense
+metadata</h2>
+<p><code>useDbtIntellisense(projectId)</code> →
+<code>GET /dbt/intellisense/{project_id}</code>.</p>
+<p>Runner đọc <code>target/manifest.json</code> (+
+<code>target/catalog.json</code> nếu có) và trả về dạng đã chuẩn hoá:
+danh sách model, source, cột và kiểu cột.</p>
+<table>
+<thead>
+<tr>
+<th>Trạng thái trả về</th>
+<th>Ý nghĩa</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>missing_manifest</code></td>
+<td>Chưa chạy <code>dbt parse</code>/<code>compile</code> lần nào — gợi
+ý sẽ nghèo</td>
+</tr>
+<tr>
+<td><code>parse_error</code></td>
+<td><code>manifest.json</code> hỏng</td>
+</tr>
+<tr>
+<td>(dữ liệu)</td>
+<td>Bình thường; cột chỉ đầy đủ khi đã có <code>catalog.json</code>
+(<code>dbt docs generate</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Refresh được hẹn giờ (debounce 500ms) sau mỗi lần lưu file
+<code>.sql/.yml/.md</code>, và chạy ngay sau khi một lệnh
+<code>parse | compile | docs | build | run</code> kết thúc thành
+công.</p>
+<h2 id="01-workspace-6-terminal-panel">6. Terminal panel</h2>
+<p><code>transforms/TerminalPanel/index.tsx</code>, cao mặc định 250px,
+kéo được.</p>
+<table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Component</th>
+<th>Nội dung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Logs</strong></td>
+<td><code>TerminalOutput.tsx</code></td>
+<td>stdout của dbt (stream), có ô nhập lệnh</td>
+</tr>
+<tr>
+<td><strong>Results</strong></td>
+<td><code>QueryResultsTable.tsx</code> /
+<code>QueryPlanView.tsx</code></td>
+<td>Hai view: <code>results</code> (bảng preview) và <code>plan</code>
+(query plan)</td>
+</tr>
+<tr>
+<td><strong>Compiled</strong></td>
+<td><code>CompiledSQLView.tsx</code></td>
+<td>SQL sau khi render Jinja</td>
+</tr>
+<tr>
+<td><strong>Lineage</strong></td>
+<td><code>LineageView.tsx</code></td>
+<td>Đồ thị lineage bảng + lineage cột</td>
+</tr>
+</tbody>
+</table>
+<p>Nút <code>Clear</code> chỉ xoá đúng tab đang xem
+(<code>handleClearTerminalTab</code>).</p>
+<h3 id="01-workspace-ô-nhập-lệnh">Ô nhập lệnh</h3>
+<p><code>handleTerminalSubmit</code> chỉ nhận đúng 4 dạng —
+<strong>không phải shell thật</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Nhập</th>
+<th>Hành vi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dbt &lt;lệnh&gt;</code></td>
+<td>Chạy qua đúng đường ống của nút Run (kèm target + extra args)</td>
+</tr>
+<tr>
+<td><code>git &lt;lệnh&gt;</code></td>
+<td>Gọi <code>POST /git/exec</code>; <code>push</code>/<code>pull</code>
+mở dialog credential trước</td>
+</tr>
+<tr>
+<td><code>clear</code></td>
+<td>Xoá log</td>
+</tr>
+<tr>
+<td><code>help</code></td>
+<td>In danh sách trên</td>
+</tr>
+</tbody>
+</table>
+<p>Mọi thứ khác trả <code>Unknown</code>.</p>
+<h2 id="01-workspace-7-phím-tắt">7. Phím tắt</h2>
+<table>
+<thead>
+<tr>
+<th>Phím</th>
+<th>Hành động</th>
+<th>Nơi xử lý</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Cmd/Ctrl+S</code></td>
+<td>Lưu file đang mở</td>
+<td>window + Monaco</td>
+</tr>
+<tr>
+<td><code>Cmd/Ctrl+Enter</code></td>
+<td>Preview model (<code>dbt show</code>)</td>
+<td>window + Monaco</td>
+</tr>
+<tr>
+<td><code>Cmd/Ctrl+Shift+Enter</code></td>
+<td>Run model hiện tại</td>
+<td>window + Monaco</td>
+</tr>
+<tr>
+<td><code>Cmd/Ctrl+N</code></td>
+<td>Tab SQL nháp mới</td>
+<td>window + Monaco</td>
+</tr>
+<tr>
+<td><code>Cmd/Ctrl+W</code></td>
+<td>Đóng tab</td>
+<td>window + Monaco</td>
+</tr>
+<tr>
+<td><code>Shift+Alt+F</code></td>
+<td>Format file</td>
+<td>Monaco</td>
+</tr>
+<tr>
+<td><code>F2</code></td>
+<td>Đổi tên node đang chọn</td>
+<td>File Explorer</td>
+</tr>
+<tr>
+<td><code>Delete</code></td>
+<td>Xoá selection</td>
+<td>File Explorer</td>
+</tr>
+</tbody>
+</table>
+<p>Handler cấp window bỏ qua sự kiện phát ra từ
+<code>INPUT</code>/<code>TEXTAREA</code> và từ trong
+<code>.monaco-editor</code> (Monaco tự đăng ký lệnh riêng) để không kích
+hoạt hai lần.</p>
+<h2 id="01-workspace-8-dbt-assistant-tuỳ-chọn">8. dbt assistant (tuỳ
+chọn)</h2>
+<p><code>develop/agent/AgentPanel.tsx</code>, mở bằng nút robot ở
+RightPanel.</p>
+<ul>
+<li>Chỉ xuất hiện khi deployment có assistant:
+<code>useAgentAvailability()</code> hỏi <code>/api/agent</code>;
+<code>AGENT_URL</code> rỗng → proxy trả 503 → <strong>nút bị ẩn hoàn
+toàn</strong> (lối vào luôn hỏng còn tệ hơn không có lối vào).</li>
+<li><code>useAgentStream(projectId)</code> giữ một phiên harness cho mỗi
+project qua SSE, kèm lịch sử hội thoại, todo list và usage.</li>
+<li>Assistant sửa file qua fs tool của harness, nhưng <strong>chạy dbt
+chỉ qua MCP server <code>dbt</code> → dbt-runner</strong> — cùng khoá,
+cùng warm worker, cùng ngân sách bộ nhớ, cùng History. Nó không có
+<code>DATABASE_URL</code> và không shell ra dbt.</li>
+<li>Model provider là cấu hình theo từng người dùng trong Settings; khoá
+không bao giờ về trình duyệt. Đổi provider → phiên được khởi động lại
+(<code>ModelConfig.fingerprint</code>).</li>
+</ul>
+<p>Chi tiết nằm ở <code>dsh-agent/README.md</code>.</p>
+<h2 id="01-workspace-9-lưu-phiên-làm-việc">9. Lưu phiên làm việc</h2>
+<p><code>nextjs/src/lib/develop-session.ts</code>.</p>
+<ul>
+<li><strong><code>sessionStorage</code></strong>, khoá
+<code>dbt-craft:develop-session:{userId}:{projectId}</code> — lưu gần
+như toàn bộ state UI: tab đang mở và nội dung, file đang chọn, log
+terminal, kết quả query, compiled SQL, lineage, thư mục đã mở, kích
+thước sidebar/terminal.</li>
+<li><strong><code>localStorage</code></strong>, ba khoá riêng vì cần
+sống qua nhiều phiên:
+<code>dbt-command-args:{userId}:{projectId}</code>,
+<code>dbt-full-refresh:…</code>, <code>dbt-target:…</code>.</li>
+</ul>
+<p>Khôi phục chỉ chạy <strong>sau khi có <code>userId</code></strong> từ
+NextAuth (effect phụ thuộc <code>[projectId, userId]</code>), nên state
+của người dùng này không rò sang người dùng khác trên cùng trình duyệt.
+<code>clearLegacyBrowserStorage()</code> dọn các khoá của phiên bản cũ
+(không có <code>userId</code>, và <code>git_credentials</code> từng nằm
+trong localStorage).</p>
+<p>Khi storage đầy hoặc bị chặn, <code>saveDevelopSession</code> nuốt
+lỗi — IDE vẫn chạy, chỉ mất khả năng khôi phục.</p>
+</section><section class="doc" id="doc-02" data-num="02"><header class="doc-head"><p class="eyebrow">Develop · phần 02</p><h1>Chạy dbt</h1><p class="doc-blurb">SSE, ghép câu lệnh, chống chạy trùng, preview/compile/explain</p></header><blockquote>
+<p>Tham chiếu: <code>nextjs/src/lib/hooks/useDbtRunStream.ts</code>,
+<code>nextjs/src/lib/dbt-command-args.ts</code>,
+<code>dbt-runner/app/routers/{sse,dbt}.py</code>,
+<code>dbt-runner/app/services/{dbt_service,dbt_worker,command}.py</code>.</p>
+</blockquote>
+<h2 id="02-chay-dbt-1-hai-đường-chạy-lệnh">1. Hai đường chạy lệnh</h2>
+<table>
+<thead>
+<tr>
+<th>Đường</th>
+<th>Endpoint</th>
+<th>Dùng khi</th>
+<th>Log</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SSE (mặc định)</strong></td>
+<td><code>POST /sse/dbt/{project_id}</code></td>
+<td>Mọi lệnh từ menu dbt, nút Run, ô terminal</td>
+<td>Stream từng dòng</td>
+</tr>
+<tr>
+<td>HTTP đồng bộ</td>
+<td><code>POST /dbt/command</code></td>
+<td>Fallback khi SSE không mở được; <code>dbt parse</code></td>
+<td>Trả một lần khi xong</td>
+</tr>
+</tbody>
+</table>
+<p><code>handleRunDbt()</code> luôn thử SSE trước; thất bại thì in
+<code>[WARN] Log stream unavailable, falling back to the HTTP API...</code>
+rồi chạy đường HTTP.</p>
+<h3 id="02-chay-dbt-vòng-đời-một-lệnh-sse">Vòng đời một lệnh SSE</h3>
+<pre><code>handleRunDbt(command)
+  ├─ claimCommandSlot()                     ← chặn lệnh thứ hai (mục 4)
+  ├─ buildDbtCommandWithArgs(...)           ← ghép extra args + --target
+  ├─ dbtRunStream.sendCommand(cmd, ...)
+  │     POST /sse/dbt/{id}  body {command, selector, flags, environment_variables}
+  │        runner: verify JWT → verify ownership → get_or_sync(project)
+  │                → shlex.split → [&quot;dbt&quot;, ...] → strip --profiles-dir của client
+  │                → gắn --profiles-dir &lt;project_path&gt;
+  │                → _regenerate_profiles_from_db()   ← sinh lại profiles.yml
+  │                → _build_dbt_environment()         ← biến môi trường
+  │                → subprocess dbt, đọc stdout từng dòng
+  └─ nhận event: started → output* → completed | error</code></pre>
+<p>Sự kiện SSE (<code>DbtRunEvent</code>):</p>
+<pre class="ts"><code>{ type: &#39;started&#39;,   command: string }
+{ type: &#39;output&#39;,    line: string }
+{ type: &#39;completed&#39;, returncode: number }
+{ type: &#39;error&#39;,     error: string }</code></pre>
+<h3 id="02-chay-dbt-stream-sống-ngoài-component">Stream sống ngoài
+component</h3>
+<p><code>activeStreams: Map&lt;projectId, ActiveStream&gt;</code> là
+<strong>module-level</strong>, không phải state React. Hệ quả có chủ
+đích:</p>
+<ul>
+<li>Rời khỏi <code>/develop/[projectId]</code> <strong>không
+huỷ</strong> process dbt đang chạy.</li>
+<li>Message nhận được khi IDE không mount được xếp vào
+<code>backgroundMessages</code> (trần 5.000 dòng) và phát lại khi quay
+lại.</li>
+<li><code>sendCommand</code> <strong>abort stream cũ của cùng
+project</strong> trước khi mở stream mới.</li>
+</ul>
+<h2 id="02-chay-dbt-2-ghép-câu-lệnh">2. Ghép câu lệnh</h2>
+<p><code>nextjs/src/lib/dbt-command-args.ts</code> — một chỗ duy nhất,
+tất cả lối vào đều đi qua đây.</p>
+<pre class="ts"><code>buildDbtCommandWithArgs(command, extraArgs, fullRefresh, target)</code></pre>
+<p>Quy tắc:</p>
+<ol type="1">
+<li><code>--full-refresh</code> chỉ thêm cho
+<code>build | compile | run | show</code>, và chỉ khi chưa có sẵn.</li>
+<li>Extra args cũng chỉ áp cho 4 lệnh trên
+(<code>COMMANDS_WITH_EXTRA_ARGS</code>).</li>
+<li><code>--target &lt;name&gt;</code> được <strong>append ở đúng một
+chỗ này</strong>. Tên phải khớp <code>/^[a-z][a-z0-9_]{0,29}$/</code>
+(cùng shape với <code>TARGET_NAME_RE</code> phía runner); sai shape thì
+bị bỏ chứ không gửi đi. Nếu câu lệnh đã có
+<code>--target</code>/<code>-t</code> thì không thêm nữa.</li>
+</ol>
+<blockquote>
+<p>Vì sao gom một chỗ: mỗi lối vào tự append sẽ để sót một đường nào đó
+chạy trên <code>dev</code> trong im lặng. Cả dòng echo trong terminal
+cũng đi qua builder này, nên dòng hiện trên màn hình đúng bằng lệnh thực
+chạy.</p>
+</blockquote>
+<p>Extra args và <code>--full-refresh</code> được đặt trong dialog "dbt
+command args" (<code>transforms/Dialogs/index.tsx</code>), lưu trong
+<code>localStorage</code> theo <code>{userId}:{projectId}</code>.</p>
+<h2 id="02-chay-dbt-3-menu-lệnh-rightpanel">3. Menu lệnh
+(RightPanel)</h2>
+<p><strong>Current Model</strong> — <code>getModelName()</code> lấy tên
+file đang mở, bỏ đuôi:</p>
+<table>
+<thead>
+<tr>
+<th>Mục</th>
+<th>Lệnh</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Run</td>
+<td><code>run --select &lt;model&gt;</code></td>
+</tr>
+<tr>
+<td>Run + Upstream</td>
+<td><code>run --select +&lt;model&gt;</code></td>
+</tr>
+<tr>
+<td>Run + Downstream</td>
+<td><code>run --select &lt;model&gt;+</code></td>
+</tr>
+<tr>
+<td>Test</td>
+<td><code>test --select &lt;model&gt;</code></td>
+</tr>
+<tr>
+<td>Preview (100 rows)</td>
+<td><code>show --select &lt;model&gt; --limit 100</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Project</strong>: <code>run</code>, <code>build</code>,
+<code>test</code>, <code>debug</code>, <code>source freshness</code>,
+<code>deps</code>, <code>seed</code>, <code>docs generate</code>, và lối
+tắt tới Danger zone.</p>
+<h2 id="02-chay-dbt-4-chống-chạy-trùng">4. Chống chạy trùng</h2>
+<p>Ba lớp, từ trình duyệt vào máy chủ:</p>
+<ol type="1">
+<li><strong><code>commandInFlightRef</code></strong>
+(<code>DevelopLayout</code>) — một <code>useRef</code>, không phải
+state, vì state trễ một render còn <code>Cmd+Enter</code> giữ phím thì
+bắn liên tục. <code>claimCommandSlot()</code> trả <code>false</code> và
+in thông báo thay vì xếp hàng chồng job.</li>
+<li><strong>Khoá per-project</strong> —
+<code>AsyncFileLock.lock(project_id, "dbt_run", timeout=30)</code> trong
+<code>DbtService.run_command</code>. DuckDB là single-writer.</li>
+<li><strong>Semaphore toàn cục</strong> —
+<code>global_run_semaphore()</code>; đầy thì API trả
+<strong>429</strong>. Số slot = <code>MAX_CONCURRENT_DBT_RUNS</code>;
+console query dùng semaphore riêng.</li>
+</ol>
+<p>Thêm: <code>run_command</code> <strong>retry tối đa 3 lần</strong>
+(giãn 2s) khi stderr/stdout chứa <code>Conflicting lock</code> — đây là
+lỗi khoá DuckDB, không phải lỗi model.</p>
+<p><strong>Huỷ lệnh</strong>: nút Stop →
+<code>CommandService.cancel(project_id)</code>; process được
+<code>terminate()</code>, sau 5s không thoát thì <code>kill()</code>.
+Lệnh bị huỷ trả <code>returncode = -1</code>.</p>
+<h3 id="02-chay-dbt-warm-worker">Warm worker</h3>
+<p><code>services/dbt_worker.py</code> giữ sẵn tiến trình dbt "ấm" cho
+mỗi project để bỏ chi phí khởi động. Pool được thu hồi <strong>idle
+trước, rồi LRU</strong>, không bao giờ cắt ngang một job đang chạy. Vì
+worker giữ file <code>.duckdb</code>, mọi thao tác cần ghi đè profile
+phải <code>release_project()</code> trước.</p>
+<h2 id="02-chay-dbt-5-preview--compile--explain">5. Preview / Compile /
+Explain</h2>
+<p>Ba lệnh này <strong>không</strong> đi SSE — chúng gọi HTTP và trả kết
+quả có cấu trúc.</p>
+<h3 id="02-chay-dbt-preview--post-dbtpreview">Preview —
+<code>POST /dbt/preview</code></h3>
+<p><code>handlePreviewModel</code> → <code>ensureSavedSqlFile()</code> →
+<code>dbtApi.preview(projectId, path, 100, extraArgs, env, target)</code>.</p>
+<p>Runner chạy <code>dbt show --select &lt;model&gt; --limit N</code>,
+parse bảng stdout thành
+<code>{ data, columns, column_types, row_count, execution_time }</code>.
+Kiểu cột lấy thêm từ catalog khi có. Hiển thị ở tab <strong>Results →
+results</strong>.</p>
+<h3 id="02-chay-dbt-compile--post-dbtcompile">Compile —
+<code>POST /dbt/compile</code></h3>
+<p>Body nhận <code>model_path</code> (không phải tên model). Trả
+<code>compiled_sql</code> — Jinja đã render. Hiển thị ở tab
+<strong>Compiled</strong>. Thành công thì refresh IntelliSense.</p>
+<h3 id="02-chay-dbt-explain--post-dbtexplain">Explain —
+<code>POST /dbt/explain</code></h3>
+<p><code>DbtService.explain_model</code> chạy hai bước:</p>
+<ol type="1">
+<li>Compile model (dùng lại <code>compile_model</code>), lấy
+<code>compiled_sql</code>.</li>
+<li>Chạy <code>EXPLAIN</code> <strong>ước lượng</strong> qua
+<code>dbt show --inline</code> với SQL đã compile. Dremio có nhánh riêng
+qua REST (<code>_try_dremio_rest_explain</code>).</li>
+</ol>
+<p>Trả
+<code>{ adapter, model, mode: "Estimated", plan, signals, compiled_sql, execution_time }</code>.
+<code>signals</code> là các cảnh báo rút từ plan
+(<code>_detect_explain_signals</code>). Hiển thị ở tab <strong>Results →
+plan</strong>. <code>mode</code> luôn là <code>Estimated</code> — đây là
+plan trước khi chạy, không phải số đo thực tế.</p>
+<p>SQL inline được lọc bằng <code>_is_allowed_inline_sql()</code> trước
+khi gửi.</p>
+<h2 id="02-chay-dbt-6-lineage--post-dbtlineage">6. Lineage —
+<code>POST /dbt/lineage</code></h2>
+<p><code>app/lineage.py</code>:</p>
+<ul>
+<li><strong>Lineage bảng</strong> đọc từ
+<code>target/manifest.json</code>: <code>depends_on</code> cho upstream,
+<code>child_map</code> cho downstream. Mỗi node mang
+<code>position: upstream | current | downstream</code>.</li>
+<li><strong>Lineage cột</strong> dùng <code>sqlglot.lineage</code> trên
+compiled SQL, đi tới lá để lấy cột nguồn. <code>sqlglot</code> là import
+có điều kiện (<code>SQLGLOT_AVAILABLE</code>) — thiếu thì chỉ mất phần
+cột.</li>
+</ul>
+<p>Cần <code>manifest.json</code>, tức là project phải
+<code>parse</code>/<code>compile</code> ít nhất một lần.</p>
+<h2 id="02-chay-dbt-7-docs">7. Docs</h2>
+<table>
+<thead>
+<tr>
+<th>Hành động</th>
+<th>Đường đi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generate Docs</td>
+<td><code>POST /dbt/docs/generate</code> →
+<code>dbt docs generate --profiles-dir &lt;path&gt;</code> (kèm
+<code>--target</code>)</td>
+</tr>
+<tr>
+<td>View Docs</td>
+<td>Generate xong → mở tab mới tới
+<code>/api/dbt-docs/view/{projectId}</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>docs generate</code> đọc catalog của warehouse, nên nó tài liệu
+hoá đúng target đang chọn. Runner còn có
+<code>docs/serve|stop|status|list</code> (cấp port động, kiểm tra
+<code>catalog.json</code> tồn tại) nhưng UI Develop dùng đường
+<code>view</code> tĩnh.</p>
+<h2 id="02-chay-dbt-8-biến-môi-trường-khi-chạy">8. Biến môi trường khi
+chạy</h2>
+<p><code>DbtService._build_dbt_environment</code> hợp nhất ba nguồn,
+<strong>sau đè trước</strong>:</p>
+<pre><code>sanitize_dbt_environment(request_environment)   ← client gửi (đã lọc tên)
+  ← dbt_environment_variables của user           ← giải mã từ DB
+  ← profile_env                                  ← secret do _regenerate_profiles sinh ra</code></pre>
+<p>Biến của profile luôn thắng, nên không ai ghi đè được credential của
+warehouse bằng một biến gửi từ trình duyệt. Xem <a
+href="#doc-03">03 — Cấu hình project</a>.</p>
+<h2 id="02-chay-dbt-9-lịch-sử-run">9. Lịch sử run</h2>
+<p>Mỗi lệnh (cả SSE lẫn HTTP) ghi một dòng <code>dbt_runs</code>:
+<code>_insert_run_start</code> khi bắt đầu,
+<code>_update_run_complete</code> khi xong — kèm logs, số model
+total/success/error (đọc từ <code>target/run_results.json</code>, so
+<code>mtime</code> để chắc chắn là file mới), và
+<code>dbt_run_artifacts</code> cho từng node.</p>
+<p>Với SSE, việc ghi nằm trong <code>_SseRunPersistence</code> với cờ
+<code>persisted</code> — <strong>ghi đúng một lần</strong> dù stream kết
+thúc bình thường, lỗi, hay bị abort.</p>
+<p>API đọc: <code>GET /dbt/runs</code>, <code>/dbt/runs/{id}</code>,
+<code>/dbt/runs/{id}/logs</code>,
+<code>/dbt/runs/{id}/artifacts</code>.</p>
+</section><section class="doc" id="doc-03" data-num="03"><header class="doc-head"><p class="eyebrow">Develop · phần 03</p><h1>Cấu hình project</h1><p class="doc-blurb">Tạo project, settings, target, biến, profiles.yml</p></header><blockquote>
+<p>Tham chiếu:
+<code>nextjs/src/components-v2/develop/NewProjectForm.tsx</code>,
+<code>develop/settings/{ProjectSettingsDialog,TargetsPanel,EnvVarsPanel,LakehousePanel}.tsx</code>,
+<code>dbt-runner/app/services/dbt_service.py</code>
+(<code>_regenerate_profiles_from_db</code>,
+<code>_render_target</code>),
+<code>nextjs/prisma/schema.prisma</code>.</p>
+</blockquote>
+<h2 id="03-cau-hinh-project-1-tạo-project--developnew">1. Tạo project —
+<code>/develop/new</code></h2>
+<p>Hai kiểu, chọn ở <code>project_type</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Kiểu</th>
+<th>Sau khi tạo row DB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dbt_init</code></td>
+<td><code>POST /dbt/init</code> → scaffold một dbt project mới</td>
+</tr>
+<tr>
+<td><code>git_clone</code></td>
+<td><code>POST /git/clone</code> → clone repo</td>
+</tr>
+</tbody>
+</table>
+<p>Luồng của <code>handleSubmit</code> (thứ tự quan trọng):</p>
+<pre><code>createProject(...)                       → row dbt_projects, syncStatus &quot;pending&quot;
+updateProject(id, {syncStatus:&quot;syncing&quot;})
+  ├─ dbt_init  → dbtApi.init(id, name)
+  └─ git_clone → gitApi.clone(id, url, branch, username, token)
+updateProject(id, {syncStatus: &quot;synced&quot; | &quot;error&quot;})
+router.push(`/develop/${id}`)</code></pre>
+<p>Row project <strong>được tạo trước</strong>, nên clone/init thất bại
+vẫn để lại project mở được (trạng thái <code>error</code>) thay vì mất
+trắng thao tác.</p>
+<p>Với <code>git_clone</code>, form <strong>bắt buộc</strong> username +
+Personal Access Token — không có đường clone ẩn danh trong UI.
+<code>getErrorMessage()</code> dịch các lỗi git thô
+(<code>could not read Username</code>,
+<code>Authentication failed</code>,
+<code>Remote branch … not found</code>) thành hướng dẫn cụ thể.</p>
+<p>Trường khác: name, description, connection (warehouse), và ba thư mục
+layer (<code>raw_layer_dir</code>, <code>staging_dir</code>,
+<code>business_dir</code>).</p>
+<h2 id="03-cau-hinh-project-2-project-settings">2. Project settings</h2>
+<p>Một dialog duy nhất: <code>settings/ProjectSettingsDialog.tsx</code>.
+Mọi cấu hình phạm vi project đều thuộc về đây — <strong>không tạo dialog
+mới</strong>.</p>
+<p>Mở bằng: dropdown tên project → <em>Project settings</em>, nút
+Database ở RightPanel, hoặc query string
+<code>?settings=&lt;tab&gt;</code> (ví dụ
+<code>/develop/{id}?settings=lakehouse</code> — luồng ingest gửi người
+dùng thẳng tới đây khi project chưa gắn lakehouse).</p>
+<table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Nội dung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>general</code></td>
+<td>Đổi tên, thông tin chỉ đọc: branch, remote, worktree, project ID;
+chọn connection</td>
+</tr>
+<tr>
+<td><code>environments</code></td>
+<td><code>TargetsPanel</code> — các target phụ</td>
+</tr>
+<tr>
+<td><code>lakehouse</code></td>
+<td><code>LakehousePanel</code> — gắn DuckLake,
+<code>+database: lake</code></td>
+</tr>
+<tr>
+<td><code>variables</code></td>
+<td><code>EnvVarsPanel</code> — biến môi trường</td>
+</tr>
+<tr>
+<td><code>danger</code></td>
+<td>Xoá mềm / khôi phục / xoá vĩnh viễn</td>
+</tr>
+</tbody>
+</table>
+<h2 id="03-cau-hinh-project-3-target-environments">3. Target
+(Environments)</h2>
+<p><strong>Quy tắc nền:</strong> <code>connectionId</code> của project
+<strong>luôn là target <code>dev</code></strong>. Mọi target khác là một
+dòng <code>project_targets</code>.</p>
+<p><code>TargetsPanel</code>:</p>
+<ul>
+<li>Thêm target = <code>{ name, connectionId }</code> →
+<code>POST /api/targets</code>.</li>
+<li>Tên phải khớp <code>TARGET_NAME_RE</code> (chữ thường, số, gạch
+dưới, bắt đầu bằng chữ, ≤30 ký tự).</li>
+<li>Nút hình khiên mỗi dòng gọi
+<code>GET /dbt/check-target/{project_id}?target=&lt;name&gt;</code> —
+kiểm tra <strong>đúng target đó</strong>, hiện ✓ / ✗ kèm message.</li>
+<li>Xoá target đang được chọn sẽ tự đưa lựa chọn về <code>dev</code>,
+nếu không mọi lệnh sẽ mang <code>--target</code> mà dbt từ chối.</li>
+</ul>
+<p><strong>Chỉ <code>connections</code> mới làm được target.</strong>
+Panel lọc bỏ:</p>
+<ul>
+<li>lakehouse (<code>ducklake</code>) — nó là catalog để DuckDB
+<em>attach</em>, không phải warehouse;</li>
+<li><code>dremio_sources</code> (bảng cũ) — không phải dòng
+<code>connections</code>.</li>
+</ul>
+<p>Cho chọn hai thứ đó từng tạo ra target biến mất khỏi
+<code>profiles.yml</code> trong im lặng, để <code>dbt --target x</code>
+báo lỗi về một target mà UI vẫn liệt kê.</p>
+<p>Target đang chọn lưu ở <code>localStorage</code>
+<code>dbt-target:{userId}:{projectId}</code>. Khi khác <code>dev</code>,
+TopBar hiện một chip cảnh báo — không phải control, chỉ để nhìn thấy mà
+không cần mở gì.</p>
+<h2 id="03-cau-hinh-project-4-variables-biến-môi-trường">4. Variables
+(biến môi trường)</h2>
+<p>Bảng <code>dbt_environment_variables</code>, unique theo
+<code>(projectId, owner, name)</code> — <strong>biến là của từng người
+dùng trên từng project</strong>, không dùng chung.</p>
+<ul>
+<li><code>type</code>: <code>text</code> | <code>password</code>.</li>
+<li><code>valueEncrypted</code> luôn được mã hoá; <strong>giá trị không
+bao giờ trả về trình duyệt</strong>. API chỉ trả
+<code>hasValue: boolean</code>.</li>
+<li>Khi lưu, ô để trống + <code>hasValue = true</code> → gửi
+<code>keepExisting: true</code>, giữ nguyên giá trị cũ.</li>
+<li><code>sanitize_dbt_environment()</code> phía runner lọc tên biến
+trước khi đưa vào môi trường process.</li>
+</ul>
+<p>API: <code>GET|PUT /api/projects/{projectId}/env-vars</code> (PUT là
+replace toàn bộ danh sách).</p>
+<h2 id="03-cau-hinh-project-5-sinh-profilesyml">5. Sinh
+<code>profiles.yml</code></h2>
+<p>Đây là cơ chế then chốt của Develop:
+<strong><code>profiles.yml</code> trên đĩa không phải nguồn sự
+thật.</strong>
+<code>DbtService._regenerate_profiles_from_db(session, project_id, project_path)</code>
+chạy <strong>trước mỗi lệnh dbt</strong>, cả đường SSE lẫn HTTP.</p>
+<pre><code>đọc dbt_projects → connection_id, dremio_source_id
+đọc project_targets → các target phụ
+đọc dbt_project.yml → profile_name  (khoá `profile`, fallback `name`)
+_resolve_lakehouse() một lần cho cả project
+cho từng target:
+    _render_target() → outputs[target_name] + biến env chứa secret
+ghi profiles.yml  { &lt;profile_name&gt;: { target: dev, outputs: {...} } }
+trả về dict env (secret) cho tiến trình dbt</code></pre>
+<p>Các quyết định đáng nhớ:</p>
+<table>
+<thead>
+<tr>
+<th>Tình huống</th>
+<th>Hành vi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Project <strong>không có</strong> connection nào và không có
+target</td>
+<td>Không đụng <code>profiles.yml</code> — người dùng tự quản lý. Chỉ
+sửa target DuckDB in-memory hỏng của bản cũ, và attach lakehouse nếu
+có</td>
+</tr>
+<tr>
+<td>Có connection nhưng <strong>render thất bại</strong></td>
+<td><strong>Raise <code>DbtOperationError</code></strong>, không
+fallback về file trên đĩa — profile cũ sẽ trỏ dbt vào sai warehouse
+trong im lặng</td>
+</tr>
+<tr>
+<td>Một target render lỗi, các target khác OK</td>
+<td>Target lỗi được ghi vào <code>skipped</code> và báo cáo; các target
+còn lại vẫn được ghi. (Trước đây một target hỏng làm cả profile đóng
+băng)</td>
+</tr>
+<tr>
+<td>Không có <code>dbt_project.yml</code></td>
+<td>Trả <code>{}</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Mỗi target cần biến secret riêng</strong> —
+<code>DbtService.target_secret_env(target)</code> sinh tên biến khác
+nhau cho từng target, nếu không output render sau sẽ đè output
+trước.</p>
+<p>Lakehouse chỉ được attach cho <strong>target DuckDB</strong>; phần từ
+chối nằm <em>sau</em> vòng lặp target, nếu không một target Dremio sẽ
+làm hỏng cả profile.</p>
+<p>Endpoint chẩn đoán:
+<code>GET /dbt/check-connection/{project_id}</code> trả về 3 điều kiện
+(có connection / tên profile khớp / có session) kèm preview
+<code>profiles.yml</code> sinh ra và bản đang nằm trên đĩa — password đã
+redact (<code>_redact_profiles_yml</code>). Ép sinh lại:
+<code>POST /dbt/regenerate-profiles/{project_id}</code>.</p>
+<h2 id="03-cau-hinh-project-6-lakehouse">6. Lakehouse</h2>
+<p><code>LakehousePanel</code> gắn một dòng <code>connections</code>
+kiểu <code>ducklake</code> vào
+<code>dbt_projects.lakehouseConnectionId</code> — tách khỏi
+<code>connectionId</code> vì lake nằm <em>cạnh</em> warehouse, và một
+lake có thể dùng chung cho nhiều project.</p>
+<p><code>+database: lake</code> trong <code>dbt_project.yml</code> được
+sửa theo <strong>từng dòng</strong>, không round-trip YAML:
+<code>dbt_project.yml</code> đầy comment mà một vòng parse/serialize sẽ
+xoá sạch.</p>
+<p>Chi tiết lakehouse nằm ngoài phạm vi tài liệu Develop — xem
+<code>CLAUDE.md</code> mục <em>Lakehouse</em>.</p>
+<h2 id="03-cau-hinh-project-7-danger-zone">7. Danger zone</h2>
+<table>
+<thead>
+<tr>
+<th>Hành động</th>
+<th>Frontend</th>
+<th>Runner</th>
+<th>Kết quả</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Xoá mềm</td>
+<td><code>softDeleteProject</code></td>
+<td><code>POST /project/delete {hard_delete:false}</code></td>
+<td><code>deleted_at</code> được set, file xoá khỏi workspace, còn khôi
+phục được</td>
+</tr>
+<tr>
+<td>Khôi phục</td>
+<td><code>restoreProject</code></td>
+<td><code>POST /project/restore</code></td>
+<td>Kéo lại file từ storage nếu có</td>
+</tr>
+<tr>
+<td>Xoá vĩnh viễn</td>
+<td><code>hardDeleteProject</code></td>
+<td><code>POST /project/delete {hard_delete:true}</code></td>
+<td>Xoá row + file, không hoàn tác</td>
+</tr>
+</tbody>
+</table>
+<p>Thứ tự luôn là <strong>xoá file trước, xoá row sau</strong>
+(<code>deleteProjectFiles()</code> rồi mới gọi API Prisma) — ngược lại
+sẽ để lại thư mục mồ côi mà không còn project ID nào trỏ tới.</p>
+<p>Project đã xoá mềm vẫn mở được trong IDE ở chế độ chỉ đọc; TopBar
+hiện badge <code>Deleted</code> và menu chỉ còn lối vào tab
+<code>danger</code>.</p>
+</section><section class="doc" id="doc-04" data-num="04"><header class="doc-head"><p class="eyebrow">Develop · phần 04</p><h1>Git</h1><p class="doc-blurb">Source control, credential, clone/pull/push</p></header><blockquote>
+<p>Tham chiếu:
+<code>nextjs/src/components-v2/develop/workspace/{SourceControlPanel,CommitHistory}.tsx</code>,
+<code>develop/git/GitCredentialDialog.tsx</code>,
+<code>dbt-runner/app/routers/git.py</code>,
+<code>dbt-runner/app/services/git_service.py</code>.</p>
+</blockquote>
+<h2 id="04-git-1-sidebar-tab-git--source-control">1. Sidebar tab
+<code>git</code> — Source Control</h2>
+<p><code>SourceControlPanel.tsx</code>. Nạp song song:
+<code>git status</code>, <code>git remote</code>,
+<code>git branch</code>, và ahead/behind qua
+<code>git rev-list --left-right --count HEAD...@{upstream}</code> (lỗi
+thì im lặng — branch có thể chưa có upstream).</p>
+<h3 id="04-git-đọc-trạng-thái-file">Đọc trạng thái file</h3>
+<p>Status porcelain hai ký tự được tách đúng chuẩn:</p>
+<table>
+<thead>
+<tr>
+<th>Vị trí</th>
+<th>Ý nghĩa</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ký tự 1 (X)</td>
+<td>đã stage — bất kỳ ký tự nào khác space</td>
+</tr>
+<tr>
+<td>ký tự 2 (Y)</td>
+<td>chưa stage</td>
+</tr>
+</tbody>
+</table>
+<p><code>??</code> = untracked, <code>!!</code> = ignored. Một file có
+thể xuất hiện <strong>ở cả hai nhóm</strong> khi có cả thay đổi đã stage
+lẫn chưa stage (ví dụ <code>MM</code>) — panel hiển thị đúng như vậy chứ
+không gộp.</p>
+<h3 id="04-git-thao-tác">Thao tác</h3>
+<table>
+<thead>
+<tr>
+<th>Nút</th>
+<th>Gọi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stage / Unstage một file</td>
+<td><code>POST /git/add</code> / <code>POST /git/reset</code> với
+<code>[path]</code></td>
+</tr>
+<tr>
+<td>Stage all / Unstage all</td>
+<td>cùng endpoint, không truyền path</td>
+</tr>
+<tr>
+<td><strong>Commit</strong></td>
+<td><code>POST /git/commit {message, stage_all: true}</code> — stage tất
+cả rồi commit trong một bước</td>
+</tr>
+<tr>
+<td>Discard một file</td>
+<td><code>POST /git/exec</code> →
+<code>checkout -- "&lt;path&gt;"</code></td>
+</tr>
+<tr>
+<td>Discard all</td>
+<td><code>checkout -- .</code> rồi <code>clean -fd</code></td>
+</tr>
+<tr>
+<td>Push / Pull / Sync</td>
+<td><code>POST /git/push</code> / <code>/git/pull</code>; Sync = pull
+rồi push</td>
+</tr>
+<tr>
+<td>Xem diff</td>
+<td><code>onOpenDiff(path)</code> → mở <code>DiffEditor</code> ở khu vực
+editor</td>
+</tr>
+</tbody>
+</table>
+<p>Commit là đường một bước có chủ đích: người dùng chính của UI này
+không phân biệt staging area. Ai cần stage riêng vẫn có nút từng
+file.</p>
+<h3 id="04-git-danh-tính-commit">Danh tính commit</h3>
+<p>Runner <strong>không nhận</strong> author từ client.
+<code>_get_commit_identity(claims)</code> lấy từ OIDC claims:
+<code>email</code> (bắt buộc — thiếu thì trả <strong>400</strong>) và
+<code>name</code> / <code>preferred_username</code> / fallback về
+email.</p>
+<h2 id="04-git-2-credential">2. Credential</h2>
+<p><code>GitCredentialDialog.tsx</code> + bảng
+<code>git_credentials</code>.</p>
+<p>Luồng <code>handlePush</code> / <code>handlePull</code>:</p>
+<pre><code>thử push/pull không kèm credential
+  └─ thất bại do auth → mở GitCredentialDialog kèm message lỗi
+        └─ nhập username + PAT → gọi lại endpoint kèm credential</code></pre>
+<p><code>_resolve_credentials()</code> phía runner:</p>
+<ol type="1">
+<li>Có <code>username</code> + <code>token</code> trong request → dùng
+luôn.</li>
+<li>Không có → tra <code>git_credentials</code> theo
+<code>(project_id, owner, remote_url)</code>.</li>
+<li>Vẫn không có → chạy trần, để git tự báo lỗi.</li>
+</ol>
+<p>Lưu trữ:</p>
+<ul>
+<li>Unique <code>(projectId, owner, remoteUrl)</code> —
+<strong>credential thuộc về từng người dùng</strong>, không dùng chung
+giữa các thành viên.</li>
+<li><code>tokenEncrypted</code> được mã hoá bằng
+<code>encrypt_secret()</code>.</li>
+<li><strong>Chỉ lưu cho remote <code>https://</code></strong>; ssh
+remote bị bỏ qua.</li>
+<li>Token được truyền cho git qua biến môi trường
+(<code>_get_http_auth_env</code>), không nằm trên dòng lệnh — argv là
+thứ mọi tiến trình trên máy đọc được.</li>
+</ul>
+<p>Frontend <strong>không</strong> còn giữ credential trong
+<code>localStorage</code>/<code>sessionStorage</code>;
+<code>clearLegacyBrowserStorage()</code> dọn các khoá
+<code>git_credentials</code> của bản cũ khi mở IDE.</p>
+<h2 id="04-git-3-sidebar-tab-history">3. Sidebar tab
+<code>history</code></h2>
+<p><code>CommitHistory.tsx</code> →
+<code>GET /git/log/{project_id}?limit=50</code>. Hiển thị hash ngắn, tác
+giả, thời gian, message.</p>
+<h2 id="04-git-4-gitexec-và-giới-hạn">4. <code>/git/exec</code> và giới
+hạn</h2>
+<p><code>POST /git/exec</code> chạy <code>git &lt;command&gt;</code>
+trong thư mục project, tách tham số bằng <code>shlex.split</code>.</p>
+<p>Chặn duy nhất, nhưng quan trọng:
+<code>_has_external_config_scope()</code> từ chối mọi
+<code>git config</code> mang <code>--global</code> /
+<code>--system</code> / <code>--file</code> / <code>-f</code> — nếu
+không, một lệnh gõ trong ô terminal sẽ sửa được config git của toàn máy
+chủ, ảnh hưởng mọi project.</p>
+<p>Trong ô terminal của Develop, <code>git push</code> và
+<code>git pull</code> <strong>không</strong> đi qua
+<code>/git/exec</code>: chúng mở dialog credential trước, vì
+<code>exec</code> không có đường nhập mật khẩu.</p>
+<h2 id="04-git-5-clone">5. Clone</h2>
+<p><code>POST /git/clone</code> — dùng ở <code>/develop/new</code> và
+khi khôi phục project.</p>
+<ul>
+<li><code>_ensure_full_history()</code> xử lý repo được clone nông trước
+đó.</li>
+<li>Sau clone thành công, credential được lưu vào
+<code>git_credentials</code> (nếu là https).</li>
+<li><code>git_project_subdirectory</code> cho phép dbt project nằm trong
+thư mục con của repo; TopBar hiển thị nó dưới nhãn <em>Worktree
+dir</em>, mặc định là "Repository root".</li>
+</ul>
+<h2 id="04-git-6-git-status-trong-phần-còn-lại-của-ide">6. Git status
+trong phần còn lại của IDE</h2>
+<p><code>loadGitStatus()</code> được gọi lại sau: lưu file, tạo/xoá/đổi
+tên/di chuyển file, mỗi sự kiện từ file watcher, và sau
+<code>checkout</code>/<code>reset</code> gõ trong terminal. Kết quả nuôi
+badge trên TopBar (<code>Clean</code> / <code>N changed</code>) và dấu
+chấm màu trên File Explorer.</p>
+</section><section class="doc" id="doc-05" data-num="05"><header class="doc-head"><p class="eyebrow">Develop · phần 05</p><h1>API reference</h1><p class="doc-blurb">Endpoint dbt-runner và route Next.js</p></header><blockquote>
+<p>Base URL runner: <code>getDbtRunnerUrl()</code>
+(<code>nextjs/src/lib/api/client.ts</code>). Mọi endpoint runner yêu cầu
+<code>Authorization: Bearer &lt;accessToken&gt;</code> và tự kiểm tra
+quyền sở hữu project (<code>_verify_project_ownership</code>). Client
+tương ứng:
+<code>nextjs/src/lib/api/{dbt,files,git,env-vars}.ts</code>.</p>
+</blockquote>
+<h2 id="05-api-1-chạy-lệnh--stream">1. Chạy lệnh &amp; stream</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Body / Query</th>
+<th>Trả về</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/sse/dbt/{project_id}</code></td>
+<td><code>{command, selector?, flags?, environment_variables?}</code></td>
+<td><code>text/event-stream</code>, mỗi dòng
+<code>data: {type,…}</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/sse/files/{project_id}</code></td>
+<td>—</td>
+<td><code>text/event-stream</code> sự kiện file</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/sse/dbt-runs/{run_id}/events</code></td>
+<td>—</td>
+<td>stream sự kiện của một run đã lưu</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/command</code></td>
+<td><code>DbtCommand</code></td>
+<td><code>{success, command, stdout, stderr, returncode, run_id}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/runs</code></td>
+<td><code>DbtCommand</code></td>
+<td><strong>202</strong> <code>{run_id, status, started_at}</code> (chạy
+nền)</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/runs/{run_id}/cancel</code></td>
+<td>—</td>
+<td><code>{success}</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>DbtCommand</code>:
+<code>{project_id, command, selector?, target?, flags?, environment_variables?}</code>.</p>
+<h3 id="05-api-sự-kiện-sse-của-ssedbtproject_id">Sự kiện SSE của
+<code>/sse/dbt/{project_id}</code></h3>
+<pre class="json"><code>{&quot;type&quot;:&quot;started&quot;,&quot;command&quot;:&quot;dbt run --select dim_customer --target dev&quot;}
+{&quot;type&quot;:&quot;output&quot;,&quot;line&quot;:&quot;12:01:02  1 of 1 OK created sql table model ...&quot;}
+{&quot;type&quot;:&quot;completed&quot;,&quot;returncode&quot;:0}
+{&quot;type&quot;:&quot;error&quot;,&quot;error&quot;:&quot;...&quot;}</code></pre>
+<h2 id="05-api-2-model-compile--preview--explain--lineage">2. Model:
+compile / preview / explain / lineage</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Body</th>
+<th>Trả về</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/dbt/compile</code></td>
+<td><code>{project_id, model_path, additional_args?, environment_variables?, target?}</code></td>
+<td><code>{success, compiled_sql, error?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/preview</code></td>
+<td><code>+ {limit: 1..1000 = 100}</code></td>
+<td><code>{success, data[], columns[], column_types, row_count, execution_time}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/explain</code></td>
+<td>như compile</td>
+<td><code>{success, adapter, model, mode:"Estimated", plan, signals[], compiled_sql, execution_time, stage?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/lineage</code></td>
+<td><code>{project_id, model_path}</code></td>
+<td><code>{success, table_lineage:{nodes[],edges[]}, column_lineage{}}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/query</code></td>
+<td><code>{project_id, sql, limit, target?, environment_variables?}</code></td>
+<td>Chạy một <code>SELECT</code> read-only qua
+<code>dbt show --inline</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/format</code></td>
+<td><code>{sql, dialect?}</code></td>
+<td><code>{formatted: bool, sql, reason?}</code> — sqlglot, <strong>từ
+chối</strong> thay vì đoán</td>
+</tr>
+</tbody>
+</table>
+<p>Chú ý: các endpoint này nhận <strong><code>model_path</code></strong>
+(đường dẫn file trong project), không phải tên model.</p>
+<h2 id="05-api-3-metadata--docs">3. Metadata &amp; docs</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/dbt/intellisense/{project_id}</code></td>
+<td>Chuẩn hoá <code>manifest.json</code> + <code>catalog.json</code>.
+<code>status</code>: bình thường / <code>missing_manifest</code> /
+<code>parse_error</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/docs/generate</code></td>
+<td><code>{project_id, select?, target?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/docs/serve</code></td>
+<td><code>{project_id, port?}</code> — cấp port động, yêu cầu có
+<code>catalog.json</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/docs/stop?project_id=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/dbt/docs/status?project_id=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/dbt/docs/list</code></td>
+<td>Mọi docs server đang chạy</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/dbt/docs/view/{project_id}</code></td>
+<td>HTML tĩnh; frontend proxy qua
+<code>/api/dbt-docs/view/{projectId}</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="05-api-4-profile--chẩn-đoán-kết-nối">4. Profile &amp; chẩn đoán
+kết nối</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/dbt/regenerate-profiles/{project_id}</code></td>
+<td>Ép sinh lại <code>profiles.yml</code> từ DB</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/dbt/check-connection/{project_id}</code></td>
+<td>3 điều kiện + preview <code>profiles.yml</code> (password đã
+redact)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/dbt/check-target/{project_id}?target=</code></td>
+<td>Kết nối thật tới warehouse của đúng target đó</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/dbt/init</code></td>
+<td><code>{project_id, project_name}</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="05-api-5-file">5. File</h2>
+<p>Tất cả nhận đường dẫn <strong>tương đối</strong> so với gốc project;
+runner kiểm tra bằng <code>ProjectService.validate_subpath()</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/files/{project_id}?path=</code></td>
+<td>Trả <strong>một cấp</strong> thư mục</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/files/{project_id}/search?query=</code></td>
+<td>Tìm toàn project</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/files/{project_id}/content?path=</code></td>
+<td>Đọc file</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/files/{project_id}/content</code></td>
+<td><code>{path, content}</code> — lưu (đường dùng bởi IDE)</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/files/{project_id}/content</code></td>
+<td>Ghi file</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/files/{project_id}/create</code></td>
+<td><code>{path, file_type: file|directory, content}</code></td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/files/{project_id}?path=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/files/{project_id}/rename?old_path=&amp;new_path=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/files/{project_id}/move?source_path=&amp;dest_path=</code></td>
+<td>Từ chối move một thư mục vào chính nó</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/files/{project_id}/copy?source_path=&amp;dest_path=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/files/{project_id}/duplicate?path=</code></td>
+<td></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/files/{project_id}/status</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>File mới được tạo với nội dung mặc định theo đuôi
+(<code>_get_default_content</code>), ví dụ <code>.py</code> ra sẵn khung
+<code>def model(dbt, session)</code>.</p>
+<h2 id="05-api-6-git">6. Git</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/git/clone</code></td>
+<td><code>{project_id, git_url, branch, username?, token?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/pull</code> | <code>/git/push</code></td>
+<td><code>{project_id, username?, token?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/commit</code></td>
+<td><code>{project_id, message, stage_all?}</code> — author lấy từ OIDC
+claims</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/add</code> | <code>/git/reset</code></td>
+<td><code>{project_id, paths?}</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/exec</code></td>
+<td><code>{project_id, command}</code> — chặn
+<code>config --global/--system/--file</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/checkout</code> | <code>/git/init</code> |
+<code>/git/remote/add</code> | <code>/git/config</code></td>
+<td></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/git/status/{id}</code> | <code>/log/{id}</code> |
+<code>/branches/{id}</code> | <code>/remotes/{id}</code> |
+<code>/config/{id}</code> | <code>/diff/{id}</code></td>
+<td></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/git/fetch/{project_id}</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="05-api-7-project">7. Project</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/project/delete</code></td>
+<td><code>{project_id, hard_delete}</code> — xoá file</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/project/restore</code></td>
+<td>Kéo lại từ storage</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/project/sync/{project_id}</code></td>
+<td>Đồng bộ file từ storage về workspace</td>
+</tr>
+</tbody>
+</table>
+<h2 id="05-api-8-route-nextjs-dùng-bởi-develop">8. Route Next.js dùng
+bởi Develop</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET|POST /api/projects</code></td>
+<td>Danh sách / tạo project (Prisma)</td>
+</tr>
+<tr>
+<td><code>GET|POST|PATCH|DELETE /api/targets?projectId=</code></td>
+<td><code>project_targets</code></td>
+</tr>
+<tr>
+<td><code>GET|PUT /api/projects/{projectId}/env-vars</code></td>
+<td>PUT là replace toàn bộ; giá trị không bao giờ trả về</td>
+</tr>
+<tr>
+<td><code>GET /api/connections</code></td>
+<td>Danh sách connection để chọn warehouse/target</td>
+</tr>
+<tr>
+<td><code>GET /api/dbt-docs/view/{projectId}</code></td>
+<td>Proxy docs HTML</td>
+</tr>
+<tr>
+<td><code>GET /api/dbt-docs/static/{projectId}/{...filePath}</code></td>
+<td>Asset của docs</td>
+</tr>
+<tr>
+<td><code>POST /api/agent/...</code></td>
+<td>Proxy tới dsh-agent (chỉ khi <code>AGENT_URL</code> được đặt)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="05-api-9-mã-lỗi-thường-gặp">9. Mã lỗi thường gặp</h2>
+<table>
+<thead>
+<tr>
+<th>Mã</th>
+<th>Ý nghĩa trong Develop</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>401</td>
+<td>JWT thiếu/hết hạn</td>
+</tr>
+<tr>
+<td>403 / 404</td>
+<td>Project không thuộc về user
+(<code>_verify_project_ownership</code>)</td>
+</tr>
+<tr>
+<td>429</td>
+<td>Hết slot <code>global_run_semaphore</code> — có quá nhiều dbt run
+đồng thời</td>
+</tr>
+<tr>
+<td>400</td>
+<td>Target sai shape, thiếu email trong claims khi commit, body không
+hợp lệ</td>
+</tr>
+<tr>
+<td>500</td>
+<td><code>DbtOperationError</code> — thường là không render được
+<code>profiles.yml</code></td>
+</tr>
+</tbody>
+</table>
+</section><section class="doc" id="doc-06" data-num="06"><header class="doc-head"><p class="eyebrow">Develop · phần 06</p><h1>Xử lý sự cố</h1><p class="doc-blurb">Triệu chứng, nguyên nhân gốc, cách xử lý</p></header><blockquote>
+<p>Mỗi mục: triệu chứng → nguyên nhân gốc → cách xử lý. Vị trí code kèm
+theo để tra tiếp.</p>
+</blockquote>
+<h2 id="06-su-co-chạy-lệnh">Chạy lệnh</h2>
+<p><strong>"A dbt command is already running for this project."</strong>
+<code>commandInFlightRef</code> đang giữ slot. Lệnh trước chưa kết thúc
+(hoặc kết thúc mà không phát <code>completed</code>/<code>error</code>).
+Bấm <strong>Stop</strong> rồi chạy lại. Ref chỉ được nhả trong
+<code>onCommandComplete</code> / <code>onError</code> — nếu stream bị
+cắt giữa chừng, Stop là đường thoát. <code>DevelopLayout.tsx</code> →
+<code>claimCommandSlot</code>.</p>
+<p><strong>HTTP 429 khi Run.</strong> <code>global_run_semaphore</code>
+đầy: số dbt run đồng thời trên toàn deployment đã chạm
+<code>MAX_CONCURRENT_DBT_RUNS</code>. Chờ, hoặc tăng biến môi trường —
+nhưng nhớ rằng tăng concurrency sẽ <strong>thu nhỏ ngân sách bộ nhớ của
+từng run</strong> (<code>concurrent_engine_slots()</code> trong
+<code>app/core/duckdb_resources.py</code>).</p>
+<p><strong><code>Conflicting lock</code> / "Could not set lock on
+file".</strong> DuckDB là single-writer và warm worker đang giữ file
+<code>.duckdb</code>. <code>run_command</code> tự retry 3 lần cách nhau
+2s. Nếu vẫn hỏng: một tiến trình khác (docs server, query console) đang
+mở cùng file — <code>release_project()</code> phải chạy trước khi ghi
+đè.</p>
+<p><strong>Lệnh chạy nhưng vào sai warehouse.</strong> Kiểm tra target:
+TopBar chỉ hiện chip khi target <strong>khác <code>dev</code></strong>.
+Dòng echo trong Logs mang đúng <code>--target</code> thực chạy — đọc
+dòng đó, đừng đoán. <code>localStorage</code>
+<code>dbt-target:{userId}:{projectId}</code>.</p>
+<p><strong>Rời trang thì lệnh có dừng không?</strong> Không.
+<code>activeStreams</code> nằm ngoài React, process vẫn chạy và log được
+phát lại khi quay lại IDE. Muốn dừng thật thì bấm Stop.</p>
+<h2 id="06-su-co-profilesyml--kết-nối">profiles.yml &amp; kết nối</h2>
+<p><strong><code>dbt debug</code> báo profile sai dù UI hiển thị đúng
+connection.</strong> <code>profiles.yml</code> được sinh lại từ DB trước
+mỗi lệnh. Chạy <code>GET /dbt/check-connection/{id}</code> để so bản
+sinh ra với bản trên đĩa. Ba điều kiện cần đúng: có connection,
+<code>profile:</code> trong <code>dbt_project.yml</code> khớp tên
+profile, và có DB session.</p>
+<p><strong>Sửa tay <code>profiles.yml</code> rồi bị mất.</strong> Đúng
+như thiết kế: project <strong>có</strong> connection thì file bị ghi đè.
+Muốn tự quản lý profile thì gỡ connection và mọi target — lúc đó runner
+không đụng vào file (<code>_regenerate_profiles_from_db</code> trả
+<code>{}</code>).</p>
+<p><strong>Một target biến mất khỏi <code>profiles.yml</code>.</strong>
+Target đó render lỗi và bị đưa vào <code>skipped</code>. Các target khác
+vẫn được ghi. Bấm nút khiên ở dòng target đó trong tab
+<em>Environments</em> để xem lỗi thật.</p>
+<p><strong>Hai target dùng chung mật khẩu / target sau đè target
+trước.</strong> Mỗi target phải có biến secret riêng —
+<code>DbtService.target_secret_env(target)</code>. Nếu tự thêm adapter
+mới, giữ nguyên quy ước này.</p>
+<p><strong>Connection kiểu <code>mysql</code>, <code>rest</code>,
+<code>ducklake</code> không chọn được làm warehouse.</strong> Cố ý:
+chúng không có dbt adapter.
+<code>build_adapter_config_from_connection_row</code> từ chối kèm
+message. <code>TargetsPanel</code> cũng lọc chúng khỏi danh sách
+target.</p>
+<h2 id="06-su-co-file--editor">File &amp; editor</h2>
+<p><strong>File do assistant/git tạo không hiện trong cây.</strong>
+<code>/files/{id}</code> trả một cấp. <code>refreshAncestors()</code>
+nạp lại mọi thư mục cha <strong>đã mở</strong> trên đường tới file thay
+đổi. Nếu vẫn thiếu: kiểm tra SSE file watcher còn kết nối không (chỉ báo
+trong File Explorer) — mất kết nối thì tự reconnect sau 2s.</p>
+<p><strong>Sửa file rồi nội dung bị nhảy về bản cũ.</strong> Watcher nạp
+lại file khi nhận <code>modified</code> và tab <strong>không
+dirty</strong>. Tab dirty không bao giờ bị ghi đè. File vừa tự lưu được
+bỏ qua nhờ <code>recentlySavedFilesRef</code> (hết hạn sau 3s).</p>
+<p><strong>Format không đổi gì.</strong> <code>POST /dbt/format</code>
+dùng sqlglot và <strong>từ chối</strong> khi không parse chắc chắn
+(Jinja phức tạp, dialect lạ). Khi đó formatter cục bộ chạy thay và một
+dòng <code>[INFO]</code> được ghi vào Logs.</p>
+<p><strong>Preview/Compile/Run trên draft báo lỗi.</strong>
+<code>ensureSavedSqlFile()</code> sẽ hỏi lưu trước — dbt đọc file trên
+đĩa, không đọc editor. Hủy hộp thoại lưu thì lệnh không chạy.</p>
+<p><strong>Gợi ý <code>ref()</code> nghèo nàn hoặc không có
+cột.</strong> IntelliSense đọc <code>target/manifest.json</code> (và
+<code>catalog.json</code> cho cột). Chạy <code>dbt parse</code> để có
+manifest, <code>dbt docs generate</code> để có catalog.
+<code>status: missing_manifest</code> nghĩa là project chưa parse lần
+nào.</p>
+<p><strong>Lineage trống.</strong> Cần <code>manifest.json</code>.
+Lineage cột cần <code>sqlglot</code> — import có điều kiện, thiếu thì
+chỉ mất phần cột chứ lineage bảng vẫn chạy.</p>
+<h2 id="06-su-co-git">Git</h2>
+<p><strong>Push/pull báo lỗi auth lặp lại.</strong> Credential lưu theo
+<code>(project_id, owner, remote_url)</code>. Đổi remote URL →
+credential cũ không khớp nữa. Chỉ remote <code>https://</code> được lưu;
+ssh không.</p>
+<p><strong>Commit trả 400.</strong> OIDC claims không có
+<code>email</code>. Danh tính commit lấy từ claims, không nhận từ client
+(<code>_get_commit_identity</code>).</p>
+<p><strong><code>git config --global</code> trong terminal bị từ
+chối.</strong> Cố ý — <code>_has_external_config_scope()</code>. Config
+ngoài phạm vi repo sẽ ảnh hưởng mọi project trên máy chủ.</p>
+<p><strong>Terminal: <code>git push</code> không chạy như các lệnh git
+khác.</strong> <code>push</code>/<code>pull</code> mở dialog credential
+trước; <code>/git/exec</code> không có đường nhập mật khẩu.</p>
+<h2 id="06-su-co-phiên--trạng-thái-ui">Phiên &amp; trạng thái UI</h2>
+<p><strong>Mở lại tab thì mất hết tab đang mở.</strong> Phiên nằm trong
+<code>sessionStorage</code> — đóng tab trình duyệt là mất. Chỉ ba thứ
+sống lâu trong <code>localStorage</code>: extra args,
+<code>--full-refresh</code>, target.</p>
+<p><strong>Trạng thái của người dùng khác hiện lên.</strong> Không thể:
+khoá phiên có <code>{userId}</code> và effect khôi phục chỉ chạy sau khi
+có <code>userId</code>. Nếu gặp, đó là khoá cũ chưa được
+<code>clearLegacyBrowserStorage()</code> dọn.</p>
+<p><strong>Panel dbt assistant không xuất hiện.</strong>
+<code>AGENT_URL</code> rỗng → proxy trả 503 và
+<code>useAgentAvailability</code> ẩn nút. Không phải lỗi.</p>
+<h2 id="06-su-co-nơi-đọc-tiếp">Nơi đọc tiếp</h2>
+<table>
+<thead>
+<tr>
+<th>Vấn đề</th>
+<th>File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>State và mọi handler của IDE</td>
+<td><code>nextjs/src/components-v2/develop/DevelopLayout.tsx</code></td>
+</tr>
+<tr>
+<td>Ghép câu lệnh dbt</td>
+<td><code>nextjs/src/lib/dbt-command-args.ts</code></td>
+</tr>
+<tr>
+<td>Stream log</td>
+<td><code>nextjs/src/lib/hooks/useDbtRunStream.ts</code>,
+<code>dbt-runner/app/routers/sse.py</code></td>
+</tr>
+<tr>
+<td>Chạy dbt, profile, compile/preview/explain</td>
+<td><code>dbt-runner/app/services/dbt_service.py</code></td>
+</tr>
+<tr>
+<td>Khoá &amp; warm worker</td>
+<td><code>app/core/file_lock.py</code>,
+<code>app/core/global_semaphore.py</code>,
+<code>app/services/dbt_worker.py</code></td>
+</tr>
+<tr>
+<td>An toàn đường dẫn file</td>
+<td><code>dbt-runner/app/services/{file_service,project}.py</code></td>
+</tr>
+<tr>
+<td>Git</td>
+<td><code>dbt-runner/app/services/git_service.py</code></td>
+</tr>
+</tbody>
+</table>
+</section></main>
+</div>
+
+<script>
+(function () {
+  var docs = Array.prototype.slice.call(document.querySelectorAll('.doc'));
+  var navDocs = Array.prototype.slice.call(document.querySelectorAll('.nav-doc'));
+  var rail = document.getElementById('rail');
+  var scrim = document.getElementById('scrim');
+  var menuBtn = document.getElementById('menu-btn');
+
+  // Wide tables scroll inside their own box instead of widening the page.
+  Array.prototype.forEach.call(document.querySelectorAll('.doc table'), function (table) {
+    var box = document.createElement('div');
+    box.className = 'table-scroll';
+    table.parentNode.insertBefore(box, table);
+    box.appendChild(table);
+  });
+
+  function closeRail() {
+    rail.classList.remove('is-open');
+    scrim.classList.remove('is-open');
+    menuBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  function docIdFor(hash) {
+    var id = (hash || '').replace('#', '');
+    if (!id) return docs[0].id;
+    var el = document.getElementById(id);
+    if (!el) return docs[0].id;
+    var section = el.closest ? el.closest('.doc') : null;
+    return section ? section.id : docs[0].id;
+  }
+
+  function show(hash) {
+    var target = docIdFor(hash);
+    docs.forEach(function (d) { d.classList.toggle('is-active', d.id === target); });
+    navDocs.forEach(function (n) { n.classList.toggle('is-active', n.dataset.doc === target); });
+
+    var anchor = hash && hash !== '#' + target ? document.getElementById(hash.replace('#', '')) : null;
+    if (anchor) {
+      anchor.scrollIntoView({ block: 'start' });
+    } else {
+      window.scrollTo(0, 0);
+    }
+    closeRail();
+    markCurrent();
+  }
+
+  function markCurrent() {
+    var active = document.querySelector('.doc.is-active');
+    if (!active) return;
+    var heads = Array.prototype.slice.call(active.querySelectorAll('h2'));
+    var top = window.scrollY + 90;
+    var current = null;
+    heads.forEach(function (h) { if (h.offsetTop <= top) current = h.id; });
+    Array.prototype.forEach.call(document.querySelectorAll('.nav-subs a'), function (a) {
+      a.classList.toggle('is-current', a.getAttribute('href') === '#' + current);
+    });
+  }
+
+  window.addEventListener('hashchange', function () { show(location.hash); });
+  window.addEventListener('scroll', markCurrent, { passive: true });
+
+  menuBtn.addEventListener('click', function () {
+    var open = rail.classList.toggle('is-open');
+    scrim.classList.toggle('is-open', open);
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  scrim.addEventListener('click', closeRail);
+
+  var toggle = document.getElementById('theme-toggle');
+  toggle.addEventListener('click', function () {
+    var root = document.documentElement;
+    var dark = root.getAttribute('data-theme') === 'dark'
+      || (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    root.setAttribute('data-theme', dark ? 'light' : 'dark');
+  });
+
+  show(location.hash);
+})();
+</script>

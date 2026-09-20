@@ -1,7 +1,7 @@
 "use client"
 
-import React, { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertCircle, Boxes, ExternalLink, FileText, Loader2, RefreshCw, Terminal, MoreHorizontal } from "lucide-react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { AlertCircle, Bot, Boxes, ExternalLink, FileText, Loader2, RefreshCw, Terminal, MoreHorizontal } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import EmptyState from "@/components-v2/shared/EmptyState"
 import { dbtApi } from "@/lib/api"
@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils"
 import DashboardWorkspace, { type BoardAddition } from "@/components-v2/explore/DashboardWorkspace"
 import SqlConsole from "@/components-v2/explore/SqlConsole"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components-v2/ui/dropdown-menu"
+import AgentPanel from "@/components-v2/develop/agent/AgentPanel"
+import { useAgentAvailability } from "@/lib/hooks/useAgentAvailability"
+import { exploreAgentContext, exploreFileView, type ExploreWorkspaceState } from "@/lib/explore-agent"
 
 type Project = {
   id: string
@@ -41,6 +44,26 @@ export default function ExplorePage() {
   const [addition, setAddition] = useState<BoardAddition | null>(null)
   const [boardDirty, setBoardDirty] = useState(false)
   const consumeAddition = useCallback(() => setAddition(null), [])
+  const agent = useAgentAvailability()
+  const [agentOpen, setAgentOpen] = useState(false)
+  const [openRequest, setOpenRequest] = useState<{ path: string; id: number } | null>(null)
+  // What the console and the board have open, kept in a ref: the assistant
+  // reads it once per prompt, and a keystroke must not re-render this page.
+  // Both are mounted at once, so each section keeps its own slot rather than
+  // overwriting whatever the other reported last.
+  const workspace = useRef<Partial<Record<ExploreView, ExploreWorkspaceState>>>({})
+  const reportQuery = useCallback((state: ExploreWorkspaceState) => { workspace.current.sql = state }, [])
+  const reportBoard = useCallback((state: ExploreWorkspaceState) => { workspace.current.dashboards = state }, [])
+
+  // The assistant writes SQL and board YAML; anything else it touches has no
+  // editor on this page, so the panel is told not to offer it.
+  // ponytail: two file kinds is the whole of Explore - widen it when a third appears.
+  const openAgentFile = useCallback((path: string) => {
+    const destination = exploreFileView(path)
+    if (!destination) return
+    setView(destination)
+    setOpenRequest({ path, id: Date.now() })
+  }, [])
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -134,7 +157,8 @@ export default function ExplorePage() {
             <item.icon className="h-3.5 w-3.5" />{item.label}
           </button>)}
         </nav>
-        {view === "docs" && <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
+        {view === "docs" && <>
           {busy && <span role="status" className="flex items-center gap-1 text-xs text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" />{docsStatus === "generating" ? "Generating…" : "Loading…"}</span>}
           <DropdownMenu>
             <DropdownMenuTrigger asChild><Button size="sm" variant="ghost" aria-label="Docs actions" title="Docs actions" disabled={!selectedProject}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
@@ -144,13 +168,16 @@ export default function ExplorePage() {
               {docsUrl && <DropdownMenuItem asChild><a href={docsUrl} target="_blank" rel="noreferrer"><ExternalLink className="mr-2 h-4 w-4" />Open in new tab</a></DropdownMenuItem>}
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>}
+        </>}
+        {agent.available && <Button size="sm" variant={agentOpen ? "outline" : "ghost"} aria-pressed={agentOpen} title="Ask the assistant about this data" onClick={() => setAgentOpen(open => !open)}><Bot className="mr-1.5 h-4 w-4" />Assistant</Button>}
+        </div>
       </div>
       {projectsError && <div role="alert" className="flex items-center gap-2 bg-red-50 px-3 py-2 text-xs text-red-700">{projectsError}<Button variant="ghost" size="sm" onClick={loadProjects}>Retry</Button></div>}
-      <div className="min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1">
         {selectedProject && <>
-          <div className={view === 'sql' ? 'h-full' : 'hidden'}><SqlConsole key={selectedProject.id} projectId={selectedProject.id} onAddToDashboard={item => { setAddition(item); setView('dashboards') }} /></div>
-          <div className={view === 'dashboards' ? 'h-full' : 'hidden'}><DashboardWorkspace key={selectedProject.id} projectId={selectedProject.id} addition={addition} onConsumed={consumeAddition} onDirty={setBoardDirty} /></div>
+          <div className={view === 'sql' ? 'h-full' : 'hidden'}><SqlConsole key={selectedProject.id} projectId={selectedProject.id} openRequest={view === 'sql' ? openRequest : null} onOpened={() => setOpenRequest(null)} onState={reportQuery} onAddToDashboard={item => { setAddition(item); setView('dashboards') }} /></div>
+          <div className={view === 'dashboards' ? 'h-full' : 'hidden'}><DashboardWorkspace key={selectedProject.id} projectId={selectedProject.id} active={view === 'dashboards'} addition={addition} onConsumed={consumeAddition} onDirty={setBoardDirty} openRequest={view === 'dashboards' ? openRequest : null} onOpened={() => setOpenRequest(null)} onState={reportBoard} /></div>
         </>}
         {!selectedProject ? <div className="flex h-full items-center justify-center p-4"><EmptyState icon={FileText} title={projectsLoading ? "Loading projects…" : "No project selected"} description="Choose a project above to explore its data." /></div>
           : view !== 'docs' ? null
@@ -161,6 +188,20 @@ export default function ExplorePage() {
               : docsStatus === "error" ? <EmptyState icon={AlertCircle} title="Unable to load docs" description={docsError || "Check the project documentation output."} action={<Button size="sm" variant="outline" onClick={() => checkDocs(selectedProject.id)}>Retry</Button>} />
               : null}
           </div>}
+      </div>
+      {agentOpen && agent.available && selectedProject && (
+        <AgentPanel
+          projectId={selectedProject.id}
+          health={agent.health}
+          userKeySet={agent.userKeySet}
+          attachment={{ label: `Explore · ${VIEWS.find(item => item.id === view)?.label ?? view}`, context: () => exploreAgentContext({ view, ...workspace.current[view] }) }}
+          onOpenFile={openAgentFile}
+          onClose={() => setAgentOpen(false)}
+          title="Data assistant"
+          intro="Ask about the data dbt built - it reads this project's models and runs the SELECT for you - or describe a dashboard and it writes the board YAML into charts/."
+          placeholder="Ask about your data, or describe a dashboard…"
+        />
+      )}
       </div>
     </div>
   )

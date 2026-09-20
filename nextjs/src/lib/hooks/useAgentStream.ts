@@ -200,11 +200,11 @@ export function useAgentStream(projectId: string) {
         setUsage(null)
     }, [])
 
-    const send = useCallback(async (text: string, attachment?: string) => {
+    /** `context` is prepended to the prompt but never shown: it is what the
+     *  panel knows about the workspace, not something the user typed. */
+    const send = useCallback(async (text: string, context?: string) => {
         if (!text.trim() || isStreaming) return
-        const prompt = attachment
-            ? `The file currently open in the editor is ${attachment}.\n\n${text}`
-            : text
+        const prompt = context ? `${context}\n\n${text}` : text
         apply({ type: 'prompt', text })
         setIsStreaming(true)
 
