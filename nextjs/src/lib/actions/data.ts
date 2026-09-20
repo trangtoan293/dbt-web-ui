@@ -509,11 +509,13 @@ export async function createIngestSource(input: IngestSourceInput) {
       name: input.name.trim(),
       dataset: input.dataset,
       tables: input.tables,
+      tableConfig: (input.tableConfig ?? undefined) as Prisma.InputJsonValue | undefined,
       sourceConfig: (input.sourceConfig ?? undefined) as Prisma.InputJsonValue | undefined,
       cursorField: input.cursorField?.trim() || null,
       cursorInitialValue: input.cursorInitialValue?.trim() || null,
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
+      schemaContract: input.schemaContract ?? 'evolve',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
       partitionBy: input.partitionBy?.length ? input.partitionBy : undefined,
       createdBy: userId,
@@ -539,11 +541,15 @@ export async function updateIngestSource(id: string, input: IngestSourceInput) {
       name: input.name.trim(),
       dataset: input.dataset,
       tables: input.tables,
+      // Cleared rather than left undefined, for the same reason as partitionBy:
+      // removing a table's overrides in the form must remove them in the row.
+      tableConfig: (input.tableConfig ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
       sourceConfig: (input.sourceConfig ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
       cursorField: input.cursorField?.trim() || null,
       cursorInitialValue: input.cursorInitialValue?.trim() || null,
       destination: input.destination ?? 'ducklake',
       writeDisposition: input.writeDisposition ?? 'append',
+      schemaContract: input.schemaContract ?? 'evolve',
       primaryKey: input.primaryKey?.length ? input.primaryKey : undefined,
       // Cleared explicitly, not left undefined: emptying the field in the form
       // must remove the partition spec, and `undefined` means "leave as-is".
@@ -686,6 +692,8 @@ export type ScheduleInput = {
   isActive?: boolean
   webhookUrl?: string | null
   publishSchema?: string | null
+  /// Runs this ingest load instead of a dbt command. Null keeps the dbt meaning.
+  ingestSourceId?: string | null
 }
 
 function validateSchedule(input: ScheduleInput) {
@@ -731,6 +739,7 @@ function validateSchedule(input: ScheduleInput) {
     cron: input.cron.trim(),
     webhookUrl,
     publishSchema,
+    ingestSourceId: input.ingestSourceId ?? null,
   }
 }
 
@@ -747,6 +756,9 @@ export async function createSchedule(input: ScheduleInput) {
   const userId = await getCurrentUserId()
   const clean = validateSchedule(input)
   await ensureProjectOwnership(input.projectId, userId)
+  // Without this a schedule could fire someone else's load, under their
+  // credentials, into their warehouse.
+  if (clean.ingestSourceId) await ensureOwnership('ingestSource', clean.ingestSourceId, userId)
 
   const created = await db.dbtSchedule.create({
     data: {
@@ -768,6 +780,7 @@ export async function updateSchedule(id: string, input: ScheduleInput) {
   const clean = validateSchedule(input)
   await ensureOwnership('dbtSchedule', id, userId)
   await ensureProjectOwnership(input.projectId, userId)
+  if (clean.ingestSourceId) await ensureOwnership('ingestSource', clean.ingestSourceId, userId)
 
   const existing = await db.dbtSchedule.findUnique({ where: { id } })
   const updated = await db.dbtSchedule.update({

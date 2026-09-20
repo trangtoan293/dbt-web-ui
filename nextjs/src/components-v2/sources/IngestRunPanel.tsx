@@ -21,9 +21,19 @@ interface Props {
   sourceId: string
   sourceName: string
   writeDisposition: string
+  /** Start the load as soon as the panel mounts, for "save and run". */
+  autoStart?: boolean
+  /** Called once a run ends, so the page around this can refresh. */
+  onFinished?: () => void
 }
 
-export default function IngestRunPanel({ sourceId, sourceName, writeDisposition }: Props): React.ReactElement {
+export default function IngestRunPanel({
+  sourceId,
+  sourceName,
+  writeDisposition,
+  autoStart = false,
+  onFinished,
+}: Props): React.ReactElement {
   const { logs, running, result, run, stop } = useIngestStream()
   const [fullRefresh, setFullRefresh] = useState(false)
   const [snippet, setSnippet] = useState<string | null>(null)
@@ -51,8 +61,20 @@ export default function IngestRunPanel({ sourceId, sourceName, writeDisposition 
 
   // A finished run has just written its row, so refresh rather than guess.
   useEffect(() => {
-    if (!running && result) loadHistory()
-  }, [loadHistory, result, running])
+    if (!running && result) {
+      loadHistory()
+      onFinished?.()
+    }
+  }, [loadHistory, result, running, onFinished])
+
+  // "Save and run the first load" lands here with the run already intended;
+  // making someone press Run again would be asking twice for one decision.
+  const started = useRef(false)
+  useEffect(() => {
+    if (!autoStart || started.current) return
+    started.current = true
+    run(sourceId, { fullRefresh: false })
+  }, [autoStart, run, sourceId])
 
   async function handleStop() {
     stop()

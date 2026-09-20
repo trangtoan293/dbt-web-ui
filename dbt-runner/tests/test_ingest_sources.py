@@ -351,12 +351,27 @@ class IncrementalHintTest(unittest.TestCase):
             hints = source.resources[name].apply_hints.call_args.kwargs
             self.assertIn("incremental", hints)
 
-    def test_no_cursor_and_no_merge_touches_nothing(self):
+    def test_no_cursor_and_no_merge_sets_only_the_write_disposition(self):
+        """Every resource is hinted now, because the disposition is per table.
+
+        `pipeline.run()` is called without a write_disposition or a
+        schema_contract argument - either there would override these hints and
+        put every table back on a single behaviour - so a table that overrode
+        nothing still has to carry its own. What must stay absent is the
+        incremental and the merge key.
+        """
         from ingest import runner
 
         source = self._source(["a"])
         runner._apply_hints(source, ["a"], {}, "sql_database")
-        source.resources["a"].apply_hints.assert_not_called()
+        hints = source.resources["a"].apply_hints.call_args.kwargs
+        self.assertEqual(
+            hints,
+            {
+                "write_disposition": "append",
+                "schema_contract": runner.schema_contract("evolve"),
+            },
+        )
 
     def test_merge_still_gets_its_primary_key(self):
         from ingest import runner
@@ -405,7 +420,8 @@ class IncrementalHintTest(unittest.TestCase):
         runner._apply_hints(
             source, ["a"], {"cursor_field": "updated_at"}, "rest_api"
         )
-        source.resources["a"].apply_hints.assert_not_called()
+        hints = source.resources["a"].apply_hints.call_args.kwargs
+        self.assertNotIn("incremental", hints)
 
     def test_a_filesystem_resource_takes_hints_too(self):
         """It arrives as a single piped resource, not a source with a mapping."""

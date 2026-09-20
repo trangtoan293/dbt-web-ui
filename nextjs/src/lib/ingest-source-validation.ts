@@ -10,6 +10,10 @@
 const DATASET_PATTERN = /^[a-z][a-z0-9_]{0,39}$/
 const TABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
 const WRITE_DISPOSITIONS = new Set(['append', 'replace', 'merge'])
+// What a load does when the source grows a column. No third value that carries
+// on and drops it: a load that succeeds while quietly discarding data is the
+// failure nobody notices. Mirrors _SCHEMA_CONTRACTS in the ingest router.
+const SCHEMA_CONTRACTS = new Set(['evolve', 'freeze'])
 // A partition term reaches DuckLake as DDL, not as a bound parameter: a bare
 // column, or one date-part function over one. Kept in step with
 // dbt-runner/ingest/lakehouse.py:_PARTITION_TERM_RE, which is the enforcing side.
@@ -30,6 +34,18 @@ const JSON_CURSOR_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]{0,62}(\.[A-Za-z_][A-Za-z0-9
 
 export type IngestSourceType = 'sql_database' | 'rest_api' | 'filesystem'
 
+/**
+ * What one table may override. Every field is optional: an absent one falls back
+ * to the source-level value, which is what keeps a source saved before per-table
+ * config existed behaving exactly as it did.
+ */
+export type IngestTableConfig = {
+  cursorField?: string | null
+  cursorInitialValue?: string | null
+  writeDisposition?: string
+  primaryKey?: string[]
+}
+
 export type IngestSourceInput = {
   projectId: string
   /** Absent for a filesystem source, and for a public API needing no key. */
@@ -38,14 +54,54 @@ export type IngestSourceInput = {
   name: string
   dataset: string
   tables: string[]
+  /** Overrides keyed by a name that appears in `tables`. */
+  tableConfig?: Record<string, IngestTableConfig> | null
   /** Per-type configuration: a REST client and its resources, or a file glob. */
   sourceConfig?: Record<string, unknown> | null
   cursorField?: string | null
   cursorInitialValue?: string | null
   destination?: 'connection' | 'ducklake'
   writeDisposition?: string
+  /** 'evolve' takes a new source column; 'freeze' stops the load and names it. */
+  schemaContract?: string
   primaryKey?: string[]
   partitionBy?: string[]
+}
+
+/**
+ * Check the per-table overrides against the same rules as the source-level ones.
+ *
+ * Every rule here exists at source level too; what differs is the fallback. A
+ * table that says `merge` needs a primary key from *somewhere* - its own, or the
+ * source's - and the run would otherwise fail inside dlt after the extract, with
+ * the source warehouse already read once for nothing.
+ */
+function validateTableConfig(input: IngestSourceInput, cursorPattern: RegExp) {
+  const entries = Object.entries(input.tableConfig ?? {})
+  if (!entries.length) return
+
+  for (const [table, config] of entries) {
+    if (!input.tables.includes(table)) {
+      throw new Error(`"${table}" has settings but is not one of the selected tables`)
+    }
+    const disposition = config.writeDisposition ?? input.writeDisposition ?? 'append'
+    if (!WRITE_DISPOSITIONS.has(disposition)) {
+      throw new Error(`${table}: writeDisposition must be one of ${[...WRITE_DISPOSITIONS].join(', ')}`)
+    }
+    const primaryKey = config.primaryKey?.length ? config.primaryKey : input.primaryKey
+    if (disposition === 'merge' && !primaryKey?.length) {
+      throw new Error(`${table}: a primary key is required for merge`)
+    }
+    for (const key of config.primaryKey ?? []) {
+      if (!cursorPattern.test(key)) throw new Error(`${table}: invalid primary key column "${key}"`)
+    }
+    if (config.cursorField && !cursorPattern.test(config.cursorField)) {
+      throw new Error(`${table}: invalid cursor field "${config.cursorField}"`)
+    }
+    if (config.cursorInitialValue && !(config.cursorField || input.cursorField)) {
+      throw new Error(`${table}: an initial value needs a cursor field to apply to`)
+    }
+  }
 }
 
 /** Reject anything that would reach SQL as an identifier, before it is stored. */
@@ -68,6 +124,10 @@ export function validateIngestSource(input: IngestSourceInput) {
   }
   if (disposition === 'merge' && !input.primaryKey?.length) {
     throw new Error('A primary key is required for merge')
+  }
+
+  if (input.schemaContract && !SCHEMA_CONTRACTS.has(input.schemaContract)) {
+    throw new Error(`schemaContract must be one of ${[...SCHEMA_CONTRACTS].join(', ')}`)
   }
 
   for (const term of input.partitionBy ?? []) {
@@ -106,6 +166,12 @@ export function validateIngestSource(input: IngestSourceInput) {
   if (input.cursorInitialValue && !input.cursorField) {
     throw new Error('An initial value needs a cursor field to apply to')
   }
+  // A merge key becomes a column reference in the destination's MERGE, the same
+  // trust boundary the cursor crosses. It was never checked here before.
+  for (const key of input.primaryKey ?? []) {
+    if (!cursorPattern.test(key)) throw new Error(`Invalid primary key column "${key}"`)
+  }
+  validateTableConfig(input, cursorPattern)
 
   const config = input.sourceConfig ?? {}
   if (sourceType === 'filesystem') {

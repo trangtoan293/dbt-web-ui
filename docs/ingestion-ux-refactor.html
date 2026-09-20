@@ -1,0 +1,590 @@
+<title>Ingestion UX Blueprint</title>
+<style>
+  :root {
+    --ground:#FAFBFC; --surface:#FFFFFF; --surface-2:#F1F4F7;
+    --line:#DCE3EA; --line-soft:#EAEEF3;
+    --ink:#101922; --ink-2:#46566A; --ink-3:#6E8094;
+    --accent:#0F6CBD; --accent-soft:#E7F0FA; --accent-line:#B9D6F0;
+    --good:#0D7A5F; --good-soft:#E2F3EC;
+    --warn:#96600A; --warn-soft:#FAF0DA;
+    --crit:#AE2431; --crit-soft:#FBE9EA;
+    --display: Georgia, "Iowan Old Style", "Source Serif Pro", ui-serif, serif;
+    --body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0B1016; --surface:#121A22; --surface-2:#18222C;
+      --line:#27333F; --line-soft:#1C2732;
+      --ink:#E6EDF4; --ink-2:#A4B3C3; --ink-3:#7D8D9F;
+      --accent:#5CB0F5; --accent-soft:#122539; --accent-line:#27476A;
+      --good:#56C9A4; --good-soft:#0F2A22;
+      --warn:#E0A33F; --warn-soft:#2C2113;
+      --crit:#F08C93; --crit-soft:#2E1519;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0B1016; --surface:#121A22; --surface-2:#18222C;
+    --line:#27333F; --line-soft:#1C2732;
+    --ink:#E6EDF4; --ink-2:#A4B3C3; --ink-3:#7D8D9F;
+    --accent:#5CB0F5; --accent-soft:#122539; --accent-line:#27476A;
+    --good:#56C9A4; --good-soft:#0F2A22;
+    --warn:#E0A33F; --warn-soft:#2C2113;
+    --crit:#F08C93; --crit-soft:#2E1519;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--body); font-size: 16px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 20px 96px;
+  }
+  .col { max-width: 720px; margin-inline: auto; }
+  .wide { max-width: 1060px; margin-inline: auto; }
+
+  /* ---- masthead ---- */
+  header.masthead { max-width:1060px; margin: 0 auto; padding: 56px 0 32px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font-family: var(--mono); font-size: 11.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--display); font-weight: 700; font-size: clamp(34px, 5.2vw, 50px); line-height: 1.08; letter-spacing: -.018em; text-wrap: balance; margin: 0 0 16px; }
+  .standfirst { font-size: 18.5px; line-height: 1.55; color: var(--ink-2); max-width: 62ch; margin: 0 0 28px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 28px; font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---- sections ---- */
+  section { padding-top: 60px; }
+  h2 { font-family: var(--display); font-size: clamp(25px, 3.2vw, 32px); font-weight: 700; letter-spacing: -.012em; line-height: 1.2; text-wrap: balance; margin: 0 0 8px; }
+  .sec-no { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 10px; }
+  h3 { font-size: 18px; font-weight: 650; letter-spacing: -.006em; margin: 34px 0 10px; text-wrap: balance; }
+  h4 { font-size: 14px; font-weight: 650; margin: 22px 0 8px; }
+  p { margin: 0 0 15px; }
+  .lede { color: var(--ink-2); font-size: 17px; margin-bottom: 26px; max-width: 64ch; }
+  ul, ol { margin: 0 0 15px; padding-left: 21px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-3); }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  strong { font-weight: 650; }
+  code { font-family: var(--mono); font-size: .875em; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: .08em .34em; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  /* ---- cards ---- */
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 22px 0 8px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 16px; }
+  .card h4 { margin: 0 0 4px; font-size: 15px; }
+  .card .who { font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 10px; }
+  .card p { font-size: 14.5px; color: var(--ink-2); margin: 0 0 9px; line-height: 1.55; }
+  .card p:last-child { margin-bottom: 0; }
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; margin: 20px 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 11px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); white-space: nowrap; }
+  td { padding: 12px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; color: var(--ink-2); line-height: 1.5; }
+  tr:last-child td { border-bottom: 0; }
+  td strong { color: var(--ink); }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---- pills ---- */
+  .pill { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; padding: 2.5px 7px; border-radius: 4px; white-space: nowrap; font-weight: 500; }
+  .p-crit { background: var(--crit-soft); color: var(--crit); }
+  .p-warn { background: var(--warn-soft); color: var(--warn); }
+  .p-good { background: var(--good-soft); color: var(--good); }
+  .p-info { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---- scene rail ---- */
+  .scene { display: grid; grid-template-columns: 56px 1fr; gap: 0 20px; padding-bottom: 8px; }
+  .scene + .scene { margin-top: 30px; }
+  .scene-no { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--accent); padding-top: 3px; border-top: 2px solid var(--accent-line); }
+  .scene-body { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+  .scene-body h3 { margin: 0 0 4px; font-size: 19px; font-family: var(--display); font-weight: 700; }
+  .scene-goal { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin: 0 0 14px; }
+  @media (max-width: 560px) { .scene { grid-template-columns: 1fr; gap: 6px; } .scene-no { border-top: 0; padding-top: 0; } }
+
+  /* ---- wireframe ---- */
+  .wire { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; margin: 16px 0; }
+  .wire pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--ink-2); margin: 0; padding: 16px 18px; white-space: pre; }
+  .wire-cap { font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); padding: 9px 18px; border-bottom: 1px solid var(--line-soft); background: var(--surface-2); }
+
+  /* ---- callout ---- */
+  .note { border-left: 3px solid var(--accent-line); background: var(--accent-soft); padding: 14px 16px; border-radius: 0 8px 8px 0; margin: 20px 0; font-size: 14.5px; color: var(--ink-2); }
+  .note b { color: var(--ink); }
+  .note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note p:last-child { margin-bottom: 0; }
+
+  /* ---- key findings ---- */
+  .findings { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .findings li { background: var(--surface); margin: 0; padding: 14px 18px; display: grid; grid-template-columns: 88px 1fr; gap: 16px; align-items: start; font-size: 15px; }
+  .findings li > span:first-child { padding-top: 2px; }
+  @media (max-width: 560px) { .findings li { grid-template-columns: 1fr; gap: 6px; } }
+
+  footer { max-width: 1060px; margin: 0 auto; padding-top: 44px; border-top: 1px solid var(--line); margin-top: 60px; font-size: 14px; color: var(--ink-3); }
+  footer ol { padding-left: 20px; }
+  footer li { margin-bottom: 5px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+</style>
+
+<header class="masthead">
+  <p class="eyebrow">dbt-craft · Data workspace</p>
+  <h1>Ingest phải là một cuộc đối thoại với dữ liệu, không phải một cái form</h1>
+  <p class="standfirst">Nghiên cứu cách Databricks, Snowflake, Fivetran và Airbyte thiết kế bước nạp dữ liệu — rồi đối chiếu với <code>SourceDialog</code> hiện tại để dựng kịch bản UX mục tiêu và lộ trình refactor.</p>
+  <div class="meta">
+    <span><b>Phạm vi</b> /data?tab=sources · dbt-runner /ingest</span>
+    <span><b>Nền tảng đối chiếu</b> 4</span>
+    <span><b>Trạng thái</b> đã triển khai · 418 test backend + 227 frontend xanh</span>
+  </div>
+</header>
+
+<main>
+
+<section class="col">
+  <span class="sec-no">Tóm tắt</span>
+  <h2>Sáu điều đáng đổi</h2>
+  <p class="lede">Mọi platform lớn đều hội tụ về cùng một xương sống. dbt-craft có đủ backend để làm được gần hết, nhưng UI đang giấu nó đi.</p>
+  <ul class="findings">
+    <li><span><span class="pill p-crit">Cấu trúc</span></span><span><strong>Cấu hình phải theo từng bảng, không theo cả load.</strong> Hôm nay <code>cursorField</code>, <code>writeDisposition</code>, <code>primaryKey</code> là một giá trị dùng chung cho cả 12 bảng. Airbyte và Databricks đều cho phép đổi sync mode / cursor / tên đích cho từng stream.</span></li>
+    <li><span><span class="pill p-crit">Niềm tin</span></span><span><strong>Người dùng không bao giờ thấy dữ liệu trước khi lưu.</strong> Snowsight đoán kiểu dữ liệu và hiện sample values ngay trong wizard; Fivetran bắt review schema trước lần sync đầu. Ở đây bảng chỉ là một chip text.</span></li>
+    <li><span><span class="pill p-warn">Niềm tin</span></span><span><strong>Không có bước test connection trong luồng.</strong> <code>testConnectionById</code> tồn tại nhưng chỉ ConnectionsView gọi. Nguồn REST đã có nút <em>Test</em> per-resource — đó chính là pattern cần nhân rộng.</span></li>
+    <li><span><span class="pill p-crit">Vòng đời</span></span><span><strong>Ingest không có lịch chạy.</strong> <code>DbtSchedule</code> chỉ phục vụ dbt; scheduler không bao giờ bắn một ingest source. Với cả bốn platform, schedule là một trang của wizard.</span></li>
+    <li><span><span class="pill p-warn">Khám phá</span></span><span><strong>Lối vào là một thẻ <code>&lt;select&gt;</code> ba dòng.</strong> Databricks và Snowflake mở bằng một gallery nguồn — người dùng nhìn thấy khả năng của hệ thống trước khi phải biết tên nó.</span></li>
+    <li><span><span class="pill p-warn">Vận hành</span></span><span><strong>Sau khi lưu thì load biến mất vào một accordion.</strong> Không có trang chi tiết, không có freshness, không có thông báo khi lỗi, và <code>sources.yml</code> vẫn phải copy-paste tay.</span></li>
+  </ul>
+</section>
+
+<hr>
+
+<section class="wide">
+  <span class="sec-no">Phần 1</span>
+  <h2>Họ làm thế nào</h2>
+  <p class="lede">Bốn sản phẩm, bốn kiến trúc khác nhau, nhưng luồng người dùng gần như trùng khít.</p>
+
+  <div class="cards">
+    <div class="card">
+      <p class="who">Databricks · Lakeflow Connect</p>
+      <h4>Wizard sáu trang, mỗi trang một quyết định</h4>
+      <p>Bấm vào icon nguồn trên trang <em>Add data</em> → wizard mở ra: <strong>Connection</strong> (chọn hoặc tạo connection lưu credential) → <strong>Ingestion setup</strong> (đặt tên pipeline, chọn catalog/schema cho event log và cho staging) → <strong>Source</strong> (chọn bảng, đặt tên đích và history tracking <em>cho từng bảng</em>) → <strong>Destination</strong> (catalog + schema) → <strong>Database setup</strong> (validate nguồn đã cấu hình đúng, có thể bỏ qua) → <strong>Schedules &amp; notifications</strong>.</p>
+      <p>Điểm đáng học: có hẳn một trang chỉ để <em>kiểm tra nguồn đã sẵn sàng chưa</em>, và event log là một bảng thật trong catalog chứ không phải log file.</p>
+    </div>
+    <div class="card">
+      <p class="who">Snowflake · Snowsight</p>
+      <h4>Suy luận schema rồi cho sửa</h4>
+      <p>Vào <em>Ingestion » Add Data</em>, chọn <em>Load data into a Table</em>. Sau khi chọn file, trang <strong>Edit Schema</strong> bật lên: Snowflake tự phát hiện <strong>tên cột, kiểu dữ liệu và giá trị mẫu</strong>, người dùng sửa lại nếu sai rồi mới load.</p>
+      <p>Điểm đáng học: hệ thống đoán trước, con người chỉ xác nhận. Người dùng không phải gõ gì ở bước khó nhất.</p>
+    </div>
+    <div class="card">
+      <p class="who">Fivetran</p>
+      <h4>Chặn cửa trước lần sync đầu</h4>
+      <p>Sau khi setup tests pass, hộp thoại <em>"Almost ready to sync"</em> buộc chọn một trong hai: <strong>Review your data</strong> (kéo schema về, duyệt, chặn hoặc hash cột) hoặc <strong>Start initial sync</strong> (đồng ý lấy tất cả). Mặc định mọi bảng và cột đều được tick.</p>
+      <p>Điểm đáng học: khoảnh khắc nguy hiểm nhất — lần chạy đầu tiên đổ dữ liệu thật — được biến thành một lựa chọn có ý thức chứ không phải một cú bấm Save.</p>
+    </div>
+    <div class="card">
+      <p class="who">Airbyte</p>
+      <h4>Bảng schema là màn hình trung tâm</h4>
+      <p>Source → Destination → Airbyte kéo schema về → màn hình <strong>Schema configuration</strong>: bật/tắt từng stream, mở ra thấy từng field, đặt sync mode <em>cho từng stream</em>, chọn cursor và primary key. Cursor/PK do nguồn khai báo thì tự chọn sẵn và khoá lại. Đặt tên, tag, schedule, namespace, prefix ở bước cuối.</p>
+      <p>Điểm đáng học: cấu hình nằm trong một bảng có thể quét mắt, không phải một chuỗi field rời rạc.</p>
+    </div>
+  </div>
+
+  <h3>Xương sống chung — sáu khoảnh khắc</h3>
+  <p>Đây là khung để đối chiếu dbt-craft, và cũng là khung của kịch bản ở Phần 3.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Khoảnh khắc</th><th>Câu hỏi người dùng đang hỏi</th><th>Cách các platform trả lời</th><th>dbt-craft hôm nay</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Vào cửa</strong></td><td>“Hệ thống này lấy được dữ liệu từ đâu?”</td><td>Gallery icon nguồn; bấm icon là mở wizard tương ứng</td><td><span class="pill p-crit">Thiếu</span> <code>&lt;select&gt;</code> ba dòng trong modal</td></tr>
+      <tr><td><strong>2. Kết nối &amp; xác thực</strong></td><td>“Tôi nhập đúng chưa?”</td><td>Connection là object tái dùng; setup test chạy và phải xanh mới đi tiếp</td><td><span class="pill p-warn">Một nửa</span> REST có <em>Test</em>; SQL và file không có</td></tr>
+      <tr><td><strong>3. Khám phá &amp; chọn</strong></td><td>“Có những gì? Trông ra sao?”</td><td>Kéo schema về; cây bảng/cột; tick sẵn tất cả; hiện kiểu và giá trị mẫu</td><td><span class="pill p-crit">Thiếu</span> Nút <em>Browse</em> trả về danh sách tên phẳng</td></tr>
+      <tr><td><strong>4. Hành vi từng bảng</strong></td><td>“Bảng này cập nhật kiểu gì?”</td><td>Sync mode, cursor, PK, tên đích — đặt <em>per stream</em>, có gợi ý từ nguồn</td><td><span class="pill p-crit">Thiếu</span> Một giá trị dùng chung cho mọi bảng</td></tr>
+      <tr><td><strong>5. Đích &amp; đặt tên</strong></td><td>“Dữ liệu sẽ nằm ở đâu?”</td><td>Chọn catalog/schema, có prefix và preview tên bảng cuối cùng</td><td><span class="pill p-good">Có</span> Project + lakehouse/warehouse + schema; thiếu preview tên</td></tr>
+      <tr><td><strong>6. Lịch, cảnh báo, vận hành</strong></td><td>“Ai báo cho tôi khi hỏng?”</td><td>Schedule + notification ngay trong wizard; sau đó là dashboard trạng thái</td><td><span class="pill p-crit">Thiếu</span> Chỉ chạy tay; không lịch, không cảnh báo</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><b>Một quan sát chung:</b> cả bốn platform đều đẩy công việc nặng nhất — đoán kiểu dữ liệu, đoán cursor, đoán primary key — sang <em>hệ thống</em>, và để con người ở vai trò xác nhận hoặc sửa. Wizard hiện tại của dbt-craft làm ngược lại: người dùng phải gõ tên bảng, gõ tên cột cursor, gõ primary key, từ trí nhớ, và chỉ biết mình sai khi bấm Run.</p>
+  </div>
+</section>
+
+<hr>
+
+<section class="wide">
+  <span class="sec-no">Phần 2</span>
+  <h2>Hiện trạng: đọc lại luồng đang có</h2>
+  <p class="lede">Modal ba bước — <em>Choose data</em> → <em>Destination</em> → <em>Update rules</em> — trong một <code>Dialog</code> rộng <code>sm:max-w-2xl</code>.</p>
+
+  <div class="wire">
+    <div class="wire-cap">Luồng hiện tại · SourceDialog.tsx (750 dòng)</div>
+<pre>Data ▸ Data loads ▸ [New load]
+  │
+  ├─ Bước 1  Choose data
+  │    Source type      ▾ Database tables | REST API | Files on disk
+  │    Read from conn   ▾ (lọc theo source_connection_types)
+  │    Source tables    [customers        ] [Add] [Browse]
+  │                     └─ Browse → danh sách tên bảng phẳng, không cột,
+  │                        không search, không select-all, chỉ sql_database
+  │
+  ├─ Bước 2  Destination
+  │    Project ▾   Destination ▾ (Lakehouse | project warehouse)
+  │    Load name   Destination schema
+  │    ⚠ chưa có lake → nút "Set up a lakehouse" tạo inline  ← điểm sáng
+  │
+  └─ Bước 3  Update rules
+       When this load runs  ▾ append | replace | merge
+       Track new rows using [updated_at]     ← MỘT ô cho TẤT CẢ bảng
+       Start from           [2026-01-01]
+       Primary key          [id]             ← MỘT ô cho TẤT CẢ bảng
+       Partition by         [month(created_at)]
+       "Saving creates a reusable load. Data moves only when you select Run load."
+
+Sau khi lưu → dòng trong bảng → [Run / history] mở accordion IngestRunPanel
+       [Run load] [☐ Full refresh] [Show dbt sources.yml] [History]</pre>
+  </div>
+
+  <h3>Bảng khoảng cách</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>#</th><th>Khoảng cách</th><th>Hậu quả thực tế</th><th>Mức</th></tr></thead>
+    <tbody>
+      <tr><td class="num">G1</td><td><strong>Cấu hình theo load, không theo bảng.</strong> <code>IngestSource</code> có đúng một <code>cursorField</code>, một <code>writeDisposition</code>, một <code>primaryKey</code> cho cả mảng <code>tables</code>.</td><td>Một load 12 bảng core-banking không thể có <code>updated_at</code> cho bảng này và <code>last_modified</code> cho bảng kia. Người dùng buộc phải tạo 12 load riêng — hoặc bỏ cursor, và CLAUDE.md đã nói rõ: không cursor thì mỗi lần chạy đọc lại toàn bộ bảng.</td><td><span class="pill p-crit">Chặn</span></td></tr>
+      <tr><td class="num">G2</td><td><strong>Không có preview dữ liệu.</strong> Không endpoint nào trả về cột hoặc sample rows cho nguồn SQL/file. <code>/ingest/connections/{id}/tables</code> chỉ trả tên bảng.</td><td>Không biết cột nào là timestamp → không đoán được cursor. Không biết cột nào unique → không đoán được PK. Sai thì phát hiện lúc chạy, sau khi đã qua cả wizard.</td><td><span class="pill p-crit">Chặn</span></td></tr>
+      <tr><td class="num">G3</td><td><strong>Không test connection trong wizard.</strong> <code>testConnectionById</code> chỉ được ConnectionsView gọi.</td><td>Sai mật khẩu hoặc sai host thì lỗi hiện ra ở dòng log của lần Run đầu tiên.</td><td><span class="pill p-warn">Cao</span></td></tr>
+      <tr><td class="num">G4</td><td><strong>Ingest không có lịch.</strong> <code>DbtSchedule.command</code> là enum <code>RunCommand</code> của dbt; scheduler chỉ bắn dbt run, prune history và chạy DuckLake maintenance.</td><td>Ingest là việc thủ công vĩnh viễn. Không ai ngồi bấm Run load lúc 2 giờ sáng — nên trên thực tế dữ liệu không bao giờ tươi.</td><td><span class="pill p-crit">Chặn</span></td></tr>
+      <tr><td class="num">G5</td><td><strong>Không có cảnh báo khi lỗi.</strong> <code>webhookUrl</code> chỉ tồn tại trên <code>DbtSchedule</code>.</td><td>Load hỏng im lặng cho tới khi một model dbt fail hoặc một dashboard trống.</td><td><span class="pill p-warn">Cao</span></td></tr>
+      <tr><td class="num">G6</td><td><strong>Lối vào là dropdown.</strong> Ba source type nằm trong <code>&lt;select&gt;</code>, chỉ đọc được help text sau khi đã chọn.</td><td>Người dùng mới không biết platform đọc được Oracle, hay đọc được REST API công khai mà không cần credential.</td><td><span class="pill p-warn">Cao</span></td></tr>
+      <tr><td class="num">G7</td><td><strong>Table picker yếu.</strong> Chip text tự do + nút <em>Browse</em> tuỳ chọn, chỉ cho <code>sql_database</code>, trả về mảng tên đã sort, không search, không chọn nhiều, không schema.</td><td>Nguồn 400 bảng là không dùng được. Gõ sai tên thì lưu thành công rồi fail lúc chạy.</td><td><span class="pill p-warn">Cao</span></td></tr>
+      <tr><td class="num">G8</td><td><strong>Không có trang chi tiết load.</strong> Trạng thái nằm trong accordion; History là một nút bật/tắt.</td><td>Không trả lời được câu hỏi vận hành cơ bản: lần cuối chạy bao giờ, bảng nào bao nhiêu dòng, đang lệch bao lâu.</td><td><span class="pill p-warn">Cao</span></td></tr>
+      <tr><td class="num">G9</td><td><strong><code>sources.yml</code> là copy-paste.</strong> Nút <em>Show dbt sources.yml</em> in ra snippet, người dùng tự dán vào project.</td><td>Đứt đoạn ngay giữa hai nửa của cùng một sản phẩm. Ingest và dbt cùng biết tên bảng, nhưng bắt con người làm cầu nối.</td><td><span class="pill p-warn">Trung bình</span></td></tr>
+      <tr><td class="num">G10</td><td><strong>Schema drift là một dòng chữ.</strong> IngestRunPanel cảnh báo merge sẽ fail khi nguồn đổi cột, và bảo người dùng chạy lại full refresh.</td><td>Chính sách xử lý drift nên là một lựa chọn lúc cấu hình, không phải một lời giải thích sau khi hỏng.</td><td><span class="pill p-warn">Trung bình</span></td></tr>
+      <tr><td class="num">G11</td><td><strong>Không preview tên bảng đích.</strong> Người dùng nhập schema nhưng không thấy tên đầy đủ cuối cùng.</td><td>Không biết trước sẽ có <code>lake.raw_crm.customers</code> hay ghi đè lên cái gì.</td><td><span class="pill p-info">Thấp</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><b>Hai thứ đang làm rất đúng, giữ nguyên:</b> (1) nút <em>Set up a lakehouse</em> tạo lake inline khi project chưa có — đúng nguyên tắc “đừng bắt người dùng rời form đang điền dở”; (2) nút <em>Test</em> per-resource của REST, trả về field list và <em>gợi ý</em> <code>data_selector</code> để người dùng bấm một cái là nhận. Đó chính xác là hành vi mà Snowsight làm với schema. Phần lớn kế hoạch dưới đây chỉ là <em>nhân rộng pattern REST đã có sang SQL và file</em>.</p>
+  </div>
+</section>
+
+<hr>
+
+<section class="wide">
+  <span class="sec-no">Phần 3</span>
+  <h2>Kịch bản UX mục tiêu</h2>
+  <p class="lede">Nhân vật: <strong>Minh</strong>, data engineer, vừa được giao đưa 8 bảng từ Oracle core-banking vào lakehouse để team phân tích dựng mart. Anh chưa từng dùng dbt-craft.</p>
+
+  <div class="scene">
+    <div class="scene-no">01</div>
+    <div class="scene-body">
+      <h3>Nhìn thấy khả năng trước khi phải biết tên nó</h3>
+      <p class="scene-goal">Màn hình: /data — Data loads · Trạng thái: chưa có load nào</p>
+      <p>Minh mở tab <em>Data loads</em>. Thay vì empty state kèm một nút, anh thấy <strong>gallery nguồn</strong>: PostgreSQL, Oracle, MySQL, REST API, Files — mỗi ô có logo, một dòng mô tả, và nhãn phụ nói nguồn đó cần gì (“cần một connection”, “URL công khai là đủ”). Ô nào deployment chưa bật thì mờ đi kèm lý do (“File loads chưa được bật: chưa cấu hình <code>INGEST_FILE_ROOTS</code>”) — không ẩn đi, vì ẩn thì người dùng không bao giờ biết để đi hỏi admin.</p>
+      <p>Minh bấm <strong>Oracle</strong>. Wizard mở ra <em>full page</em>, không phải modal — vì bước 3 sẽ là một bảng và bảng không sống được trong hộp thoại <code>max-w-2xl</code>.</p>
+      <div class="wire">
+        <div class="wire-cap">Bước 1 · Chọn nguồn</div>
+<pre>┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│  PostgreSQL   │ │    Oracle     │ │    MySQL      │
+│  Bảng qua SQL │ │  Bảng qua SQL │ │  Bảng qua SQL │
+│  Cần connect. │ │  Cần connect. │ │  Chỉ đọc      │
+└───────────────┘ └───────────────┘ └───────────────┘
+┌───────────────┐ ┌───────────────┐
+│   REST API    │ │  Files (đĩa)  │
+│  JSON → bảng  │ │ CSV/JSONL/Pq  │
+│  URL công khai│ │ ⚠ chưa bật    │
+│  là đủ        │ │ INGEST_FILE_… │
+└───────────────┘ └───────────────┘</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="scene">
+    <div class="scene-no">02</div>
+    <div class="scene-body">
+      <h3>Kết nối, và biết ngay là đúng</h3>
+      <p class="scene-goal">Bước 2 · Connection — chọn có sẵn hoặc tạo tại chỗ</p>
+      <p>Chỉ có một danh sách connection Oracle của Minh, cộng một dòng <strong>+ Tạo connection Oracle mới</strong> mở form ngay trong wizard (đúng pattern <em>Set up a lakehouse</em> đang có). Khi Minh chọn xong, <code>/connection/test</code> chạy <strong>tự động</strong>, không cần bấm, và kết quả hiện thành một checklist:</p>
+      <div class="wire">
+        <div class="wire-cap">Bước 2 · Connection — kết quả kiểm tra</div>
+<pre>Connection: Core Banking PRD                          [Đổi]
+
+  ✓ Máy chủ phản hồi            oradb.internal:1521   34 ms
+  ✓ Đăng nhập thành công        SVC_ANALYTICS
+  ✓ Đọc được danh mục bảng      412 bảng
+  ✓ Host nằm trong danh sách cho phép
+
+                                       [Tiếp tục →]</pre>
+      </div>
+      <p>Nếu một dòng đỏ, nút <em>Tiếp tục</em> khoá lại và thông báo nói <strong>việc cần làm</strong>, không phải mã lỗi: “Không đăng nhập được bằng <code>SVC_ANALYTICS</code>. Kiểm tra lại mật khẩu trong connection, hoặc nhờ DBA cấp quyền <code>SELECT</code>.” Nút <em>Sửa connection</em> ngay bên cạnh.</p>
+    </div>
+  </div>
+
+  <div class="scene">
+    <div class="scene-no">03</div>
+    <div class="scene-body">
+      <h3>Màn hình quan trọng nhất: chọn bảng và xem trước</h3>
+      <p class="scene-goal">Bước 3 · Chọn dữ liệu — nơi thay thế cả bước 1 và bước 3 hiện tại</p>
+      <p>Wizard kéo schema về ngay khi vào bước này. Trái là cây <strong>schema → bảng</strong> có ô tìm kiếm và <em>Chọn tất cả trong schema này</em>. Phải là bảng cấu hình, mỗi dòng một bảng đã chọn.</p>
+      <p>Minh gõ “CUST”, tick 8 bảng. Với mỗi bảng, hệ thống <strong>đoán sẵn</strong> — và phải nói rõ là nó đang đoán:</p>
+      <ul>
+        <li><strong>Cursor</strong> — cột <code>TIMESTAMP</code>/<code>DATE</code> có tên giống <code>updated_at</code>, <code>modified_*</code>, <code>last_*</code>; nếu không có thì cột PK kiểu số tăng dần.</li>
+        <li><strong>Primary key</strong> — đọc từ constraint của nguồn. Có constraint thì hiện nhãn <em>từ nguồn</em> và khoá lại (Airbyte làm đúng thế).</li>
+        <li><strong>Sync mode</strong> — có cursor + có PK → <code>merge</code>; có cursor, không PK → <code>append</code>; không có cursor → <code>replace</code> kèm cảnh báo.</li>
+        <li><strong>Tên bảng đích</strong> — snake_case hoá tên nguồn, sửa được.</li>
+      </ul>
+      <div class="wire">
+        <div class="wire-cap">Bước 3 · Chọn dữ liệu (bố cục hai cột)</div>
+<pre>  Tìm bảng  [ CUST                    ]     8 / 412 đã chọn
+
+  ▾ BANKING                        │ Bảng          Cách cập nhật  Cursor        Khoá chính   Đích
+    ☑ CUSTOMERS         1.2M dòng  │ CUSTOMERS     ▾ merge        ▾ UPDATED_AT  CUST_ID 🔒   customers
+    ☑ CUSTOMER_ADDRESS   890K      │ CUST_ADDRESS  ▾ merge        ▾ UPDATED_AT  ADDR_ID 🔒   customer_address
+    ☑ CUST_SEGMENT        12K      │ CUST_SEGMENT  ▾ replace      ▾ — không có  —            cust_segment  ⚠
+    ☐ CUSTOMER_AUDIT     44M       │ …
+    ☐ GL_ENTRY          210M       │
+  ▸ STAGING                        │  ⚠ CUST_SEGMENT không có cột theo dõi thay đổi. Mỗi lần
+                                   │    chạy sẽ đọc lại toàn bộ 12K dòng. Chấp nhận được ở
+                                   │    kích cỡ này — với bảng lớn thì không.
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ CUSTOMERS — 10 dòng đầu                                    [Làm mới]     │
+  │ CUST_ID  FULL_NAME       OPEN_DATE   UPDATED_AT           STATUS         │
+  │ NUMBER   VARCHAR2(120)   DATE        TIMESTAMP(6)         CHAR(1)        │
+  │ 1004821  NGUYEN VAN A    2019-03-02  2026-09-18 04:11:07  A              │
+  │ 1004822  TRAN THI B      2021-11-14  2026-09-19 22:40:55  A              │
+  └──────────────────────────────────────────────────────────────────────────┘</pre>
+      </div>
+      <p>Click vào một dòng thì panel dưới hiện <strong>cột, kiểu dữ liệu và 10 dòng mẫu</strong> — đây là điều Snowsight làm mà dbt-craft đang thiếu hoàn toàn. Nó trả lời ba câu một lúc: đúng bảng chưa, cursor có hợp lý không, dữ liệu có rác không.</p>
+      <p>Cảnh báo là <em>ngữ cảnh</em>, không phải chặn: bảng không có cursor được đánh dấu vàng kèm số dòng, để Minh tự quyết định 12K thì kệ, còn 44M thì phải nghĩ lại.</p>
+    </div>
+  </div>
+
+  <div class="scene">
+    <div class="scene-no">04</div>
+    <div class="scene-body">
+      <h3>Đích đến, và tên cuối cùng của mọi thứ</h3>
+      <p class="scene-goal">Bước 4 · Đích — giữ nguyên logic hiện có, thêm preview</p>
+      <p>Project, Lakehouse hay warehouse của project, schema đích, partition — logic hiện tại đã đúng, kể cả cái nút tạo lakehouse inline. Thêm đúng một thứ: <strong>preview tên bảng đầy đủ</strong>, cập nhật theo từng ký tự gõ vào ô schema.</p>
+      <div class="wire">
+        <div class="wire-cap">Bước 4 · Đích — preview</div>
+<pre>Project    ▾ Core Banking Analytics
+Ghi vào    ▾ Lakehouse  (Parquet trên storage chung + catalog DuckLake)
+Schema     [ raw_core                     ]
+Partition  [ month(updated_at)            ]  áp cho mọi bảng của load này
+
+Sẽ tạo 8 bảng:
+  lake.raw_core.customers            lake.raw_core.cust_segment
+  lake.raw_core.customer_address     lake.raw_core.…              [xem tất cả]
+
+⚠ lake.raw_core.customers đã tồn tại (nạp lần cuối 2026-09-19 bởi "CRM daily").
+   Load này sẽ ghi cùng bảng đó.</pre>
+      </div>
+      <p>Cảnh báo trùng tên bảng là thứ chỉ backend biết — và đúng lúc để nói là ngay đây, không phải sau khi ghi đè.</p>
+    </div>
+  </div>
+
+  <div class="scene">
+    <div class="scene-no">05</div>
+    <div class="scene-body">
+      <h3>Lịch chạy, cảnh báo, và lần chạy đầu tiên có chủ ý</h3>
+      <p class="scene-goal">Bước 5 · Lịch &amp; hoàn tất</p>
+      <p>Đặt tên load, chọn lịch (<em>Chạy tay</em> / <em>Theo lịch</em> với các preset và cron UTC — tái dùng nguyên <code>GET /dbt/cron/preview</code> đã có để hiện “Lần chạy kế tiếp: 03:00 UTC ngày mai”), và một webhook báo lỗi.</p>
+      <p>Rồi tới khoảnh khắc của Fivetran — <strong>không Save im lặng</strong>. Hai nút, hai ý định rõ ràng:</p>
+      <div class="wire">
+        <div class="wire-cap">Bước 5 · Hoàn tất</div>
+<pre>Tên load    [ Oracle core → raw_core       ]
+Lịch chạy   ◉ Theo lịch   ▾ Mỗi ngày 03:00 UTC    Kế tiếp: 21/09 03:00 UTC
+            ○ Chỉ chạy tay
+Báo lỗi tới [ https://hooks.slack.com/…    ]  (kiểm tra qua host guard)
+
+Khi nguồn đổi cột   ◉ Thêm cột mới vào đích     ○ Dừng lại và báo lỗi
+
+        [Lưu, chưa chạy]            [Lưu và chạy lần đầu →]</pre>
+      </div>
+      <p>Minh bấm <strong>Lưu và chạy lần đầu</strong>. Trình duyệt chuyển thẳng sang trang chi tiết load, stream SSE đang chạy — không quay về danh sách rồi bắt anh tự tìm lại dòng của mình.</p>
+    </div>
+  </div>
+
+  <div class="scene">
+    <div class="scene-no">06</div>
+    <div class="scene-body">
+      <h3>Sống với nó: trang chi tiết thay cho accordion</h3>
+      <p class="scene-goal">/data/loads/{id} — trang riêng, không phải hàng mở rộng</p>
+      <div class="wire">
+        <div class="wire-cap">Trang chi tiết load</div>
+<pre>Oracle core → raw_core                        ● Thành công · 4 phút trước
+Core Banking PRD → lake.raw_core · 8 bảng · Mỗi ngày 03:00 UTC · kế tiếp 14 giờ nữa
+                                    [Chạy ngay ▾] [Sửa] [Tạm dừng] [Xoá]
+──────────────────────────────────────────────────────────────────────
+ Lần chạy │ Bảng │ Cài đặt │ sources.yml
+
+ Bảng                Dòng lần cuối   Tổng dòng   Cursor tới        Cập nhật
+ customers                  4,182     1,204,331  2026-09-20 02:58  merge
+ customer_address           1,077       891,204  2026-09-20 02:58  merge
+ cust_segment              12,004        12,004  —                 replace ⚠
+
+ Lịch sử   03:00 ✓ 42s · 17,263 dòng │ hôm qua ✓ 51s │ 18/09 ✗ timeout [log]</pre>
+      </div>
+      <p>Cột <strong>Cursor tới</strong> là thứ vận hành cần nhất và hiện chưa ở đâu có: nó nói dữ liệu đang tươi tới mốc nào — khác hẳn “lần chạy cuối lúc nào”, vì một lần chạy thành công vẫn có thể chỉ kéo về tới hôm kia.</p>
+      <p>Tab <strong>sources.yml</strong> không còn là snippet để copy. Nó hiện file mà dbt-craft <em>đã ghi</em> vào <code>models/sources/_raw_core.yml</code> sau lần chạy thành công đầu tiên, kèm nút <em>Ghi lại</em>. Ingest và dbt vốn cùng biết tên bảng; không có lý do gì bắt con người làm cầu nối.</p>
+    </div>
+  </div>
+
+  <h3>Bảng trạng thái → giao diện</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Trạng thái</th><th>Người dùng thấy</th><th>Lối thoát</th></tr></thead>
+    <tbody>
+      <tr><td>Đang kéo schema</td><td>Skeleton rows + “Đang đọc danh mục bảng từ Core Banking PRD…”</td><td>Huỷ; quay lại bước connection</td></tr>
+      <tr><td>Nguồn có &gt;500 bảng</td><td>Chỉ hiện kết quả tìm kiếm, kèm “412 bảng — gõ để lọc”</td><td>Tìm theo schema</td></tr>
+      <tr><td>Connection test đỏ</td><td>Checklist với dòng hỏng, thông báo nói việc cần làm</td><td><em>Sửa connection</em> inline</td></tr>
+      <tr><td>Bảng không có cursor</td><td>Chip vàng trên dòng + số dòng ước tính</td><td>Chọn cột khác, hoặc chấp nhận</td></tr>
+      <tr><td>Merge nhưng không có PK</td><td>Dòng đỏ, nút Tiếp tục khoá</td><td>Chọn PK, hoặc đổi sang append</td></tr>
+      <tr><td>Project chưa có lakehouse</td><td>Giữ nguyên hành vi hiện tại: nút tạo lake inline</td><td>Hoặc ghi vào warehouse của project</td></tr>
+      <tr><td>Bảng đích đã tồn tại</td><td>Cảnh báo kèm tên load đang sở hữu nó</td><td>Đổi schema, hoặc xác nhận</td></tr>
+      <tr><td>Đang chạy</td><td>Log SSE + tiến độ theo bảng</td><td><em>Dừng</em> → <code>/ingest/sources/{id}/cancel</code></td></tr>
+      <tr><td>Chạy lỗi</td><td>Dòng đỏ trong lịch sử + webhook đã bắn + banner trên trang chi tiết</td><td><em>Xem log</em>, <em>Chạy lại</em>, <em>Chạy lại full refresh</em></td></tr>
+      <tr><td>Nguồn đổi schema</td><td>Theo chính sách đã chọn: thêm cột, hoặc dừng và báo</td><td>Xem diff cột, chạy full refresh</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<hr>
+
+<section class="wide">
+  <span class="sec-no">Phần 4</span>
+  <h2>Thay đổi cần có ở backend</h2>
+  <p class="lede">Kịch bản trên chỉ cần đúng bốn thay đổi thật. Phần còn lại là UI.</p>
+
+  <h3>A · Cấu hình per-table (mở khoá G1)</h3>
+  <p>Cách nhẹ nhất mà không phá dữ liệu cũ: giữ nguyên <code>tables</code>, thêm một cột JSONB <code>tableConfig</code> khoá theo tên bảng. Giá trị trong đó thắng; thiếu thì rơi về giá trị mức load đang có. Không cần bảng mới, không cần migration dữ liệu, mọi load cũ chạy y nguyên.</p>
+  <div class="wire">
+<pre>// prisma/schema.prisma — IngestSource
+/// Ghi đè theo từng bảng. Thiếu khoá nào thì rơi về giá trị mức source,
+/// nên mọi load tạo trước thay đổi này vẫn chạy y hệt.
+tableConfig  Json?  @map("table_config") @db.JsonB
+
+// { "CUSTOMERS": { "cursorField":"UPDATED_AT", "writeDisposition":"merge",
+//                  "primaryKey":["CUST_ID"], "destinationTable":"customers" } }</pre>
+  </div>
+  <p>Phía runner, <code>_apply_hints</code> trong <code>ingest/runner.py</code> đang áp cursor cho <code>sql_database</code> và <code>filesystem</code> ở mức source — đổi thành tra cứu theo tên bảng với fallback. Đây là điểm sửa duy nhất, vì nó là chỗ hint được gắn.</p>
+
+  <h3>B · Endpoint preview (mở khoá G2, và mọi gợi ý ở Bước 3)</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Endpoint</th><th>Trả về</th><th>Ghi chú</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /ingest/connections/{id}/tables</code></td><td>Mở rộng: thêm <code>schema</code>, <code>row_estimate</code>, <code>columns[]</code> (tên, kiểu, nullable), <code>primary_key[]</code></td><td>SQLAlchemy <code>Inspector</code> đã cho cả bốn thứ này; hiện chỉ lấy tên bảng rồi vứt phần còn lại</td></tr>
+      <tr><td><code>POST /ingest/preview</code></td><td><code>{columns, rows}</code> — 10 dòng đầu, cộng <code>suggested_cursor</code> và <code>suggested_primary_key</code></td><td>Cùng hợp đồng với <code>/ingest/rest/probe</code> đã có, chỉ khác nguồn. Đọc qua chính connection dlt sẽ dùng.</td></tr>
+      <tr><td><code>POST /connection/test</code></td><td>Đã có — chỉ cần gọi từ wizard</td><td>Không đổi backend</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note warn">
+    <p><b>Ranh giới an toàn phải giữ:</b> <code>/ingest/preview</code> nhận tên bảng từ người dùng và nối vào SQL. Dùng lại <code>_TABLE_RE</code> đang có, đi qua <code>assert_host_allowed</code>, và luôn giới hạn <code>LIMIT</code> ở server — không nhận số dòng từ client. Cùng ranh giới mà <code>rest_source</code> đang giữ: cấu hình là khai báo, không bao giờ là mã.</p>
+  </div>
+
+  <h3>C · Lịch chạy cho ingest (mở khoá G4 + G5)</h3>
+  <p>Không tạo bảng lịch thứ hai. <code>dbt_schedules</code> đã có leadership qua Redis, croniter UTC, <code>nextRunAt</code> tiến trước khi chạy, và <code>webhookUrl</code> đi qua host guard — viết lại toàn bộ chuyện đó cho ingest là lãng phí. Thêm một cột nullable <code>ingestSourceId</code>; khi có giá trị thì scheduler bắn ingest thay vì dbt, qua cùng <code>run_launcher.py</code>.</p>
+  <p>Một hệ quả đáng giá và miễn phí: một lịch <em>có thể</em> chạy ingest rồi chạy dbt ngay sau đó — đúng thứ tự mà người dùng thực sự muốn.</p>
+
+  <h3>D · sources.yml tự ghi (mở khoá G9)</h3>
+  <p><code>GET /ingest/sources/{id}/dbt-sources</code> đã sinh đúng nội dung. Sau lần chạy thành công đầu tiên, ghi thẳng vào <code>models/sources/_{dataset}.yml</code> của project. Giữ nguyên endpoint cũ cho tab xem trước.</p>
+</section>
+
+<hr>
+
+<section class="wide">
+  <span class="sec-no">Phần 5</span>
+  <h2>Đã triển khai</h2>
+  <p class="lede">Backend đi trước UI, đúng thứ tự đã đặt ra. Toàn bộ mười một khoảng cách G1–G11 đã đóng.</p>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Phase</th><th>Đã làm</th><th>File</th><th>Bằng chứng</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>1</strong><br><span class="pill p-good">Xong</span></td>
+        <td><code>POST /ingest/preview</code> trả cột, 10 dòng mẫu và cursor đề xuất, đọc qua đúng connection mà load sẽ dùng. Giới hạn dòng nằm ở server, không nhận từ client. Gợi ý cursor chỉ bắn khi cột <em>vừa</em> kiểu ngày <em>vừa</em> có tên như dấu thời gian — đoán theo kiểu thôi sẽ chọn trúng <code>birth_date</code>. Merge key chỉ lấy từ constraint nguồn khai báo.</td>
+        <td><code>ingest/preview.py</code>, <code>ingest/hints.py</code>, <code>sql_source.preview_table</code>, <code>file_source.preview_files</code></td>
+        <td class="num">12 test mới</td>
+      </tr>
+      <tr>
+        <td><strong>2</strong><br><span class="pill p-good">Xong</span></td>
+        <td>Cột <code>table_config</code> JSONB. Router giải mọi bảng ra <code>table_config</code> trước khi gửi job, runner đọc một map duy nhất. Hint <code>write_disposition</code> giờ đặt theo từng resource, nên <code>pipeline.run()</code> gọi không tham số — một tham số ở đó sẽ đè hint và dồn mọi bảng về một hành vi.</td>
+        <td>migration, <code>ingest.py:_validated_table_config</code>, <code>runner.py:_apply_hints</code></td>
+        <td class="num">13 test, gồm e2e hai bảng hai cursor</td>
+      </tr>
+      <tr>
+        <td><strong>3</strong><br><span class="pill p-good">Xong</span></td>
+        <td>Wizard 5 bước ở <code>/data/loads/new</code>: gallery nguồn, test connection tự chạy khi chọn, cây bảng có tìm kiếm + chọn tất cả, bảng cấu hình per-table điền sẵn từ preview, panel 10 dòng mẫu, preview tên bảng đích. Quyết định nằm trong <code>lib/ingest-draft.ts</code> để test được mà không cần render. <code>SourceDialog.tsx</code> (750 dòng) đã xoá.</td>
+        <td><code>components-v2/sources/wizard/*</code>, <code>lib/ingest-draft.ts</code></td>
+        <td class="num">14 test</td>
+      </tr>
+      <tr>
+        <td><strong>5</strong><br><span class="pill p-good">Xong</span></td>
+        <td><strong>Chính sách schema drift (G10).</strong> <code>schema_contract</code> trên source: <em>evolve</em> nhận cột mới (hành vi cũ, nên là mặc định) hoặc <em>freeze</em> dừng load và gọi tên cột đó. Cố tình không có giá trị thứ ba chạy tiếp rồi bỏ cột — dù dlt có sẵn hai — vì một load thành công trong khi lặng lẽ vứt dữ liệu là cái hỏng không ai thấy. <code>tables</code> vẫn evolve ở cả hai, nếu không một source mới không bao giờ tạo nổi bảng của nó.</td>
+        <td><code>runner.schema_contract</code>, migration, radio ở bước Finish</td>
+        <td class="num">5 test, gồm e2e ALTER TABLE</td>
+      </tr>
+      <tr>
+        <td><strong>4</strong><br><span class="pill p-good">Xong</span></td>
+        <td>Trang <code>/data/loads/{id}</code> (Runs / Tables / sources.yml) với thẻ lịch chạy. <code>dbt_schedules.ingest_source_id</code> cho scheduler bắn load qua <code>launch_ingest_run</code>, webhook báo lỗi đi chung đường cũ. <code>sources.yml</code> tự ghi vào project sau mỗi lần chạy thành công — và ghi <em>trước</em> sự kiện <code>completed</code> để sự kiện đó vẫn là frame cuối client nhận.</td>
+        <td><code>run_launcher.launch_ingest_run</code>, <code>scheduler.py</code>, <code>LoadDetail.tsx</code>, <code>LoadScheduleCard.tsx</code></td>
+        <td class="num">2 test scheduler + e2e cascade</td>
+      </tr>
+    </tbody>
+  <h3>Khác với kế hoạch — và tại sao</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Kế hoạch</th><th>Thực tế</th><th>Lý do</th></tr></thead>
+    <tbody>
+      <tr><td>Số dòng ước tính trong cây bảng</td><td><span class="pill p-crit">Bỏ</span></td><td><code>SELECT count(*)</code> trên vài trăm bảng nguồn là việc không có trần, chỉ để gợi ý một form. Panel dòng mẫu trả lời đúng câu hỏi đó cho bảng đang xem.</td></tr>
+      <tr><td>Nhóm theo schema trong cây bảng</td><td><span class="pill p-crit">Bỏ</span></td><td>dlt <code>sql_database</code> đọc schema mặc định của connection. Cho chọn schema khác là hứa thứ bộ nạp không làm được.</td></tr>
+      <tr><td>Đổi tên bảng đích theo từng bảng</td><td><span class="pill p-crit">Bỏ</span></td><td>dlt đã snake_case hoá mọi định danh, nên việc đổi tên là tự động. Wizard <em>hiện</em> tên sẽ thành gì thay vì cho sửa.</td></tr>
+      <tr><td>Lịch chạy ở bước 5 của wizard</td><td><span class="pill p-warn">Dời</span></td><td>Lịch cần một load đã lưu để trỏ vào. Thẻ lịch nằm ngay trên trang mà wizard chuyển tới sau khi lưu — vẫn là thứ đầu tiên nhìn thấy.</td></tr>
+      <tr><td>Ba lựa chọn drift như dlt cung cấp</td><td><span class="pill p-warn">Rút còn hai</span></td><td>dlt có <code>discard_row</code> và <code>discard_value</code>. Cả hai đều để load báo thành công trong khi vứt dữ liệu — đúng cái hỏng mà bước này sinh ra để chống. Chỉ phơi ra <em>nhận</em> và <em>dừng</em>.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><b>Một bug sửa kèm:</b> <code>sources.yml</code> trước đây in tên bảng theo <em>cách viết ở nguồn</em>, nên một bảng Oracle <code>CUSTOMERS</code> sinh ra <code>- name: CUSTOMERS</code> trong khi dlt đã ghi nó thành <code>customers</code> — dbt trỏ vào một bảng không tồn tại. Giờ đi qua <code>ingest/naming.py</code>, dùng chung với preview của wizard.</p>
+    <p><b>Một món nợ ghi rõ:</b> <code>launch_ingest_run</code> import bộ máy ingest từ <code>app/routers/ingest.py</code> bên trong thân hàm. Đường nối đúng là tách nó ra một service riêng; đánh dấu <code>ponytail:</code> tại chỗ thay vì cắt-dán 400 dòng chỉ để đặt một load lên cron.</p>
+  </div>
+</section>
+
+<hr>
+
+<section class="col">
+  <span class="sec-no">Phần 6</span>
+  <h2>Cố tình không làm</h2>
+  <p class="lede">Những thứ các platform kia có, mà dbt-craft chưa nên có — kèm mốc để xem lại.</p>
+  <ul>
+    <li><strong>Chọn/chặn/hash theo từng cột</strong> (Fivetran, Airbyte). Một bảng raw đúng nghĩa thì nên copy nguyên; lọc cột là việc của dbt, và dbt đã ở ngay đây. <em>Làm khi</em> có yêu cầu compliance cụ thể về PII.</li>
+    <li><strong>CDC / log-based replication.</strong> dlt <code>sql_database</code> đọc qua cursor. CDC là một sản phẩm riêng, không phải một checkbox. <em>Làm khi</em> cursor không đủ nữa — nghĩa là khi cần bắt cả dòng bị xoá.</li>
+    <li><strong>Marketplace connector.</strong> Ba source kind hiện tại phủ hầu hết nhu cầu; mỗi connector mới là một bề mặt bảo mật mới. <em>Làm khi</em> cùng một SaaS được hỏi tới lần thứ ba.</li>
+    <li><strong>Trang data contract / schema registry.</strong> Chính sách drift hai lựa chọn ở Bước 5 đã phủ 90%. <em>Làm khi</em> có nhiều team cùng ghi vào một lake và bắt đầu giẫm chân nhau.</li>
+    <li><strong>Đo lường chi phí kiểu MAR.</strong> Không có mô hình tính tiền để hiển thị.</li>
+    <li><strong>Ingestion gateway riêng</strong> (Databricks). Kiến trúc của họ cần staging volume; dlt viết thẳng, không cần.</li>
+  </ul>
+  <div class="note">
+    <p>Tổng: kịch bản trên cần <b>một cột database, hai endpoint, một cột khoá ngoài trên schedule</b> — phần còn lại là UI trên những gì backend đã biết nhưng chưa nói ra. Rủi ro lớn nhất không nằm ở code mà ở Phase 3: viết lại một wizard 750 dòng đang chạy tốt. Hai phase backend đi trước chính là để lúc đó không phải vừa viết UI vừa đoán dữ liệu.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="wide">
+  <p><strong>Nguồn tham khảo</strong></p>
+  <ol>
+    <li><a href="https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-pipeline">Ingest data from SQL Server — Databricks on AWS</a> (các trang của wizard)</li>
+    <li><a href="https://docs.databricks.com/aws/en/ingestion/overview">What is Lakeflow Connect? — Databricks on AWS</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/databricks/connect/managed-ingestion">Connect to managed ingestion sources — Azure Databricks</a></li>
+    <li><a href="https://docs.snowflake.com/en/user-guide/data-load-web-ui">Load data using Snowsight — Snowflake Documentation</a> (trang Edit Schema, suy luận kiểu dữ liệu)</li>
+    <li><a href="https://docs.snowflake.com/en/user-guide/ui-snowsight-quick-tour">Snowsight quick tour — Snowflake Documentation</a></li>
+    <li><a href="https://fivetran.com/docs/getting-started/fivetran-dashboard/connectors/schema">Connection Schemas — Fivetran Docs</a> (“Almost ready to sync”, review trước lần sync đầu)</li>
+    <li><a href="https://fivetran.com/docs/using-fivetran/features/data-blocking-column-hashing/config">Configure Data Blocking and Column Hashing — Fivetran Docs</a></li>
+    <li><a href="https://docs.airbyte.com/platform/1.8/move-data/add-connection">Add a connection — Airbyte Docs</a></li>
+    <li><a href="https://docs.airbyte.com/platform/using-airbyte/configuring-schema">Configuring schemas — Airbyte Docs</a> (cursor/PK do nguồn khai báo thì khoá lại)</li>
+    <li><a href="https://docs.airbyte.com/platform/using-airbyte/core-concepts/sync-modes">Sync Modes — Airbyte Docs</a></li>
+  </ol>
+</footer>

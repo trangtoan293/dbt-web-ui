@@ -153,9 +153,13 @@ class IngestSseTest(unittest.TestCase):
             ]
         )
         observed = [call.args[0] for call in self.recorder.observe.call_args_list]
-        self.assertEqual(
-            [event["message"] for event in observed if event["type"] == "log"],
-            ["one", "two"],
+        messages = [event["message"] for event in observed if event["type"] == "log"]
+        # The runner's own output, in order, plus the sources.yml the load writes
+        # into the project once it has actually created the tables it names.
+        self.assertEqual(messages[:2], ["one", "two"])
+        self.assertTrue(
+            any("sources" in message for message in messages[2:]),
+            f"the generated sources.yml was not recorded: {messages}",
         )
 
 

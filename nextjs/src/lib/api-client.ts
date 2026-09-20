@@ -111,12 +111,25 @@ export async function testConnectionById(id: string, type: 'dremio' | 'connectio
 export interface IngestSourceRow {
   id: string
   projectId: string
-  sourceConnectionId: string
+  sourceConnectionId: string | null
+  sourceType: 'sql_database' | 'rest_api' | 'filesystem'
   name: string
   dataset: string
   tables: string[]
+  /** Per-table overrides; absent keys fall back to the source-level values. */
+  tableConfig?: Record<string, {
+    cursorField?: string | null
+    cursorInitialValue?: string | null
+    writeDisposition?: string
+    primaryKey?: string[]
+  }> | null
+  sourceConfig?: Record<string, unknown> | null
+  cursorField?: string | null
+  cursorInitialValue?: string | null
   destination: 'connection' | 'ducklake'
   writeDisposition: string
+  /** 'evolve' takes a new source column; 'freeze' stops the load and names it. */
+  schemaContract?: string
   primaryKey?: string[] | null
   partitionBy?: string[] | null
   sourceConnection?: { id: string; name: string; connectionType: string } | null
@@ -266,6 +279,48 @@ export async function getIngestConnectionTables(connectionId: string) {
   )
 }
 
+export interface IngestColumn {
+  name: string
+  type: string
+  nullable: boolean
+}
+
+export interface IngestPreviewResult {
+  success: boolean
+  message?: string
+  columns: IngestColumn[]
+  rows: Array<Record<string, unknown>>
+  primary_key: string[]
+  suggested_cursor: string | null
+  suggested_write_disposition: string | null
+  /** Filesystem sources only: which files the glob actually matched. */
+  files: string[]
+}
+
+/**
+ * Columns, a few sample rows and a proposed cursor for one source table.
+ *
+ * Read through the same connection the load will use, so anything previewable
+ * is loadable. The row count is the server's to decide - see
+ * dbt-runner/ingest/preview.py - which is why there is no limit argument.
+ */
+export async function previewIngestSource(body: {
+  sourceType: 'sql_database' | 'filesystem'
+  connectionId?: string | null
+  table?: string
+  sourceConfig?: Record<string, unknown> | null
+}) {
+  return apiFetch<IngestPreviewResult>('/api/dbt-runner/ingest/preview', {
+    method: 'POST',
+    body: JSON.stringify({
+      source_type: body.sourceType,
+      connection_id: body.connectionId || null,
+      table: body.table ?? null,
+      source_config: body.sourceConfig ?? null,
+    }),
+  })
+}
+
 export interface RestProbeResult {
   success: boolean
   url?: string
@@ -319,6 +374,20 @@ export async function getIngestRuns(sourceId: string, limit = 25) {
   )
 }
 
+export interface LatestIngestRun {
+  source_id: string
+  status: string
+  started_at: string | null
+  completed_at: string | null
+  rows_loaded: number | null
+  error_message: string | null
+}
+
+/** The latest run of every load, in one call, for the list page. */
+export async function getLatestIngestRuns() {
+  return apiFetch<{ items: LatestIngestRun[] }>('/api/dbt-runner/ingest/runs/latest')
+}
+
 export async function getIngestRunLogs(runId: string) {
   return apiFetch<{ id: string; status: string; logs: string }>(
     `/api/dbt-runner/ingest/runs/${runId}/logs`,
@@ -356,6 +425,8 @@ export interface ScheduleRow {
   lastRunId: string | null
   lastStatus: string | null
   nextRunAt: string | null
+  /** Set when this schedule runs an ingest load rather than a dbt command. */
+  ingestSourceId: string | null
   project?: { id: string; name: string } | null
 }
 

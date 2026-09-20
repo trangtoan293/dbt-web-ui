@@ -34,7 +34,7 @@ from app.core.file_lock import AsyncFileLock
 from app.core.redis_client import get_redis
 from app.models.dbt import DbtCommand
 from app.services.notify import post_run_notification
-from app.services.run_launcher import launch_dbt_run
+from app.services.run_launcher import launch_dbt_run, launch_ingest_run
 from app.services.lakes import resolve_lake, resolve_project_lake
 from ingest import iceberg, lakehouse
 
@@ -188,7 +188,7 @@ class RunScheduler:
                     """
                     SELECT s.id, s.project_id, s.name, s.command, s.selector,
                            s.target, s.cron, s.webhook_url, s.publish_schema,
-                           s.next_run_at, s.created_by
+                           s.next_run_at, s.created_by, s.ingest_source_id
                     FROM dbt_schedules s
                     JOIN dbt_projects p ON p.id = s.project_id
                     WHERE s.is_active = true
@@ -253,14 +253,7 @@ class RunScheduler:
             )
             return False
 
-        command = str(schedule["command"] or "run")
-        request = DbtCommand(
-            project_id=str(schedule["project_id"]),
-            # The enum stores source_freshness; the CLI wants two words.
-            command="source freshness" if command == "source_freshness" else command,
-            selector=schedule["selector"] or None,
-            target=schedule["target"] or None,
-        )
+        ingest_source_id = schedule.get("ingest_source_id")
 
         async def on_complete(run: Dict[str, Any]) -> None:
             await self._record_outcome(schedule_id, run)
@@ -268,20 +261,45 @@ class RunScheduler:
                 await post_run_notification(
                     schedule["webhook_url"], run, schedule["name"]
                 )
-            await self._publish_iceberg(schedule, run)
+            # An ingest load builds no dbt models, so there is nothing new to
+            # publish; the dbt run that reads it is what should carry that.
+            if not ingest_source_id:
+                await self._publish_iceberg(schedule, run)
 
         async with async_session() as session:
-            started = await launch_dbt_run(
-                request,
-                str(schedule["created_by"]),
-                session=session,
-                on_complete=on_complete,
-            )
+            if ingest_source_id:
+                started = await launch_ingest_run(
+                    str(ingest_source_id),
+                    str(schedule["created_by"]),
+                    session=session,
+                    on_complete=on_complete,
+                )
+            else:
+                command = str(schedule["command"] or "run")
+                started = await launch_dbt_run(
+                    DbtCommand(
+                        project_id=str(schedule["project_id"]),
+                        # The enum stores source_freshness; the CLI wants two words.
+                        command="source freshness"
+                        if command == "source_freshness"
+                        else command,
+                        selector=schedule["selector"] or None,
+                        target=schedule["target"] or None,
+                    ),
+                    str(schedule["created_by"]),
+                    session=session,
+                    on_complete=on_complete,
+                )
+            # An ingest load's run row is created inside the background task, so
+            # its id is not known yet - last_run_id stays null rather than being
+            # filled with the source id and pointing at nothing.
             await session.execute(
                 text(
                     """
                     UPDATE dbt_schedules
-                    SET last_run_at = :at, last_run_id = CAST(:rid AS uuid),
+                    SET last_run_at = :at,
+                        last_run_id = CASE WHEN :rid IS NULL THEN NULL
+                                           ELSE CAST(:rid AS uuid) END,
                         last_status = 'running'
                     WHERE id = CAST(:sid AS uuid)
                     """

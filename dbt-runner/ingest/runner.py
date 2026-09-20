@@ -123,46 +123,97 @@ def _resources(source: Any, tables: list[str]) -> Dict[str, Any]:
     return {tables[0]: source} if tables else {}
 
 
+def schema_contract(policy: Any) -> Dict[str, str]:
+    """dlt's schema contract for one drift policy.
+
+    Two policies, because there are two useful answers to "the source grew a
+    column": take it, or stop and say so. The silent middle - loading on and
+    dropping the column - is the failure that looks like success, so it is not
+    offered.
+
+    `tables` stays `evolve` under both: a load's first run is what creates its
+    tables, and freezing those would make a new source unusable. What `freeze`
+    freezes is a column appearing in a table that already exists.
+
+    Anything unrecognised - including None, which is every source row written
+    before this setting existed - means today's behaviour.
+    """
+    if policy == "freeze":
+        return {"tables": "evolve", "columns": "freeze", "data_type": "freeze"}
+    return {"tables": "evolve", "columns": "evolve", "data_type": "evolve"}
+
+
+def _table_settings(config: Dict[str, Any], table: str) -> Dict[str, Any]:
+    """How this one table loads, from `table_config` or the job-wide values.
+
+    The router resolves every table into `table_config` before the job is sent,
+    so the fallback here is only for a config written before that existed - a
+    resumed job, or a hand-built one in a test.
+    """
+    entry = (config.get("table_config") or {}).get(table)
+    if entry:
+        return entry
+    return {
+        "cursor_field": config.get("cursor_field"),
+        "cursor_initial_value": config.get("cursor_initial_value"),
+        "write_disposition": config.get("write_disposition") or "append",
+        "primary_key": config.get("primary_key"),
+    }
+
+
 def _apply_hints(
     source: Any, tables: list[str], config: Dict[str, Any], kind: str
 ) -> None:
-    """Set the incremental cursor and merge key on every resource.
+    """Set the incremental cursor, write disposition and merge key per resource.
 
-    Without a cursor a load reads the whole source every time: `append` then
-    duplicates it and `merge` only dedupes at the destination, so the source
+    Per resource rather than once for the job: twelve tables in one warehouse
+    rarely share a cursor column, and before this they had to. Each resource
+    carries its own answer, so `run()` passes no job-wide write_disposition at
+    all - a `pipeline.run(write_disposition=...)` argument overrides these hints
+    and would flatten every table back to one behaviour.
+
+    Without a cursor a load reads the whole source table every time: `append`
+    then duplicates it and `merge` only dedupes at the destination, so the source
     warehouse is read in full either way. dlt turns the cursor into
     `WHERE cursor > last_value` pushed down to the source.
 
     Only the *incremental* is skipped for `rest_api`: its cursor is part of the
     config the router built, because an HTTP cursor has to become a request
     parameter to save any work, which a hint applied here cannot do. The merge
-    hints still apply - `run()` passes write_disposition=None for a merge and
-    leaves it to this function, so excluding rest_api outright turned every
-    REST merge into an append and duplicated the source on each run.
+    hints still apply - excluding rest_api outright turned every REST merge into
+    an append and duplicated the source on each run.
     """
     import dlt
 
-    cursor = config.get("cursor_field")
-    primary_key = config.get("primary_key")
-    is_merge = config.get("write_disposition") == "merge"
-    if not (cursor or is_merge):
-        return
-
-    incremental = None
-    if cursor and kind != "rest_api":
-        incremental = dlt.sources.incremental(
-            cursor, initial_value=config.get("cursor_initial_value") or None
-        )
-
+    contract = schema_contract(config.get("schema_contract"))
     for name, resource in _resources(source, tables).items():
-        hints: Dict[str, Any] = {}
-        if incremental is not None:
-            hints["incremental"] = incremental
-        if is_merge:
-            hints["write_disposition"] = "merge"
+        settings = _table_settings(config, name)
+        cursor = settings.get("cursor_field")
+        disposition = settings.get("write_disposition") or "append"
+
+        # Per resource rather than on pipeline.run for the same reason as the
+        # disposition: a run-level contract overrides what is set here.
+        hints: Dict[str, Any] = {
+            "write_disposition": disposition,
+            "schema_contract": contract,
+        }
+        if cursor and kind != "rest_api":
+            # One incremental per resource: dlt stores its last value against the
+            # resource, and sharing one object across tables tracking different
+            # columns would have them overwrite each other's state.
+            hints["incremental"] = dlt.sources.incremental(
+                cursor, initial_value=settings.get("cursor_initial_value") or None
+            )
+        if disposition == "merge":
+            primary_key = settings.get("primary_key")
+            if not primary_key:
+                raise ValueError(f"table '{name}': merge requires a primary key")
             hints["primary_key"] = primary_key
-        if hints:
-            resource.apply_hints(**hints)
+        resource.apply_hints(**hints)
+        tracking = f"tracking '{cursor}'" if cursor else "reading all rows"
+        _emit(f"[info] {name}: {disposition}, {tracking}")
+    if contract["columns"] == "freeze":
+        _emit("[info] a new column in the source will stop this load, not be added")
 
 
 def _row_counts(pipeline: Any, tables: list[str]) -> Dict[str, int]:
@@ -204,16 +255,10 @@ def run(config: Dict[str, Any]) -> int:
             _emit("[info] using an external lakehouse catalog as-is")
         lakehouse.provision(lake)
 
-    write_disposition: Any = config.get("write_disposition") or "append"
-    if write_disposition == "merge" and not config.get("primary_key"):
-        raise ValueError("write_disposition 'merge' requires a primary key")
-
     kind = str(config["source"].get("type") or "sql_database")
     source, tables = _build_source(config["source"])
     _emit(f"[info] reading {len(tables)} table(s) from {kind}: {', '.join(tables)}")
     _apply_hints(source, tables, config, kind)
-    if config.get("cursor_field"):
-        _emit(f"[info] incremental on '{config['cursor_field']}'")
 
     pipeline = dlt.pipeline(
         pipeline_name=config["pipeline_name"],
@@ -224,10 +269,9 @@ def run(config: Dict[str, Any]) -> int:
     )
 
     _emit(f"[info] loading into {destination['kind']}.{config['dataset']}")
-    info = pipeline.run(
-        source,
-        write_disposition=write_disposition if write_disposition != "merge" else None,
-    )
+    # No write_disposition argument: it would override the per-resource hints
+    # applied above and put every table back on one behaviour.
+    info = pipeline.run(source)
     _emit(f"[info] {info}")
 
     if destination["kind"] == "ducklake" and config.get("partition_by"):

@@ -98,6 +98,115 @@ async def _run_in_background(
         logger.warning("Run completion hook failed for %s: %s", run_id, exc)
 
 
+async def _ingest_in_background(
+    config: Dict[str, Any],
+    source_id: str,
+    project_id: str,
+    dataset: str,
+    tables: list,
+    source: Dict[str, Any],
+    on_complete: Optional[CompletionHook],
+) -> None:
+    from app.routers.ingest import run_ingest
+
+    run_id: Optional[str] = None
+    status, error = "error", None
+    rows = 0
+    started = datetime.now(timezone.utc)
+    try:
+        async for event in run_ingest(
+            config, source_id, project_id, dataset=dataset, tables=tables, source=source
+        ):
+            kind = event.get("type")
+            if kind == "started":
+                run_id = event.get("run_id")
+            elif kind == "completed":
+                status = "success"
+                rows = sum(int(v) for v in (event.get("row_counts") or {}).values())
+            elif kind == "error":
+                error = str(event.get("message") or "")
+    except Exception as exc:
+        logger.exception("Scheduled ingest failed for source %s: %s", source_id, exc)
+        error = str(exc)
+
+    if on_complete is None:
+        return
+    completed = datetime.now(timezone.utc)
+    try:
+        # Shaped like a dbt run summary so the webhook payload and the schedule's
+        # last_status need no second code path. `command` names what actually
+        # ran, which is what a Slack message has to say.
+        await on_complete(
+            {
+                "id": run_id,
+                "project_id": project_id,
+                "project_name": str(source.get("name") or "ingest"),
+                "command": "ingest",
+                "selector": ", ".join(str(t) for t in tables[:5]),
+                "status": status,
+                "duration_ms": int((completed - started).total_seconds() * 1000),
+                "models_total": len(tables),
+                "models_error": 0 if status == "success" else len(tables),
+                "rows_loaded": rows,
+                "error_message": error,
+            }
+        )
+    except Exception as exc:
+        logger.warning("Ingest completion hook failed for %s: %s", source_id, exc)
+
+
+async def launch_ingest_run(
+    source_id: str,
+    user_id: str,
+    *,
+    session,
+    full_refresh: bool = False,
+    on_complete: Optional[CompletionHook] = None,
+) -> Dict[str, Any]:
+    """Start one ingest load in the background and return its identifiers.
+
+    The scheduler's counterpart to `launch_dbt_run`, so both kinds of scheduled
+    work are started the same way and recorded the same way.
+
+    ponytail: the ingest machinery - loading a source, building a job config,
+    streaming the subprocess - lives in `app/routers/ingest.py` because that is
+    where it grew, so it is imported inside the function rather than at module
+    level: a service importing a router at import time is how a cycle starts.
+    Moving it into a service of its own is the right seam; it is not worth 400
+    lines of cut-and-paste to put a load on a cron.
+    """
+    from app.routers.ingest import (
+        _load_source,
+        drop_incremental_state,
+        prepare_job,
+    )
+
+    source = await _load_source(session, source_id, user_id)
+    config, dataset, tables = await prepare_job(session, source)
+    if full_refresh:
+        drop_incremental_state(config)
+
+    project_id = str(source["project_id"])
+    asyncio.create_task(
+        _ingest_in_background(
+            config,
+            source_id,
+            project_id,
+            dataset,
+            tables,
+            source,
+            on_complete,
+        )
+    )
+    return {
+        "id": source_id,
+        "run_id": None,
+        "project_id": project_id,
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def launch_dbt_run(
     request: DbtCommand,
     user_id: str,

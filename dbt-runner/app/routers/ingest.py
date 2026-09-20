@@ -32,6 +32,8 @@ from app.core.global_semaphore import global_run_semaphore
 from app.core.host_guard import HostNotAllowed, assert_host_allowed
 from app.models.ingest import (
     DbtSourcesSnippet,
+    IngestPreview,
+    IngestPreviewRequest,
     IngestRunRequest,
     IngestTableList,
     RestProbeRequest,
@@ -49,6 +51,9 @@ from ingest.file_source import FORMATS as file_formats
 from ingest.file_source import roots as file_source_roots
 from ingest.file_source import UnsupportedFileSource
 from ingest.file_source import build_config as build_file_source
+from ingest.file_source import preview_files
+from ingest.hints import suggest_write_disposition
+from ingest.naming import destination_table_name
 from ingest.rest_source import AUTH_TYPES as rest_auth_types
 from ingest.rest_source import UnsupportedRestSource
 from ingest.rest_source import build_config as build_rest_source
@@ -58,6 +63,7 @@ from ingest.sql_source import (
     UnsupportedSource,
     build_source_url,
     inspect_tables,
+    preview_table,
     supported_source_types,
 )
 
@@ -72,6 +78,11 @@ _DATASET_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
 _WRITE_DISPOSITIONS = ("append", "replace", "merge")
+
+# What a load does when the source grows a column: take it, or stop and say so.
+# The silent middle - carry on and drop the column - is the failure that looks
+# like success, so it is not offered. See ingest/runner.py:schema_contract.
+_SCHEMA_CONTRACTS = ("evolve", "freeze")
 
 # Source kinds this deployment can read. `sql_database` needs a connection to
 # read over SQL; `rest_api` may have one (for its credential) or not; a
@@ -129,7 +140,8 @@ async def _load_source(
         text(
             "SELECT s.id, s.name, s.source_type, s.destination, s.dataset, s.tables, "
             "s.write_disposition, s.primary_key, s.partition_by, s.project_id, "
-            "s.source_config, s.cursor_field, s.cursor_initial_value, "
+            "s.schema_contract, "
+            "s.source_config, s.table_config, s.cursor_field, s.cursor_initial_value, "
             "p.connection_id AS project_connection_id, "
             "c.connection_type, c.host, c.port, c.database, c.username, "
             "c.password_encrypted, c.extra_config "
@@ -276,6 +288,98 @@ def _validated_cursor(
     return cursor, str(initial) if initial not in (None, "") else None
 
 
+def _validated_table_config(
+    source: Dict[str, Any],
+    source_type: str,
+    tables: list[str],
+    *,
+    source_cursor: str | None,
+    source_primary_key: list[str] | None,
+    source_disposition: str,
+    disposition_is_override: bool,
+) -> Dict[str, Dict[str, Any]]:
+    """Per-table overrides, resolved against the source-level values.
+
+    Every table in the job gets an entry, whether or not it overrode anything:
+    the runner then has one place to read and never has to re-implement the
+    fallback. A source saved before this column existed therefore produces
+    exactly the hints it did before - each table simply repeats the source's own
+    cursor and disposition.
+
+    `disposition_is_override` is a one-off `write_disposition` on the run
+    request: "reload everything as replace" has to mean every table, or the one
+    table that had asked for merge would quietly keep merging.
+    """
+    raw = source.get("table_config")
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    overrides = dict(raw or {})
+
+    unknown = [name for name in overrides if name not in tables]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Settings given for table(s) not in this load: {', '.join(unknown[:5])}",
+        )
+
+    cursor_re = _JSON_CURSOR_RE if source_type == "rest_api" else _CURSOR_RE
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for table in tables:
+        entry = dict(overrides.get(table) or {})
+
+        cursor = str(entry.get("cursorField") or "").strip() or source_cursor
+        if cursor and not cursor_re.match(cursor):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{table}: cursor field '{cursor}' is not usable here",
+            )
+
+        initial = entry.get("cursorInitialValue")
+        initial = str(initial).strip() if initial not in (None, "") else None
+        if initial is None and cursor == source_cursor:
+            # Only inherit the source's start value where the cursor is also the
+            # source's; a table tracking a different column has no business
+            # starting from the other column's lower bound.
+            initial = (
+                str(source.get("cursor_initial_value"))
+                if source.get("cursor_initial_value") not in (None, "")
+                else None
+            )
+
+        disposition = source_disposition
+        if not disposition_is_override:
+            disposition = str(entry.get("writeDisposition") or source_disposition).lower()
+        if disposition not in _WRITE_DISPOSITIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{table}: write_disposition must be one of "
+                f"{', '.join(_WRITE_DISPOSITIONS)}",
+            )
+
+        primary_key = entry.get("primaryKey") or source_primary_key or []
+        primary_key = [str(key).strip() for key in primary_key if str(key).strip()]
+        invalid = [key for key in primary_key if not cursor_re.match(key)]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{table}: invalid primary key column(s): {', '.join(invalid[:5])}",
+            )
+        if disposition == "merge" and not primary_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{table}: merge needs a primary key, and neither this table "
+                "nor the load has one",
+            )
+
+        resolved[table] = {
+            "cursor_field": cursor or None,
+            "cursor_initial_value": initial,
+            "write_disposition": disposition,
+            "primary_key": primary_key or None,
+        }
+    return resolved
+
+
 def _source_config(source: Dict[str, Any]) -> Dict[str, Any]:
     raw = source.get("source_config")
     if isinstance(raw, str):
@@ -333,9 +437,12 @@ def _build_job_config(
     dataset: str,
     write_disposition: str,
     lake: lakehouse.LakeRef | None = None,
+    *,
+    disposition_is_override: bool = False,
 ) -> Dict[str, Any]:
     project_id = str(source["project_id"])
-    cursor, cursor_initial = _validated_cursor(source, _validated_source_type(source))
+    source_type = _validated_source_type(source)
+    cursor, cursor_initial = _validated_cursor(source, source_type)
     source_block = _build_source_block(source, tables, cursor, cursor_initial)
 
     kind = str(source.get("destination") or DESTINATION_LAKEHOUSE)
@@ -370,12 +477,29 @@ def _build_job_config(
     if isinstance(primary_key, str):
         primary_key = json.loads(primary_key)
 
+    table_config = _validated_table_config(
+        source,
+        source_type,
+        tables,
+        source_cursor=cursor,
+        source_primary_key=list(primary_key) if primary_key else None,
+        source_disposition=write_disposition,
+        disposition_is_override=disposition_is_override,
+    )
+
     # Partitioning is a property of the lake's Parquet layout, so it means nothing
     # for a load into a warehouse that manages its own storage.
     partition_by = source.get("partition_by") if kind == DESTINATION_LAKEHOUSE else None
     if isinstance(partition_by, str):
         partition_by = json.loads(partition_by)
     partition_by = _validated_partition_by(partition_by)
+
+    contract = str(source.get("schema_contract") or "evolve")
+    if contract not in _SCHEMA_CONTRACTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"schema_contract must be one of {', '.join(_SCHEMA_CONTRACTS)}",
+        )
 
     return {
         "project_id": project_id,
@@ -390,6 +514,10 @@ def _build_job_config(
         # its own config (an HTTP cursor has to become a request parameter).
         "cursor_field": cursor,
         "cursor_initial_value": cursor_initial,
+        # Every table in the job, with its cursor and disposition already
+        # resolved against the source-level values. The runner reads only this.
+        "table_config": table_config,
+        "schema_contract": contract,
         "source": source_block,
         "destination": destination,
     }
@@ -410,23 +538,25 @@ async def ingest_meta() -> Dict[str, Any]:
         "rest_auth_types": list(rest_auth_types),
         "destinations": ["connection", DESTINATION_LAKEHOUSE],
         "write_dispositions": list(_WRITE_DISPOSITIONS),
+        "schema_contracts": list(_SCHEMA_CONTRACTS),
         "lakehouse_configured": lakehouse.is_configured(),
     }
 
 
-@router.get("/ingest/connections/{connection_id}/tables", response_model=IngestTableList)
-async def list_connection_tables(
-    connection_id: str,
-    claims: dict = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-) -> IngestTableList:
-    """List tables on one of the caller's connections, for the table picker.
+async def _readable_connection(
+    session: AsyncSession, connection_id: str, user_id: str
+) -> tuple[Dict[str, Any], str]:
+    """One of the caller's connections, checked as a thing ingest may read.
 
-    Keyed on the connection rather than a saved ingest source, so the picker
-    works while the source is still being created - otherwise the first table
-    list has to be typed from memory and only becomes browsable after saving.
+    The table picker and the preview ask the same three questions - is it yours,
+    can this image read that type, is the host allowed - and answering them in
+    one place is what keeps a preview from reaching somewhere a load could not.
+
+    Raises:
+        HTTPException(404): not the caller's connection.
+        UnsupportedSource: no driver in this image for that connection type.
+        HostNotAllowed: the target host is refused by policy.
     """
-    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
     result = await session.execute(
         text(
             "SELECT connection_type, host, port, database, username, "
@@ -442,20 +572,34 @@ async def list_connection_tables(
     connection = dict(row)
 
     if connection["connection_type"] not in supported_source_types():
-        return IngestTableList(
-            success=False,
-            message=f"Ingest cannot read from a {connection['connection_type']} "
-            f"connection. Supported: {', '.join(supported_source_types())}",
+        raise UnsupportedSource(
+            f"Ingest cannot read from a {connection['connection_type']} connection. "
+            f"Supported: {', '.join(supported_source_types())}"
         )
 
+    assert_host_allowed(
+        str(connection.get("host") or ""), int(connection.get("port") or 0) or None
+    )
+    return connection, decrypt_secret_or_plaintext(connection.get("password_encrypted"))
+
+
+@router.get("/ingest/connections/{connection_id}/tables", response_model=IngestTableList)
+async def list_connection_tables(
+    connection_id: str,
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> IngestTableList:
+    """List tables on one of the caller's connections, for the table picker.
+
+    Keyed on the connection rather than a saved ingest source, so the picker
+    works while the source is still being created - otherwise the first table
+    list has to be typed from memory and only becomes browsable after saving.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
     try:
-        assert_host_allowed(
-            str(connection.get("host") or ""), int(connection.get("port") or 0) or None
-        )
-    except HostNotAllowed as exc:
+        connection, secret = await _readable_connection(session, connection_id, user_id)
+    except (UnsupportedSource, HostNotAllowed) as exc:
         return IngestTableList(success=False, message=str(exc))
-
-    secret = decrypt_secret_or_plaintext(connection.get("password_encrypted"))
 
     if connection["connection_type"] in SOURCE_ONLY_TYPES:
         # These types have no dbt adapter on purpose, so there is nothing to ask
@@ -492,6 +636,81 @@ async def list_connection_tables(
         if name and _TABLE_RE.match(str(name)):
             tables.append(str(name))
     return IngestTableList(success=True, tables=sorted(set(tables)))
+
+
+@router.post("/ingest/preview", response_model=IngestPreview)
+async def preview_ingest_source(
+    request: IngestPreviewRequest,
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> IngestPreview:
+    """Columns and a few rows of one table, before any source is saved.
+
+    This is what lets the wizard propose a cursor instead of asking for one from
+    memory. It reads through the same connection - and the same fenced roots -
+    that the load itself would use, so nothing is previewable that is not
+    loadable.
+
+    A failure comes back as `success: false` with the reason rather than a 4xx:
+    every one of them ("no such table", "no files match", "login refused") is
+    something the person filling in the form is expected to hit and fix, not an
+    error in their request.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    source_type = request.source_type or "sql_database"
+
+    if source_type == "filesystem":
+        try:
+            preview = await asyncio.to_thread(preview_files, request.source_config)
+        except UnsupportedFileSource as exc:
+            return IngestPreview(success=False, message=str(exc))
+        except Exception as exc:
+            logger.warning("File preview failed: %s", exc)
+            return IngestPreview(success=False, message=str(exc))
+        return IngestPreview(
+            success=True,
+            suggested_write_disposition=suggest_write_disposition(
+                preview["suggested_cursor"], []
+            ),
+            **preview,
+        )
+
+    if source_type != "sql_database":
+        return IngestPreview(
+            success=False,
+            message=f"Preview is not available for '{source_type}' sources. "
+            "A REST endpoint is previewed through /ingest/rest/probe.",
+        )
+
+    table = (request.table or "").strip()
+    # The same check `_validated_tables` makes before a load: a name that could
+    # not be loaded must not be reflectable either.
+    if not _TABLE_RE.match(table):
+        return IngestPreview(success=False, message=f"'{table}' is not a table name")
+    if not request.connection_id:
+        return IngestPreview(
+            success=False, message="A database preview needs a connection to read through"
+        )
+
+    try:
+        connection, secret = await _readable_connection(
+            session, request.connection_id, user_id
+        )
+        url = build_source_url(connection, secret)
+        preview = await asyncio.to_thread(preview_table, url, table)
+    except (UnsupportedSource, HostNotAllowed) as exc:
+        return IngestPreview(success=False, message=str(exc))
+    except Exception as exc:
+        logger.warning("Preview of %s failed: %s", table, exc)
+        return IngestPreview(success=False, message=str(exc))
+
+    return IngestPreview(
+        success=True,
+        suggested_write_disposition=suggest_write_disposition(
+            preview["suggested_cursor"], preview["primary_key"]
+        ),
+        **preview,
+    )
 
 
 @router.post("/ingest/rest/probe")
@@ -543,18 +762,14 @@ async def probe_rest_source(
         return {"success": False, "message": str(exc)}
 
 
-@router.get("/ingest/sources/{source_id}/dbt-sources", response_model=DbtSourcesSnippet)
-async def dbt_sources_snippet(
-    source_id: str,
-    claims: dict = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-) -> DbtSourcesSnippet:
-    """The sources.yml block that makes ingested tables usable from dbt.
+async def build_dbt_sources(
+    session: AsyncSession, source: Dict[str, Any]
+) -> tuple[str, str]:
+    """The dataset and the sources.yml text for one ingest source.
 
-    Without this, data lands in the lake and no model can reach it.
+    Shared by the endpoint that shows it and the write that happens after a
+    successful load, so what a project gets on disk is what it was shown.
     """
-    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    source = await _load_source(session, source_id, user_id)
     dataset = _validated_dataset(source)
     tables = _validated_tables(source, None)
 
@@ -562,7 +777,12 @@ async def dbt_sources_snippet(
         str(source.get("destination") or DESTINATION_LAKEHOUSE) == DESTINATION_LAKEHOUSE
     )
     database_line = f"    database: {lakehouse.ATTACH_ALIAS}\n" if is_lake else ""
-    table_lines = "".join(f"      - name: {t}\n" for t in tables)
+    # The destination name, not the source's: dlt lowercases and snake_cases
+    # every identifier, so `- name: CUSTOMERS` points dbt at a table that does
+    # not exist in the lake.
+    table_lines = "".join(
+        f"      - name: {destination_table_name(t)}\n" for t in tables
+    )
 
     # Only dbt-duckdb can attach a DuckLake catalog, so a project on another
     # warehouse loads into the lake successfully and then cannot read it from
@@ -595,6 +815,53 @@ async def dbt_sources_snippet(
         "    tables:\n"
         f"{table_lines}"
     )
+    return dataset, content
+
+
+async def write_dbt_sources(
+    session: AsyncSession, source: Dict[str, Any]
+) -> str | None:
+    """Write the sources.yml for this load into its project, and name the file.
+
+    Called after a load succeeds. Before this, the snippet was shown with
+    "paste this into your dbt project" - a hand-off between two halves of the
+    same product, over facts both halves already knew. Failure is logged, never
+    raised: the rows are loaded and committed by the time this runs, and a
+    failed write must not report a successful load as failed.
+    """
+    from app.services.project import ProjectService
+
+    try:
+        dataset, content = await build_dbt_sources(session, source)
+        project_path = await ProjectService().get_or_sync(str(source["project_id"]))
+        target = Path(project_path) / "models" / "sources" / f"_{dataset}.yml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        return str(target.relative_to(project_path))
+    except Exception as exc:
+        logger.warning(
+            "Could not write sources.yml for ingest source %s: %s",
+            source.get("id"),
+            exc,
+        )
+        return None
+
+
+@router.get("/ingest/sources/{source_id}/dbt-sources", response_model=DbtSourcesSnippet)
+async def dbt_sources_snippet(
+    source_id: str,
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> DbtSourcesSnippet:
+    """The sources.yml that makes ingested tables usable from dbt.
+
+    Written into the project automatically after a successful load; this shows
+    the same text, for a load that has not run yet or a project whose file was
+    edited by hand.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    source = await _load_source(session, source_id, user_id)
+    dataset, content = await build_dbt_sources(session, source)
     return DbtSourcesSnippet(success=True, dataset=dataset, content=content)
 
 
@@ -813,6 +1080,127 @@ class _RunRecorder:
             await session.commit()
 
 
+def drop_incremental_state(config: Dict[str, Any]) -> None:
+    """Forget dlt's cursor for this pipeline, so the next load starts over."""
+    shutil.rmtree(
+        Path(config["pipelines_dir"]) / config["pipeline_name"], ignore_errors=True
+    )
+
+
+async def prepare_job(
+    session: AsyncSession,
+    source: Dict[str, Any],
+    *,
+    tables_override: list[str] | None = None,
+    disposition_override: str | None = None,
+) -> tuple[Dict[str, Any], str, list[str]]:
+    """Everything one load needs, from a source row: config, dataset, tables.
+
+    Shared by the SSE endpoint and the scheduler so a load that runs on a cron
+    and the same load started by hand cannot end up configured differently -
+    which is the bug this would otherwise grow within a release.
+
+    Raises the ingest module's own exceptions; the HTTP caller turns them into
+    400s and the scheduler logs them.
+    """
+    tables = _validated_tables(source, tables_override)
+    dataset = _validated_dataset(source)
+    write_disposition = (
+        disposition_override or source.get("write_disposition") or "append"
+    ).lower()
+    if write_disposition not in _WRITE_DISPOSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"write_disposition must be one of {', '.join(_WRITE_DISPOSITIONS)}",
+        )
+
+    destination_kind = str(source.get("destination") or DESTINATION_LAKEHOUSE)
+    destination_connection = None
+    if destination_kind != DESTINATION_LAKEHOUSE:
+        destination_connection = await _project_destination_connection(
+            session, source.get("project_connection_id")
+        )
+
+    config = _build_job_config(
+        source,
+        destination_connection,
+        tables,
+        dataset,
+        write_disposition,
+        lake=await resolve_project_lake(session, str(source["project_id"]))
+        if destination_kind == DESTINATION_LAKEHOUSE
+        else None,
+        disposition_is_override=bool(disposition_override),
+    )
+    return config, dataset, tables
+
+
+async def run_ingest(
+    config: Dict[str, Any],
+    source_id: str,
+    project_id: str,
+    *,
+    dataset: str,
+    tables: list[str],
+    source: Dict[str, Any] | None = None,
+) -> AsyncIterator[Dict[str, Any]]:
+    """One load, from lock to recorded outcome, as a stream of events.
+
+    Both callers need exactly this sequencing - run budget, DuckDB file lock,
+    run row, recorded outcome - and differ only in what they do with the events:
+    the SSE endpoint serialises them to the browser, the scheduler drains them.
+    Keeping the sequencing here is what stops a scheduled load from skipping the
+    lock that a hand-started one takes.
+    """
+    recorder = _RunRecorder(source_id, project_id)
+    await recorder.start()
+    status, result, error = "error", {}, None
+    yield {
+        "type": "started",
+        "run_id": recorder.run_id,
+        "dataset": dataset,
+        "tables": tables,
+    }
+    try:
+        # Ingest counts against the same budget as dbt runs: a 429 is better
+        # than an OOM on a box sized for one workload at a time.
+        async with global_run_semaphore(), AsyncExitStack() as stack:
+            if config["destination"]["kind"] == "duckdb":
+                # DuckDB is single-writer and the warm worker pool holds the
+                # file open, so ingest must serialise against dbt runs on the
+                # same resource name. Lakehouse loads skip this by design.
+                await stack.enter_async_context(
+                    AsyncFileLock.lock(project_id, "dbt_run", timeout=60)
+                )
+            async for event in _stream_process(config, source_id):
+                recorder.observe(event)
+                if event.get("type") == "completed":
+                    status, result = "success", event
+                    # Written before `completed` is yielded, so that event stays
+                    # the last frame a client sees: it is the one they key on.
+                    if source is not None:
+                        async with async_session() as write_session:
+                            written = await write_dbt_sources(write_session, source)
+                        if written:
+                            note = {"type": "log", "message": f"[info] wrote {written}"}
+                            recorder.observe(note)
+                            yield note
+                elif event.get("type") == "error":
+                    error = str(event.get("message") or "")
+                yield event
+    except asyncio.CancelledError:
+        # The browser closed the stream. The subprocess is terminated by
+        # _stream_process, so the load really did stop.
+        status, error = "cancelled", "Client disconnected"
+        await recorder.finish(status, result, error)
+        raise
+    except Exception as exc:
+        logger.exception("Ingest failed for source %s", source_id)
+        error = str(exc)
+        yield {"type": "error", "message": error}
+    await recorder.finish(status, result, error)
+
+
 @router.get("/ingest/sources/{source_id}/runs")
 async def list_ingest_runs(
     source_id: str,
@@ -860,6 +1248,52 @@ async def list_ingest_runs(
     }
 
 
+@router.get("/ingest/runs/latest")
+async def latest_ingest_runs(
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, Any]:
+    """The most recent run of each of the caller's loads, in one query.
+
+    The list of loads needs this to say anything about freshness, and asking
+    per row would be one request per load - which is how a list page ends up
+    making thirty calls to render.
+    """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    if not await _ingest_runs_available(session):
+        return {"items": []}
+
+    result = await session.execute(
+        text(
+            """
+            SELECT DISTINCT ON (r.source_id)
+                   r.source_id, r.status, r.started_at, r.completed_at,
+                   r.rows_loaded, r.error_message
+            FROM ingest_runs r
+            JOIN dbt_projects p ON p.id = r.project_id
+            WHERE p.created_by = CAST(:uid AS uuid) AND p.deleted_at IS NULL
+            ORDER BY r.source_id, r.created_at DESC
+            """
+        ),
+        {"uid": user_id},
+    )
+    return {
+        "items": [
+            {
+                "source_id": str(row["source_id"]),
+                "status": row["status"],
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "completed_at": row["completed_at"].isoformat()
+                if row["completed_at"]
+                else None,
+                "rows_loaded": row["rows_loaded"],
+                "error_message": row["error_message"],
+            }
+            for row in result.mappings().all()
+        ]
+    }
+
+
 @router.get("/ingest/runs/{run_id}/logs")
 async def get_ingest_run_logs(
     run_id: str,
@@ -900,30 +1334,12 @@ async def ingest_sse(
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
     source = await _load_source(session, source_id, user_id)
 
-    tables = _validated_tables(source, body.tables)
-    dataset = _validated_dataset(source)
-    write_disposition = (
-        body.write_disposition or source.get("write_disposition") or "append"
-    ).lower()
-    if write_disposition not in _WRITE_DISPOSITIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"write_disposition must be one of {', '.join(_WRITE_DISPOSITIONS)}",
-        )
-
-    destination_kind = str(source.get("destination") or DESTINATION_LAKEHOUSE)
-    destination_connection = None
-    if destination_kind != DESTINATION_LAKEHOUSE:
-        destination_connection = await _project_destination_connection(
-            session, source.get("project_connection_id")
-        )
-
     try:
-        config = _build_job_config(
-            source, destination_connection, tables, dataset, write_disposition,
-            lake=await resolve_project_lake(session, str(source["project_id"]))
-            if destination_kind == DESTINATION_LAKEHOUSE
-            else None,
+        config, dataset, tables = await prepare_job(
+            session,
+            source,
+            tables_override=body.tables,
+            disposition_override=body.write_disposition,
         )
     except HostNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -938,47 +1354,12 @@ async def ingest_sse(
         raise HTTPException(status_code=400, detail=str(exc))
 
     if body.full_refresh:
-        shutil.rmtree(
-            Path(config["pipelines_dir"]) / config["pipeline_name"], ignore_errors=True
-        )
-
-    project_id = str(source["project_id"])
-    needs_duckdb_lock = config["destination"]["kind"] == "duckdb"
+        drop_incremental_state(config)
 
     async def event_generator() -> AsyncIterator[str]:
-        recorder = _RunRecorder(source_id, project_id)
-        await recorder.start()
-        status, result, error = "error", {}, None
-        yield f"data: {json.dumps({'type': 'started', 'run_id': recorder.run_id, 'dataset': dataset, 'tables': tables})}\n\n"
-        try:
-            # Ingest counts against the same budget as dbt runs: a 429 is better
-            # than an OOM on a box sized for one workload at a time.
-            async with global_run_semaphore(), AsyncExitStack() as stack:
-                if needs_duckdb_lock:
-                    # DuckDB is single-writer and the warm worker pool holds the
-                    # file open, so ingest must serialise against dbt runs on the
-                    # same resource name. Lakehouse loads skip this by design.
-                    await stack.enter_async_context(
-                        AsyncFileLock.lock(project_id, "dbt_run", timeout=60)
-                    )
-                async for event in _stream_process(config, source_id):
-                    recorder.observe(event)
-                    if event.get("type") == "completed":
-                        status, result = "success", event
-                    elif event.get("type") == "error":
-                        error = str(event.get("message") or "")
-                    yield f"data: {json.dumps(event)}\n\n"
-        except asyncio.CancelledError:
-            # The browser closed the stream. The subprocess is terminated by
-            # _stream_process, so the load really did stop.
-            status, error = "cancelled", "Client disconnected"
-            await recorder.finish(status, result, error)
-            raise
-        except Exception as exc:
-            logger.exception("Ingest failed for source %s", source_id)
-            error = str(exc)
-            yield f"data: {json.dumps({'type': 'error', 'message': error})}\n\n"
-        await recorder.finish(status, result, error)
+        async for event in run_ingest(config, source_id, str(source["project_id"]),
+                                      dataset=dataset, tables=tables, source=source):
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         event_generator(),

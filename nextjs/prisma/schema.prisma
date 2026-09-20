@@ -248,6 +248,13 @@ model IngestSource {
   /// before it reaches SQL.
   dataset            String            @db.Text
   tables             Json              @db.JsonB
+  /// Per-table overrides, keyed by a name that appears in `tables`. Any key
+  /// absent falls back to the source-level column of the same name, so a NULL
+  /// here means "every table behaves the way this source says". Twelve tables in
+  /// one warehouse rarely share a cursor column, and one source per table was
+  /// the only way to express that before.
+  /// { "<table>": { cursorField, cursorInitialValue, writeDisposition, primaryKey } }
+  tableConfig        Json?             @map("table_config") @db.JsonB
   /// Per-source-type configuration that has no column of its own: a filesystem
   /// glob, or a REST resource list. `sql_database` uses `tables` instead.
   sourceConfig       Json?             @map("source_config") @db.JsonB
@@ -264,6 +271,11 @@ model IngestSource {
   /// column name, or year/month/day/hour(column). Without one, a filter on a
   /// date scans every Parquet file in the table. Lakehouse destination only.
   partitionBy        Json?             @map("partition_by") @db.JsonB
+  /// What a load does when the source grows a column: "evolve" takes it,
+  /// "freeze" stops the load and says so. There is deliberately no third option
+  /// that carries on and drops the column - that is the failure that looks like
+  /// success, and it is the one nobody notices until a report goes blank.
+  schemaContract     String            @default("evolve") @map("schema_contract") @db.Text
   isActive           Boolean           @default(true) @map("is_active")
   createdBy          String            @map("created_by") @db.Uuid
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz()
@@ -272,6 +284,7 @@ model IngestSource {
   sourceConnection   Connection?       @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
   user               User              @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   runs               IngestRun[]
+  schedules          DbtSchedule[]
 
   @@unique([projectId, name])
   @@index([projectId])
@@ -354,6 +367,10 @@ model DbtSchedule {
   target     String?    @db.Text
   /// 5-field cron expression, UTC.
   cron       String     @db.Text
+  /// When set, this schedule runs that ingest load instead of `command`. A
+  /// schedule that never fires is how ingest stayed manual: the freshness of
+  /// every downstream model depends on someone remembering to press Run.
+  ingestSourceId String? @map("ingest_source_id") @db.Uuid
   isActive   Boolean    @default(true) @map("is_active")
   /// POSTed a JSON summary when a scheduled run fails. Slack, Teams and Discord
   /// incoming webhooks all accept it. Validated through host_guard before use:
@@ -372,9 +389,11 @@ model DbtSchedule {
   updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz()
   project    DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user       User       @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  ingestSource IngestSource? @relation(fields: [ingestSourceId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, name])
   @@index([isActive, nextRunAt])
+  @@index([ingestSourceId])
   @@map("dbt_schedules")
 }
 

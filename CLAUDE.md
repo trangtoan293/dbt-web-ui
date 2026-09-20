@@ -65,10 +65,41 @@ them as a project's warehouse with a message, and `/connection/test` plus the
 table picker fall back to `sql_source.probe` / `rest_source.probe_rest`.
 **`cursor_field` is the most important field on a source** — it makes dlt push
 `WHERE cursor > last_value` down to the source; without one every load reads the
-whole table and `merge` only dedupes afterwards. `_apply_hints` applies it for
-`sql_database` and `filesystem` but not `rest_api`, which carries it
-declaratively so it is actually *sent* (`incremental.start_param` names the query
-parameter). Destinations: `ducklake` (default) or `connection`.
+whole table and `merge` only dedupes afterwards. It is set **per table**:
+`ingest_sources.table_config` is a JSONB map keyed by a name in `tables`, and any
+absent key falls back to the source-level column of the same name (so a row
+written before that column existed behaves identically). The router resolves
+every table into `table_config` in `_validated_table_config` before the job is
+sent, so `runner._apply_hints` reads one map and never re-implements the
+fallback — and it hints `write_disposition` per resource, which is why
+`pipeline.run()` is called with no `write_disposition` argument (one there
+overrides the hints and flattens every table onto one behaviour).
+`_apply_hints` applies the cursor for `sql_database` and `filesystem` but not
+`rest_api`, which carries it declaratively so it is actually *sent*
+(`incremental.start_param` names the query parameter) — and an API sends one
+cursor for every resource, so REST keeps its cursor at source level.
+Destinations: `ducklake` (default) or `connection`.
+
+**Ingest UI.** `/data/loads/new` is a full-page wizard (source gallery →
+connection → data → destination → finish), not a dialog: a per-table settings
+table and a sample-row panel do not fit in `max-w-2xl`, and that constraint was
+what made the old form ask for table and cursor names as free text. The decisions
+live in `src/lib/ingest-draft.ts` (`stepProblem`, `tableDefaults`,
+`destinationTableName`, `draftToInput`) so they can be tested without rendering.
+`POST /ingest/preview` returns columns, ten sample rows and a proposed cursor for
+one table, read through the same connection the load will use — the row cap is
+the server's (`ingest/preview.py`), never the caller's. The cursor proposal
+(`ingest/hints.py`) only fires on a date-like column *named* like a change stamp:
+guessing from type alone picks `birth_date`, and an incremental load keyed on a
+birth date silently stops seeing rows. A merge key is only ever taken from what
+the source declares. `/data/loads/{id}` is the load's own page (Runs / Tables /
+sources.yml) and carries its schedule card. **Schema drift** is a choice on the
+source, not an explanation after the fact: `schema_contract` is `evolve` (take
+the new column - the old behaviour, hence the default) or `freeze` (stop the
+load and name it). There is deliberately no third value that carries on and
+drops the column, though dlt offers two - a load that succeeds while discarding
+data is the failure nobody notices. `tables` stays evolvable under both, or a
+new source could never create its tables (`ingest/runner.py:schema_contract`).
 
 **Lakehouse.** A lake is a `connections` row of type `ducklake`, not a value
 derived from a project id — that is what lets one be named, shared by several
@@ -142,7 +173,12 @@ limits up front instead of failing on them. Add chart still inserts the *query*,
 never these rows, so the dashboard refreshes. Helpers and their tests:
 `boardSource` / `boardNeedsRender` / `chartProblem` in `src/lib/board.ts`.
 
-**Scheduling.** `app/services/scheduler.py` is one poll loop doing three jobs:
+**Scheduling.** A schedule with `ingestSourceId` set runs that ingest load
+instead of `command`; null keeps the dbt meaning. One table rather than a second
+scheduler, because this one already has Redis leadership, a UTC croniter, a
+misfire grace window and a host-guarded webhook. Both kinds start through
+`run_launcher` (`launch_ingest_run` mirrors `launch_dbt_run`).
+`app/services/scheduler.py` is one poll loop doing three jobs:
 fire due schedules, prune run history, run DuckLake maintenance. Leadership is a
 Redis key with TTL (uvicorn may run several workers). A schedule arms on its
 first tick, and `next_run_at` advances *before* the run starts. Cron is UTC
@@ -172,6 +208,12 @@ Warm worker pools are reclaimed idle-first then LRU, never mid-job.
   doesn't contain "test".
 - DuckDB is single-writer and warm workers hold the file: one `.duckdb` file per
   project. `_regenerate_profiles_from_db` must `release_project()` first.
+- dlt lowercases and snake_cases every identifier, so an Oracle `CUSTOMERS`
+  lands as `customers`. Anything naming a loaded table afterwards goes through
+  `ingest/naming.py` (`sources.yml`, the wizard's preview) or it names a table
+  that does not exist. `sources.yml` is written into the project after a
+  successful load, not pasted by hand — and *before* the `completed` event is
+  yielded, so that event stays the last frame a client sees.
 - File listing returns one directory level, not a tree. `/dbt/compile` takes
   `model_path`. `dbt source freshness` maps to the `source_freshness` enum on
   both sides. SQL formatting is `sqlglot` and **refuses** rather than guesses.

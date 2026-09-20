@@ -166,3 +166,73 @@ class IcebergPublishOnScheduleTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestScheduleTest(unittest.IsolatedAsyncioTestCase):
+    """A schedule that carries an ingest source runs the load, not dbt.
+
+    The reason this is worth pinning: before it, `dbt_schedules` was dbt-only
+    and nothing ever fired an ingest load, so every downstream model's freshness
+    depended on someone pressing Run by hand.
+    """
+
+    DUE_AT = datetime(2026, 9, 21, 3, 0, tzinfo=timezone.utc)
+
+    def _schedule(self, **overrides):
+        return {
+            "id": "11111111-0000-4000-8000-000000000001",
+            "name": "core banking nightly",
+            "project_id": "3f8b1c2d-0000-4000-8000-abcdefabcdef",
+            "command": "run",
+            "selector": None,
+            "target": None,
+            "cron": "0 3 * * *",
+            "webhook_url": None,
+            "publish_schema": None,
+            # Already armed: a first tick only sets next_run_at and fires nothing.
+            "next_run_at": self.DUE_AT,
+            "created_by": "22222222-0000-4000-8000-000000000002",
+            "ingest_source_id": None,
+            **overrides,
+        }
+
+    def _patched(self):
+        """Everything the fire path touches that is not the launcher."""
+        session = MagicMock()
+        session.execute = AsyncMock()
+        session.commit = AsyncMock()
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=session)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return patch("app.services.scheduler.async_session", return_value=context)
+
+    async def test_an_ingest_schedule_launches_the_load(self):
+        source_id = "33333333-0000-4000-8000-000000000003"
+        launched = AsyncMock(return_value={"run_id": None})
+        with self._patched(), patch(
+            "app.services.scheduler.launch_ingest_run", launched
+        ), patch("app.services.scheduler.launch_dbt_run", AsyncMock()) as dbt:
+            fired = await RunScheduler()._handle_due_schedule(
+                self._schedule(ingest_source_id=source_id),
+                self.DUE_AT + timedelta(seconds=5),
+            )
+
+        self.assertTrue(fired)
+        dbt.assert_not_called()
+        self.assertEqual(launched.call_args.args[0], source_id)
+
+    async def test_a_schedule_without_an_ingest_source_still_runs_dbt(self):
+        """The column is nullable and null keeps meaning exactly what it did."""
+        with self._patched(), patch(
+            "app.services.scheduler.launch_ingest_run", AsyncMock()
+        ) as ingest, patch(
+            "app.services.scheduler.launch_dbt_run",
+            AsyncMock(return_value={"run_id": "44444444-0000-4000-8000-000000000004"}),
+        ) as dbt:
+            fired = await RunScheduler()._handle_due_schedule(
+                self._schedule(), self.DUE_AT + timedelta(seconds=5)
+            )
+
+        self.assertTrue(fired)
+        ingest.assert_not_called()
+        dbt.assert_called_once()

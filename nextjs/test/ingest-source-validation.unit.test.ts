@@ -189,6 +189,85 @@ describe('ingest source validation', () => {
     })
   })
 
+  describe('the schema drift policy', () => {
+    it('defaults to absorbing a new column, which is what loads did before', () => {
+      expect(() => validateIngestSource(sqlSource())).not.toThrow()
+    })
+
+    it('accepts freezing, the deliberate choice', () => {
+      expect(() => validateIngestSource(sqlSource({ schemaContract: 'freeze' }))).not.toThrow()
+    })
+
+    it('refuses anything that would silently drop the column', () => {
+      // dlt offers discard_row and discard_value; neither is exposed, because a
+      // load that succeeds while throwing data away is the failure nobody sees.
+      expect(() => validateIngestSource(sqlSource({ schemaContract: 'discard_row' })))
+        .toThrow(/schemaContract/)
+    })
+  })
+
+  describe('per-table settings', () => {
+    it('are optional - a source with none is still valid', () => {
+      expect(() => validateIngestSource(sqlSource({ tableConfig: {} }))).not.toThrow()
+      expect(() => validateIngestSource(sqlSource({ tableConfig: null }))).not.toThrow()
+    })
+
+    it('let two tables track different columns', () => {
+      expect(() =>
+        validateIngestSource(
+          sqlSource({
+            tables: ['orders', 'regions'],
+            tableConfig: {
+              orders: { cursorField: 'updated_at', writeDisposition: 'append' },
+              regions: { writeDisposition: 'replace' },
+            },
+          }),
+        ),
+      ).not.toThrow()
+    })
+
+    it('cannot name a table that is not being loaded', () => {
+      expect(() =>
+        validateIngestSource(sqlSource({ tableConfig: { ghost: { writeDisposition: 'replace' } } })),
+      ).toThrow(/not one of the selected tables/)
+    })
+
+    it('hold a cursor to the same shape as the source-level one', () => {
+      expect(() =>
+        validateIngestSource(
+          sqlSource({ tableConfig: { customers: { cursorField: 'updated_at; DROP TABLE x' } } }),
+        ),
+      ).toThrow(/invalid cursor field/)
+    })
+
+    it('let a table merge on the load-wide primary key', () => {
+      expect(() =>
+        validateIngestSource(
+          sqlSource({
+            primaryKey: ['id'],
+            tableConfig: { customers: { writeDisposition: 'merge' } },
+          }),
+        ),
+      ).not.toThrow()
+    })
+
+    it('refuse a merge with no key on the table or the load', () => {
+      expect(() =>
+        validateIngestSource(sqlSource({ tableConfig: { customers: { writeDisposition: 'merge' } } })),
+      ).toThrow(/primary key is required for merge/)
+    })
+
+    it('hold a primary key column to an identifier shape', () => {
+      expect(() =>
+        validateIngestSource(
+          sqlSource({
+            tableConfig: { customers: { writeDisposition: 'merge', primaryKey: ['id; DROP'] } },
+          }),
+        ),
+      ).toThrow(/invalid primary key column/)
+    })
+  })
+
   describe('the rules that predate source types still hold', () => {
     it('a dataset becomes a schema name', () => {
       expect(() => validateIngestSource(sqlSource({ dataset: 'Raw-CRM' }))).toThrow(/Dataset/)

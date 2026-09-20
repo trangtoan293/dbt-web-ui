@@ -209,6 +209,44 @@ describe('Prisma Schema E2E', () => {
     await expect(prisma.connection.delete({ where: { id: connection.id } })).rejects.toThrow()
   })
 
+  it('stores per-table overrides and cascades a schedule with its load', async () => {
+    // Two things this pins. Per-table settings had to become storable at all:
+    // one cursor column for twelve tables is not something a real warehouse
+    // agrees to. And a schedule pointing at a load must not outlive it, or the
+    // scheduler wakes up to fire something that no longer exists.
+    const project = await prisma.dbtProject.create({
+      data: { name: 'ingest-table-config', createdBy: USER_A },
+    })
+    const source = await prisma.ingestSource.create({
+      data: {
+        projectId: project.id,
+        name: 'core banking',
+        dataset: 'raw_core',
+        tables: ['ORDERS', 'REGIONS'],
+        tableConfig: {
+          ORDERS: { cursorField: 'UPDATED_AT', writeDisposition: 'merge', primaryKey: ['ID'] },
+          REGIONS: { writeDisposition: 'replace' },
+        },
+        createdBy: USER_A,
+      },
+    })
+    const stored = await prisma.ingestSource.findUnique({ where: { id: source.id } })
+    expect((stored?.tableConfig as Record<string, { cursorField?: string }>).ORDERS.cursorField)
+      .toBe('UPDATED_AT')
+
+    const schedule = await prisma.dbtSchedule.create({
+      data: {
+        projectId: project.id,
+        name: 'core banking nightly',
+        cron: '0 3 * * *',
+        ingestSourceId: source.id,
+        createdBy: USER_A,
+      },
+    })
+    await prisma.ingestSource.delete({ where: { id: source.id } })
+    expect(await prisma.dbtSchedule.findUnique({ where: { id: schedule.id } })).toBeNull()
+  })
+
   it('creates an ingest run and cascades it with its source', async () => {
     const project = await prisma.dbtProject.create({
       data: { name: 'ingest-run-test', createdBy: USER_A },

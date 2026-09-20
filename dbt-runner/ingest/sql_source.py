@@ -15,6 +15,8 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from app.core.host_guard import assert_host_allowed
+from ingest.hints import suggest_cursor
+from ingest.preview import PREVIEW_ROW_LIMIT, jsonable
 
 # Only connection types with a synchronous SQLAlchemy driver in the image can be
 # read table-by-table. Dremio and Spark have no dialect here, and DuckDB files
@@ -150,6 +152,11 @@ def inspect_tables(url: str) -> List[str]:
     """Table and view names visible on the connection's default schema.
 
     Blocking, for the same reason as `probe`.
+
+    Names only, and only the default schema - the same thing dlt's
+    `sql_database` reads. Reflecting columns for every table here would be a few
+    hundred round trips before the picker can draw anything, and `preview_table`
+    gets them for the one table actually being looked at.
     """
     from sqlalchemy import inspect
 
@@ -157,5 +164,52 @@ def inspect_tables(url: str) -> List[str]:
     try:
         inspector = inspect(engine)
         return sorted(set(inspector.get_table_names()) | set(inspector.get_view_names()))
+    finally:
+        engine.dispose()
+
+
+def preview_table(url: str, table: str, limit: int = PREVIEW_ROW_LIMIT) -> Dict[str, Any]:
+    """Columns, declared primary key and the first rows of one source table.
+
+    Blocking, for the same reason as `probe`.
+
+    The table is reflected rather than pasted into a SELECT, so the dialect
+    quotes the identifier - the router has already matched it against
+    `_TABLE_RE`, and this is the second of the two checks rather than the only
+    one. `limit` is clamped here as well as defaulted: the cap belongs to the
+    server, not to whoever calls it.
+
+    No row count. `SELECT count(*)` on a source table is unbounded work for a
+    form hint, and it is exactly the table nobody wants scanned twice.
+    """
+    from sqlalchemy import MetaData, Table, select
+
+    engine = _engine(url)
+    try:
+        metadata = MetaData()
+        reflected = Table(table, metadata, autoload_with=engine)
+        columns = [
+            {
+                "name": column.name,
+                "type": str(column.type),
+                "nullable": bool(column.nullable),
+            }
+            for column in reflected.columns
+        ]
+        rows: List[Dict[str, Any]] = []
+        with engine.connect() as connection:
+            result = connection.execute(
+                select(reflected).limit(max(1, min(int(limit), PREVIEW_ROW_LIMIT)))
+            )
+            for row in result:
+                rows.append({k: jsonable(v) for k, v in row._mapping.items()})
+        return {
+            "columns": columns,
+            "rows": rows,
+            # Declared only. A guessed merge key that is not unique silently
+            # drops rows on every load, which is not a guess worth making.
+            "primary_key": [c.name for c in reflected.primary_key.columns],
+            "suggested_cursor": suggest_cursor(columns),
+        }
     finally:
         engine.dispose()

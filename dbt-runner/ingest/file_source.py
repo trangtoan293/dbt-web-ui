@@ -15,9 +15,11 @@ form to enter it; add it when someone actually ingests from S3, not before.
 
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.config import settings
+from ingest.hints import suggest_cursor
+from ingest.preview import PREVIEW_ROW_LIMIT, jsonable
 
 # What dlt can read here without pandas: CSV goes through duckdb, Parquet
 # through pyarrow, JSONL through dlt's own reader. All three are already
@@ -96,6 +98,67 @@ def validate_format(raw: str) -> str:
             f"format must be one of {', '.join(FORMATS)}, not '{raw}'"
         )
     return fmt
+
+
+def preview_files(source_config: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Which files match, and what the first rows in them look like.
+
+    Blocking - call it from a thread.
+
+    The directory, glob and format go through the same validators the load
+    itself uses, so a preview can never read somewhere a load could not. duckdb
+    does the reading for all three formats: it is already in the image, it
+    infers CSV types, and it is what the CSV loader uses at run time anyway.
+
+    An empty directory is an answer, not an error. "No files match `*.csv` here"
+    is the single most useful thing this call can tell someone, and raising
+    would have turned it into a red box with a stack trace behind it.
+    """
+    config = source_config or {}
+    directory = Path(validate_bucket_url(str(config.get("bucket_url") or ""))[len("file://") :])
+    glob = validate_glob(str(config.get("file_glob") or ""))
+    fmt = validate_format(str(config.get("format") or "csv"))
+
+    matches = sorted(path for path in directory.glob(glob) if path.is_file())
+    if not matches:
+        return {"columns": [], "rows": [], "files": [], "suggested_cursor": None}
+
+    import duckdb
+
+    readers = {
+        "csv": "read_csv_auto",
+        "jsonl": "read_json_auto",
+        "parquet": "read_parquet",
+    }
+    connection = duckdb.connect()
+    try:
+        # One bound parameter, never the path interpolated: the fence above says
+        # *where* it may read, and the binding says it is data either way.
+        cursor = connection.execute(
+            f"SELECT * FROM {readers[fmt]}(?) LIMIT {PREVIEW_ROW_LIMIT}",
+            [str(matches[0])],
+        )
+        names = [d[0] for d in cursor.description]
+        types = [str(d[1]) for d in cursor.description]
+        rows: List[Dict[str, Any]] = [
+            {name: jsonable(value) for name, value in zip(names, record)}
+            for record in cursor.fetchall()
+        ]
+    finally:
+        connection.close()
+
+    columns = [
+        {"name": name, "type": type_, "nullable": True}
+        for name, type_ in zip(names, types)
+    ]
+    return {
+        "columns": columns,
+        "rows": rows,
+        # Relative: the absolute path is a server detail, and the fenced root is
+        # not something the form should be teaching people to type.
+        "files": [str(path.relative_to(directory)) for path in matches[:50]],
+        "suggested_cursor": suggest_cursor(columns),
+    }
 
 
 def build_config(source_config: Dict[str, Any] | None, table: str) -> Dict[str, Any]:
