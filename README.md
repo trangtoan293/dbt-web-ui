@@ -30,7 +30,8 @@ before the frontend starts.
 ## Features
 
 - **dbt IDE** — SQL and Jinja editor with dbt-aware autocomplete for models,
-  sources, and macros, plus a per-project file tree.
+  sources, and macros, plus a per-project file tree. Technical reference:
+  [Develop docs](docs/develop/README.md).
 - **Run with live logs** — `run`, `build`, `test`, `compile`, `seed`, and more,
   streamed to the browser over Server-Sent Events.
 - **Preview and compile** — `dbt show` previews, compiled SQL, and an estimated
