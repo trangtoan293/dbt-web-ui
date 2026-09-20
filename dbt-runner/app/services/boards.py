@@ -17,8 +17,46 @@ from jinja2 import Environment, nodes
 from app.services.charts import FORMATTED_TYPES, MAX_BYTES, render_board_yaml
 
 MAX_QUERIES = 12
+MAX_CHARTS = 24
+MAX_VARIABLES = 20
 MAX_ROWS = 1000
 THEMES = {'clarity', 'paper', 'vivid', 'neon', 'stark'}
+# Keys that would make a board reach outside itself - another file, another
+# connection, raw HTML - or carry SQL where the loader does not scan it.
+BLOCKED_KEYS = {'source', 'sources', 'extends', 'ref', 'html_policy', 'url', 'file', 'path', 'sql', 'connection'}
+VARIABLE_INPUTS = {'select', 'multiselect', 'text', 'input', 'number', 'date', 'checkbox'}
+VARIABLE_FIELDS = {'input', 'label', 'default', 'options', 'required', 'notes'}
+
+
+def explore_restrictions() -> dict:
+    """What an Explore board may contain, as data rather than as prose.
+
+    dbt-charts documents its own full syntax, which assumes its CLI and a
+    project-level `dbt_charts.yml`. Explore runs the queries itself and accepts
+    a subset, so anything reading those docs - the guide, the assistant - has to
+    be told the subset too. Served from the same constants the validator uses so
+    the two cannot drift.
+    """
+    return {
+        'blocked_keys': sorted(BLOCKED_KEYS),
+        'max_queries': MAX_QUERIES,
+        'max_charts': MAX_CHARTS,
+        'max_variables': MAX_VARIABLES,
+        'max_rows_per_query': MAX_ROWS,
+        'themes': sorted(THEMES),
+        'variable_inputs': sorted(VARIABLE_INPUTS),
+        'variable_fields': sorted(VARIABLE_FIELDS),
+        'notes': [
+            'A query is a plain SQL string under queries.<name>, or an inline '
+            '{columns, values} object - never a mapping with a `sql:` key.',
+            'Queries run against this project\'s own dbt profile and target. '
+            'A board never names a source or a connection.',
+            'Templates ({{ }}) are allowed only inside a query string, and only '
+            'ref(), source(), adapter.quote(), variables and filter().',
+            'queries and variables live at the board root; every chart.query '
+            'must name one of them.',
+        ],
+    }
 
 
 class BoardLoader(yaml.SafeLoader):
@@ -42,7 +80,7 @@ def _safe_tree(value, depth=0):
         raise ValueError('Board nesting exceeds 25 levels')
     if isinstance(value, dict):
         for key, child in value.items():
-            if key in {'source', 'sources', 'extends', 'ref', 'html_policy', 'url', 'file', 'path', 'sql', 'connection'}:
+            if key in BLOCKED_KEYS:
                 raise ValueError(f'{key}: external sources, includes and raw HTML are not enabled in Explore boards')
             if key == 'theme' and child not in THEMES:
                 raise ValueError('Choose a built-in theme: clarity, paper, vivid, neon or stark')
@@ -74,8 +112,8 @@ def parse_board(content: str) -> dict:
     queries = board.get('queries', {})
     if not isinstance(queries, dict) or not 1 <= len(queries) <= MAX_QUERIES:
         raise ValueError('Define between 1 and 12 named queries')
-    if not isinstance(board.get('charts'), dict) or not 1 <= len(board['charts']) <= 24:
-        raise ValueError('Define between 1 and 24 named charts')
+    if not isinstance(board.get('charts'), dict) or not 1 <= len(board['charts']) <= MAX_CHARTS:
+        raise ValueError(f'Define between 1 and {MAX_CHARTS} named charts')
     if any(not isinstance(chart, dict) for chart in board['charts'].values()):
         raise ValueError('Define chart objects inline; cross-file chart references are not enabled')
     display = {key: value for key, value in board.items() if key not in {'queries', 'variables'}}
@@ -93,13 +131,13 @@ def parse_board(content: str) -> dict:
                 check_queries(child)
     check_queries(display)
     variables = board.get('variables', {})
-    if not isinstance(variables, dict) or len(variables) > 20:
-        raise ValueError('Define up to 20 variables')
+    if not isinstance(variables, dict) or len(variables) > MAX_VARIABLES:
+        raise ValueError(f'Define up to {MAX_VARIABLES} variables')
     _safe_tree(variables)
     for name, spec in variables.items():
-        if not isinstance(spec, dict) or spec.get('input', 'text') not in {'select', 'multiselect', 'text', 'input', 'number', 'date', 'checkbox'}:
+        if not isinstance(spec, dict) or spec.get('input', 'text') not in VARIABLE_INPUTS:
             raise ValueError(f'Variable {name}: use select, multiselect, text, number, date or checkbox')
-        if set(spec) - {'input', 'label', 'default', 'options', 'required', 'notes'}:
+        if set(spec) - VARIABLE_FIELDS:
             raise ValueError(f'Variable {name}: use explicit static options and filter() in SQL')
         options = spec.get('options', {})
         if not isinstance(options, dict) or set(options) - {'static'} or not isinstance(options.get('static', []), list):

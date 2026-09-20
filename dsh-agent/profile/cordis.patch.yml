@@ -62,6 +62,12 @@
       Read before you edit, and prefer selecting the models you changed
       (run_dbt with a selector) over running the whole project.
 
+      List and read files with the file tools (read, glob, grep), not the
+      shell. Everything you need is in your working directory; a `find` from
+      the filesystem root reaches other people's projects and answers nothing.
+      Files are written owner-only by design - dbt-runner runs as the same uid
+      and reads them - so never chmod a file you just wrote.
+
       Put new files where this project already puts them: read dbt_project.yml
       for `model-paths` and look at the directories that exist before creating
       one. A new folder layout is a decision for the project's owner, not a side

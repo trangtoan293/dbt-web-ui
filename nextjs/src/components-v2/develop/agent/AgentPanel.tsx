@@ -19,11 +19,17 @@ interface AgentPanelProps {
   health: AgentHealth | null
   /** Whether the user has their own key; null while unknown. */
   userKeySet: boolean | null
-  /** The file open in the editor, offered to the agent as context. */
-  activeFilePath?: string | null
-  /** Open a file the agent touched, in the IDE's own editor. */
+  /** What the workspace knows, offered to the agent under a toggle. `label`
+   *  is what the chip shows; `context` is read when the prompt is sent - the
+   *  editor moves on between renders - and prepended to it. */
+  attachment?: { label: string; context: () => string } | null
+  /** Open a file the agent touched, in the workspace's own editor. */
   onOpenFile?: (path: string) => void
   onClose: () => void
+  /** Wording, for a workspace that is not the IDE. */
+  title?: string
+  intro?: string
+  placeholder?: string
 }
 
 const BUBBLE_STYLES: Record<AgentMessage["role"], string> = {
@@ -99,10 +105,13 @@ function ToolRow({ tool, onOpenFile }: { tool: AgentToolCall; onOpenFile?: (path
  * UI for those.
  */
 export default function AgentPanel({
-  projectId, health, userKeySet, activeFilePath, onOpenFile, onClose,
+  projectId, health, userKeySet, attachment, onOpenFile, onClose,
+  title = "Assistant",
+  intro = "Ask for a model, a fix, or an explanation. The assistant edits files in this project and runs dbt through the same runner the IDE uses, so runs appear in History like any other.",
+  placeholder = "Describe the change…",
 }: AgentPanelProps) {
   const [draft, setDraft] = useState("")
-  const [attachFile, setAttachFile] = useState(true)
+  const [attachContext, setAttachContext] = useState(true)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const {
     messages, isStreaming, sessionId, sessions, todos, usage, loadingHistory,
@@ -121,7 +130,7 @@ export default function AgentPanel({
   const submit = () => {
     const text = draft
     setDraft("")
-    void send(text, attachFile && activeFilePath ? activeFilePath : undefined)
+    void send(text, attachContext && attachment ? attachment.context() : undefined)
   }
 
   return (
@@ -130,7 +139,7 @@ export default function AgentPanel({
         <div className="flex items-center justify-between px-3 py-2">
           <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900">
             <Bot className="h-4 w-4 shrink-0 text-[#0078D4]" />
-            Assistant
+            {title}
             {health?.model && (
               <span className="truncate text-[11px] font-normal text-gray-400">{health.model}</span>
             )}
@@ -198,11 +207,7 @@ export default function AgentPanel({
       <div ref={scrollRef} className="flex-1 space-y-2 overflow-y-auto p-3">
         {loadingHistory && <p className="text-[11px] text-gray-400">Loading conversation…</p>}
         {!loadingHistory && messages.length === 0 && (
-          <p className="text-xs leading-relaxed text-gray-500">
-            Ask for a model, a fix, or an explanation. The assistant edits files in
-            this project and runs dbt through the same runner the IDE uses, so runs
-            appear in History like any other.
-          </p>
+          <p className="text-xs leading-relaxed text-gray-500">{intro}</p>
         )}
         {messages.map((message, index) =>
           message.tool ? (
@@ -261,15 +266,15 @@ export default function AgentPanel({
       )}
 
       <div className="border-t border-gray-200 bg-white p-2">
-        {activeFilePath && (
+        {attachment && (
           <button
             type="button"
-            onClick={() => setAttachFile((on) => !on)}
-            title="Tell the assistant which file is open"
-            className={`mb-1.5 flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${attachFile ? "border-[#0078D4]/40 bg-[#0078D4]/5 text-[#0078D4]" : "border-gray-200 text-gray-400"}`}
+            onClick={() => setAttachContext((on) => !on)}
+            title="Tell the assistant what is open in front of you"
+            className={`mb-1.5 flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${attachContext ? "border-[#0078D4]/40 bg-[#0078D4]/5 text-[#0078D4]" : "border-gray-200 text-gray-400"}`}
           >
             <FileCode className="h-3 w-3 shrink-0" />
-            <span className="truncate">{activeFilePath}</span>
+            <span className="truncate">{attachment.label}</span>
           </button>
         )}
         <textarea
@@ -282,7 +287,7 @@ export default function AgentPanel({
             }
           }}
           rows={3}
-          placeholder="Describe the change…"
+          placeholder={placeholder}
           disabled={isStreaming || needsCredential}
           className="w-full resize-none rounded-md border border-gray-200 px-2 py-1.5 text-xs focus:border-[#0078D4] focus:outline-none disabled:bg-gray-50"
         />

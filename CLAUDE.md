@@ -113,12 +113,34 @@ dsh-agent turns them into a per-session Cordis `--patch` overlay; both are fixed
 at spawn, so a change restarts the session (`ModelConfig.fingerprint`).
 It edits files via the harness fs tools but runs dbt only through the `dbt` MCP
 server → dbt-runner (single-writer DuckDB, warm workers, memory budget, History).
+The same panel is docked in **Explore** (`AgentPanel` takes `title`/`intro`/
+`placeholder` and an `attachment`), where the job is reading built data and
+writing boards rather than editing models. That difference is carried *per
+prompt* — `lib/explore-agent.ts` builds the brief and names what is on screen —
+not by a second persona: the profile's persona is fixed at session spawn.
 Authorization is delegated to dbt-runner (`app/authz.py`); it has no
 `DATABASE_URL` and no `APP_ENCRYPTION_KEY`. The harness is **not vendored** —
 `profile/cordis.patch.yml` patches the shipped bundle (a patch replaces a whole
 `config`, no deep merge). Sandbox modes fence *writes*, not reads, so one
 project's session can read another's files — hence off by default; see
 `dsh-agent/README.md`.
+
+**Dashboards.** A board is a YAML file under `charts/`, and that file *is* the
+published dashboard - there is no snapshot table. `DashboardWorkspace` therefore
+has two modes: **view** renders the saved file (`baseline`) and does it on open,
+so a reader clicks a dashboard and sees results without pressing Preview;
+**edit** renders the unsaved buffer (`yaml`), which is the draft. Publish is
+`filesApi.save` plus a switch back to view - the draft lives in the editor and
+in localStorage, so there is no third copy to reconcile. The auto-render is
+gated on the `active` prop because Explore keeps every section mounted, and a
+hidden board must not run warehouse queries. A chart is built in exactly one
+component, `ChartBuilder` — SQL results and a dashboard's Add chart both mount
+it, so a chart is always drawn before it is committed anywhere. It redraws
+without a Build button because `/charts/render` draws from rows the browser
+already holds (no warehouse round trip); `chartProblem` states the renderer's
+limits up front instead of failing on them. Add chart still inserts the *query*,
+never these rows, so the dashboard refreshes. Helpers and their tests:
+`boardSource` / `boardNeedsRender` / `chartProblem` in `src/lib/board.ts`.
 
 **Scheduling.** `app/services/scheduler.py` is one poll loop doing three jobs:
 fire due schedules, prune run history, run DuckLake maintenance. Leadership is a

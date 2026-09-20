@@ -94,3 +94,32 @@ export function chartPayload(draft: ChartDraft): Record<string, unknown> {
 
 export const chartReady = (draft: ChartDraft, columns: string[]) =>
   (CHART_TYPES.find(item => item.value === draft.type)?.channels ?? []).every(channel => columns.includes(draft.fields[channel.key]))
+
+/**
+ * Why this draft cannot be drawn from these rows yet, or null when it can.
+ * The snapshot renderer draws the chart from rows the browser already has, so
+ * these are the limits it enforces - checked before asking, not after failing.
+ */
+export function chartProblem(draft: ChartDraft, rows: number, columns: string[], numeric: string[]): string | null {
+  const kind = draft.type
+  if (!SNAPSHOT_TYPES.includes(kind)) return `A ${kind} is drawn by the dashboard itself - this preview covers the other chart types.`
+  if (rows > 1000) return 'Charts support up to 1,000 result rows. Reduce the query limit.'
+  if (columns.length > 80) return 'Choose up to 80 columns in your query.'
+  if (kind === 'kpi' && rows !== 1) return 'KPI needs one row. Aggregate your SQL to a single metric first.'
+  if (kind !== 'table' && !numeric.includes(draft.fields.y ?? '')) return 'Choose a numeric value column. Cast numeric text in SQL if necessary.'
+  if (kind !== 'table' && kind !== 'kpi' && !columns.includes(draft.fields.x ?? '')) return 'Choose an X-axis or category column.'
+  return null
+}
+
+/** The workspace shows a board two ways, the way a published dashboard does. */
+export type BoardMode = 'view' | 'edit'
+
+/** A board is blank once its comments are stripped - those are the template's prose. */
+export const boardEmpty = (yaml: string) => !yaml.replace(/^\s*#.*$/gm, '').trim()
+
+/** View renders the saved file (what a reader opens); editing renders the unsaved draft. */
+export const boardSource = (mode: BoardMode, draft: string, published: string) => mode === 'view' ? published : draft
+
+/** Opening a published board renders it - no Preview click, and no repeat of what is already on screen. */
+export const boardNeedsRender = (mode: BoardMode, published: string, rendered: string) =>
+  mode === 'view' && !boardEmpty(published) && rendered !== published

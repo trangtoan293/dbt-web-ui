@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.services.boards import parse_board, prepare_sql, validate_board, render_board, compose_board, add_chart, preview_query, preview_sql
+from app.services.boards import parse_board, prepare_sql, validate_board, render_board, compose_board, add_chart, preview_query, preview_sql, explore_restrictions
 from app.services.chart_reference import reference
 
 BOARD = '''title: Sales dashboard
@@ -270,3 +270,33 @@ def test_a_built_board_renders_without_engine_warnings(title):
                                   'type': 'line', 'x': 'month', 'y': 'revenue', 'title': title,
                                   'number_format': 'currency'}, ['month', 'revenue'])
     assert asyncio.run(render_board(added['yaml'], {}, rows))['warnings'] == []
+
+
+def test_every_documented_blocked_key_is_actually_refused():
+    """The subset served to the assistant must be the subset enforced here.
+
+    dbt-charts documents its own CLI syntax; Explore accepts less. That list is
+    published through /charts/reference, so a key that drifts out of the
+    validator would be advertised as forbidden while quietly working - or worse,
+    the reverse.
+    """
+    restrictions = explore_restrictions()
+    for key in restrictions['blocked_keys']:
+        board = f"title: Probe\n{key}: anything\nqueries:\n  q: select 1 as n\ncharts:\n  c: {{type: table, query: q}}\n"
+        with pytest.raises(ValueError) as failure:
+            parse_board(board)
+        assert key in str(failure.value)
+
+
+def test_a_query_is_a_string_not_a_mapping_with_sql():
+    """`sql:` is the shape the renderer's own docs teach, and it is refused."""
+    documented_by_the_engine = "title: Probe\nqueries:\n  q:\n    sql: select 1 as n\ncharts:\n  c: {type: table, query: q}\n"
+    with pytest.raises(ValueError):
+        parse_board(documented_by_the_engine)
+    assert parse_board("title: Probe\nqueries:\n  q: select 1 as n\ncharts:\n  c: {type: table, query: q}\n")
+
+
+def test_the_reference_carries_the_subset_beside_the_engine_docs():
+    published = reference()
+    assert published['explore_subset'] == explore_restrictions()
+    assert 'source' in published['explore_subset']['blocked_keys']

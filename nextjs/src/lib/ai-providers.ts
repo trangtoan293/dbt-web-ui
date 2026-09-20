@@ -65,6 +65,26 @@ export function defaultApiKeyEnv(route: string): string {
   return `${cleaned.toUpperCase()}_API_KEY`
 }
 
+/**
+ * The models a route must declare to `llm-pi-ai`.
+ *
+ * pi-ai ships a catalog for each known route, but a catalog is a snapshot: a
+ * model the provider has added since is refused with "provider X has no
+ * configured model Y", even though the provider serves it. The session is
+ * started on this row's own default, so that default is always declared.
+ *
+ * ponytail: the id alone, with no context window - pi-ai falls back to its own
+ * defaults for that. Carry the real numbers here if compaction turns out wrong.
+ */
+export function declaredModels(
+  models: ProviderModel[],
+  defaultModel: string | null | undefined,
+): ProviderModel[] {
+  const chosen = defaultModel?.trim()
+  if (!chosen || models.some((model) => model.id === chosen)) return models
+  return [...models, { id: chosen }]
+}
+
 function normalizeModels(models: ProviderModel[] | null | undefined): ProviderModel[] {
   if (!Array.isArray(models)) return []
   const seen = new Set<string>()
@@ -282,7 +302,7 @@ export async function resolveRoutes(userId: string): Promise<ResolvedRoutes> {
 
   const providers: Record<string, Record<string, unknown>> = {}
   for (const row of rows) {
-    const models = normalizeModels(row.models as ProviderModel[] | null)
+    const models = declaredModels(normalizeModels(row.models as ProviderModel[] | null), row.defaultModel)
     providers[row.route] = {
       apiKeyEnv: row.apiKeyEnv,
       ...(row.label ? { displayName: row.label } : {}),

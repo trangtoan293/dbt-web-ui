@@ -188,6 +188,8 @@ export default function CodeEditor({
       onMount={handleEditorDidMount}
       options={{
         readOnly,
+        // Completions escape a short editor - Add chart embeds one in a dialog.
+        fixedOverflowWidgets: true,
         minimap: { enabled: true, maxColumn: 80 },
         fontSize: 13,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",

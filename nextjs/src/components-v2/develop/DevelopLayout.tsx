@@ -2042,7 +2042,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
             projectId={project.id}
             health={agent.health}
             userKeySet={agent.userKeySet}
-            activeFilePath={activeTabPath}
+            attachment={activeTabPath ? { label: activeTabPath, context: () => `The file currently open in the editor is ${activeTabPath}.` } : null}
             onOpenFile={handleFileSelect}
             onClose={() => setAgentOpen(false)}
           />
