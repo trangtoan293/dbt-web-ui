@@ -7,6 +7,11 @@ declare module 'next-auth' {
     error?: string
     user: {
       id: string
+      // Convenience only, for showing/hiding UI - never a source of truth for
+      // authorization. Every mutation re-reads users.role from Postgres at
+      // request time (nextjs/src/lib/authz.ts); dbt-runner does the same
+      // independently. See docs/rbac-design.md.
+      role: string
     } & DefaultSession['user']
   }
 }
@@ -18,6 +23,7 @@ declare module 'next-auth/jwt' {
     refreshToken?: string
     accessTokenExpiresAt?: number
     userId?: string
+    role?: string
     error?: string
   }
 }

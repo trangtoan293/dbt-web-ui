@@ -7,6 +7,11 @@ type User = {
   email: string
   id: string
   name?: string
+  // Convenience for hiding/disabling UI only (the admin-only Settings tab,
+  // the Access tab's edit controls) - never trusted for an actual decision.
+  // Every mutation re-checks users.role in Postgres server-side regardless.
+  // See docs/rbac-design.md.
+  role: string
   // Populated from the DB user's created_at when available; the session does
   // not carry it yet, so consumers must treat it as optional.
   registered_at?: Date
@@ -29,6 +34,7 @@ export function GlobalProvider({ children }: { children: React.ReactNode }) {
         email: session.user.email!,
         id: session.user.id!,
         name: session.user.name ?? undefined,
+        role: session.user.role,
       })
     } else if (status === 'unauthenticated') {
       setUser(null)

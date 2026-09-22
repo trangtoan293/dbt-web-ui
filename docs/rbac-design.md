@@ -13,10 +13,17 @@
 - `nextjs/src/app/api/projects/[projectId]/env-vars/route.ts`: đổi từ kiểm tra `createdBy` sang `requireProjectAccess`. **Giá trị biến môi trường vẫn khoá theo `(project, owner)` như cũ** — endpoint này chưa từng trả giá trị thật ra browser (chỉ `hasValue: boolean`), nên quyết định "mở giá trị theo project" ở §3 không có gì để áp dụng ở đây; chỉ quyền *vào được endpoint* đổi theo project access.
 - Test: `dbt-runner` — 330 pass, 60 fail (toàn bộ 60 là lỗi môi trường Windows-vs-Linux có sẵn từ trước, đã đối chiếu từng file; 1 test (`test_boards.py::test_board_routes_check_project_owner_before_parsing_or_execution`) phải sửa vì mock nhắm đúng tên hàm cũ, đã sửa). `nextjs` — `npm run test:unit` 120/120 pass; `npm test` (chạm DB) chưa chạy vì chưa có `.env.test`/DB test riêng.
 
+**Đã xong thêm — Phase D (UI, 2026-09-22):**
+- `token.role`/`session.user.role` (nextjs/src/lib/auth.ts, types/next-auth.d.ts) — chỉ để hiện/ẩn UI, không dùng để authorize; `GlobalContext.tsx` expose `user.role`.
+- `AdminUsersCard.tsx` (Settings, chỉ admin thấy — tự ẩn nếu API trả 403): đổi role qua dropdown.
+- `AccessPanel.tsx` (tab "Access" mới trong `ProjectSettingsDialog`): danh sách + thêm/xoá `project_permissions` theo email, level `view`/`edit`.
+- API: `GET /api/admin/users`, `PATCH /api/admin/users/[id]` (admin only, chặn hạ quyền admin cuối cùng); `GET/POST /api/projects/[projectId]/access`, `DELETE .../access/[userId]` — dùng `requireProjectAccess(id,'edit')` chứ không phải `requireAdmin()`, đúng theo mục Backlog bên dưới (contributor có edit trên project nào thì tự cấp/thu quyền được trên đúng project đó, không tự phong admin được vì route đổi role tách riêng và admin-only).
+- Type-check + lint sạch, `npm run test:unit` vẫn 120/120.
+
 **Chưa làm — cần phiên sau:**
-1. **UI (§5):** tab Users trong `/settings`, tab Access trong `ProjectSettingsDialog`, 5 API route `/api/admin/*`. Chưa có cách nào qua UI để admin đầu tiên cấp quyền cho người khác — hiện chỉ làm được bằng SQL tay.
-2. **Set admin đầu tiên:** chưa chạy `UPDATE users SET role='admin' WHERE email=...` trên DB dev — làm trước khi test UI, vì mọi user hiện tại đều `contributor`.
-3. **Cụm `/dbt/docs/*` (dbt-runner) + 2 route Next.js `dbt-docs/view`, `dbt-docs/static`:** hoàn toàn không có auth (không `require_user`, không forward token) — phát hiện khi rà `data.ts`, cùng loại lỗi với `connection.py` đã vá nhưng **chưa sửa**, vì cần sửa cả 2 phía (thêm `require_user`+`authorize_project` ở 6 endpoint dbt-runner, và forward bearer token ở 2 route Next.js) mới hoạt động - sửa nửa vời sẽ vỡ tính năng xem docs.
+1. Test thủ công qua UI (3 API route mới, 2 component mới) — mới verify bằng type-check/lint/test tự động, **chưa click thử trên trình duyệt thật**.
+2. **Set admin đầu tiên:** đã làm cho `zeus@test.local` bằng SQL tay (xem bảng dữ liệu test bên dưới). Giờ có UI rồi, việc gán role tiếp theo nên thử qua chính `AdminUsersCard`.
+3. Cụm `/dbt/docs/*` (dbt-runner) + 2 route Next.js `dbt-docs/view`, `dbt-docs/static`:** hoàn toàn không có auth (không `require_user`, không forward token) — phát hiện khi rà `data.ts`, cùng loại lỗi với `connection.py` đã vá nhưng **chưa sửa**, vì cần sửa cả 2 phía (thêm `require_user`+`authorize_project` ở 6 endpoint dbt-runner, và forward bearer token ở 2 route Next.js) mới hoạt động - sửa nửa vời sẽ vỡ tính năng xem docs.
 4. `/dbt/init`, `/ingest/meta` (dbt-runner) vẫn không có `require_user` — phát hiện phụ, chưa đánh giá mức độ nghiêm trọng, chưa sửa.
 5. Chưa viết test mới cho `authorize_project`/`requireProjectAccess` (chỉ sửa 1 test cũ cho pass lại) — nên có test riêng cho: admin bypass, viewer bị chặn edit dù có level=edit, contributor level=view bị chặn edit, không có dòng permission thì 404.
 

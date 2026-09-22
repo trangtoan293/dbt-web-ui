@@ -1,12 +1,13 @@
 "use client"
 
 import React, { useEffect, useState } from "react"
-import { AlertTriangle, Database, KeyRound, Layers, RotateCcw, SlidersHorizontal, Trash2, Waves } from "lucide-react"
+import { AlertTriangle, Database, KeyRound, Layers, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Waves } from "lucide-react"
 import { Button } from "@/components-v2/ui/button"
 import { Input } from "@/components-v2/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components-v2/ui/dialog"
 import type { Connection } from "@/components-v2/develop/types"
 import { cn } from "@/lib/utils"
+import AccessPanel from "./AccessPanel"
 import EnvVarsPanel from "./EnvVarsPanel"
 import LakehousePanel from "./LakehousePanel"
 import TargetsPanel from "./TargetsPanel"
@@ -51,6 +52,7 @@ const TABS: { id: ProjectSettingsTab; label: string; icon: React.ElementType }[]
   { id: "environments", label: "Environments", icon: Layers },
   { id: "lakehouse", label: "Lakehouse", icon: Waves },
   { id: "variables", label: "Variables", icon: KeyRound },
+  { id: "access", label: "Access", icon: ShieldCheck },
   { id: "danger", label: "Danger zone", icon: AlertTriangle },
 ]
 
@@ -231,6 +233,8 @@ export default function ProjectSettingsDialog({
                 error={envVarsError}
               />
             )}
+
+            {tab === "access" && <AccessPanel projectId={project.id} />}
 
             {tab === "danger" && (
               <div className="space-y-4">
