@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.auth import resolve_user_id, verify_project_ownership
+from app.core.auth import authorize_project, resolve_user_id, verify_project_ownership
 from app.core.db import get_session
 from app.core.dependencies import get_dbt_service
 from app.models.dbt import QueryRequest
@@ -23,7 +23,11 @@ async def board_action(project_id: str, action: str, raw: Request, response: Res
                        service: DbtService = Depends(get_dbt_service)):
     response.headers["Cache-Control"] = "no-store"
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await verify_project_ownership(session, project_id, user_id)
+    # Every action here previews or validates in-memory - saving the board
+    # YAML to disk is a separate call through files.py, which is where edit
+    # is actually required. A viewer building a chart from data they can see
+    # is not writing anything.
+    await authorize_project(session, project_id, user_id, action="view")
     if action not in {"validate", "render", "compose", "chart", "query", "sql"}:
         raise HTTPException(404, "Unknown board action")
     body = bytearray()
@@ -69,7 +73,7 @@ async def environment(project_id: str, claims: dict = Depends(require_user), ses
                       service: DbtService = Depends(get_dbt_service)):
     import yaml
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     root = service.project.get_path_or_raise(project_id)
     profile_file = root / "profiles.yml"
     if not profile_file.is_file():

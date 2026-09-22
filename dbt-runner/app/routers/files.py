@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.auth import (
+    authorize_project,
+    require_user,
+    resolve_user_id,
+    verify_project_ownership,
+)
 from app.core.db import get_session
 from app.core.dependencies import get_file_service
 from app.exceptions import (
@@ -38,7 +43,7 @@ async def list_files(
 ):
     """List files in a project directory."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     try:
         return await service.list_files(project_id, path)
     except (ProjectNotFoundException, FileNotFoundException) as e:
@@ -55,7 +60,7 @@ async def search_files(
 ):
     """Search for files matching a query in the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     try:
         return await service.search_files(project_id, query)
     except ProjectNotFoundException as e:
@@ -72,7 +77,7 @@ async def read_file(
 ):
     """Read file content."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     try:
         return await service.read_file(project_id, path)
     except (ProjectNotFoundException, FileNotFoundException, InvalidPathException) as e:
@@ -237,7 +242,7 @@ async def get_project_status(
         - file_count: Number of files in project root
     """
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
 
     from pathlib import Path
 

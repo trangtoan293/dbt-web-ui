@@ -11,10 +11,14 @@ interface ProjectCardProps {
   description: string | null
   git_branch: string
   created_at: string
+  access?: { role: string; canEdit: boolean }
   onDelete?: (project: { id: string; name: string }) => void
 }
 
-export default function ProjectCard({ id, name, description, git_branch, created_at, onDelete }: ProjectCardProps) {
+export default function ProjectCard({ id, name, description, git_branch, created_at, access, onDelete }: ProjectCardProps) {
+  // Absent on a card loaded before this existed - default to allowed rather
+  // than silently hiding Delete for every project mid-upgrade.
+  const canEdit = access?.canEdit ?? true
   return (
     <Card className="h-full transition-shadow hover:shadow-md">
       <CardContent className="p-0">
@@ -44,7 +48,7 @@ export default function ProjectCard({ id, name, description, git_branch, created
               </div>
             </div>
           </Link>
-          {onDelete && (
+          {onDelete && canEdit && (
             <div className="border-t border-gray-100 px-4 py-2">
               <button
                 type="button"

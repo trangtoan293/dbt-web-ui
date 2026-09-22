@@ -35,7 +35,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 
 export default function SourcesView(): React.ReactElement {
   const [sources, setSources] = useState<IngestSource[]>([])
-  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null }>>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null; canEdit: boolean }>>([])
   const [projectFilter, setProjectFilter] = useState("")
   const [metaError, setMetaError] = useState(false)
   const [query, setQuery] = useState("")
@@ -71,7 +71,20 @@ export default function SourcesView(): React.ReactElement {
 
   useEffect(() => {
     load()
-    getProjects().then((rows) => setProjects(Array.isArray(rows) ? rows : [])).catch(() => undefined)
+    getProjects()
+      .then((rows) =>
+        setProjects(
+          (Array.isArray(rows) ? rows : []).map((project) => ({
+            id: project.id,
+            name: project.name,
+            lakehouseConnectionId: project.lakehouseConnectionId ?? project.lakehouse_connection_id ?? null,
+            // Absent on a row fetched before this existed - default to
+            // allowed rather than silently locking out mid-upgrade.
+            canEdit: project.access?.canEdit ?? true,
+          })),
+        ),
+      )
+      .catch(() => undefined)
     getIngestMeta()
       .then((m) =>
         setMeta({
@@ -96,6 +109,10 @@ export default function SourcesView(): React.ReactElement {
       setDeleting(false)
     }
   }
+
+  // Only projects the current user may edit - creating, editing or running a
+  // load is always a mutating action. See docs/rbac-design.md.
+  const editableProjectIds = new Set(projects.filter((project) => project.canEdit).map((project) => project.id))
 
   const needsLakehouse = (source: IngestSource) =>
     source.destination === "ducklake" &&
@@ -123,7 +140,7 @@ export default function SourcesView(): React.ReactElement {
         </select>
         <div className="ml-auto flex gap-2">
           <Button variant="outline" onClick={load} disabled={loading} aria-label="Refresh data loads"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></Button>
-          <Button onClick={() => { setEditing(null); setDialogOpen(true) }}><Plus className="mr-2 h-4 w-4" /> New load</Button>
+          <Button onClick={() => { setEditing(null); setDialogOpen(true) }} disabled={editableProjectIds.size === 0} title={editableProjectIds.size === 0 ? "No project you can edit yet" : undefined}><Plus className="mr-2 h-4 w-4" /> New load</Button>
         </div>
       </div>
       {metaError && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">Source capabilities could not be loaded. Reload this page to check available database and file sources.</p>}
@@ -156,7 +173,9 @@ export default function SourcesView(): React.ReactElement {
             <span>Load / project</span><span>Source</span><span>Destination</span><span>Update rule</span><span className="text-right">Actions</span>
           </div>
           {!visibleSources.length && <p className="p-10 text-center text-sm text-slate-500">{error ? "Loads are unavailable. Retry to fetch the current list." : "No loads match your filters."}</p>}
-          {visibleSources.map((source) => (
+          {visibleSources.map((source) => {
+            const canEditSource = editableProjectIds.has(source.projectId)
+            return (
             <div key={source.id} className="border-b border-slate-100 last:border-0">
               <div className="grid items-center gap-4 p-5 xl:grid-cols-[1.2fr_1fr_1.2fr_0.9fr_200px]">
                 <div className="min-w-0"><p className="break-words font-medium text-slate-900">{source.name}</p><p className="mt-1 text-xs text-slate-500">{projects.find((project) => project.id === source.projectId)?.name ?? "Project unavailable"}</p></div>
@@ -165,13 +184,14 @@ export default function SourcesView(): React.ReactElement {
                 <div><p className="text-sm text-slate-700">{{ append: "Add rows", replace: "Replace all rows", merge: "Update matching rows" }[source.writeDisposition] ?? source.writeDisposition}</p><p className="mt-1 text-xs text-slate-500">{source.cursorField ? `Track: ${source.cursorField}` : "Read all rows"}</p></div>
                 <div className="flex items-center justify-end gap-1">
                   <Button size="sm" variant="outline" aria-expanded={expanded === source.id} aria-controls={`load-${source.id}`} onClick={() => setExpanded(expanded === source.id ? null : source.id)}>{expanded === source.id ? "Close" : "Run / history"}</Button>
-                  <Button size="sm" variant="ghost" aria-label={`Edit load ${source.name}`} onClick={() => { setEditing(source); setDialogOpen(true) }}><Pencil className="h-4 w-4" /></Button>
-                  <Button size="sm" variant="ghost" aria-label={`Delete load ${source.name}`} onClick={() => setToDelete(source)}><Trash2 className="h-4 w-4" /></Button>
+                  <Button size="sm" variant="ghost" aria-label={`Edit load ${source.name}`} disabled={!canEditSource} title={canEditSource ? undefined : "View-only access to this project"} onClick={() => { setEditing(source); setDialogOpen(true) }}><Pencil className="h-4 w-4" /></Button>
+                  <Button size="sm" variant="ghost" aria-label={`Delete load ${source.name}`} disabled={!canEditSource} title={canEditSource ? undefined : "View-only access to this project"} onClick={() => setToDelete(source)}><Trash2 className="h-4 w-4" /></Button>
                 </div>
               </div>
-              {expanded === source.id && <div id={`load-${source.id}`} className="border-t border-slate-100 bg-slate-50/70 p-5"><IngestRunPanel sourceId={source.id} sourceName={source.name} writeDisposition={source.writeDisposition} /></div>}
+              {expanded === source.id && <div id={`load-${source.id}`} className="border-t border-slate-100 bg-slate-50/70 p-5"><IngestRunPanel sourceId={source.id} sourceName={source.name} writeDisposition={source.writeDisposition} canEdit={canEditSource} /></div>}
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
 

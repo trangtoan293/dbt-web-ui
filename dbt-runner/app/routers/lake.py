@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id
+from app.core.auth import authorize_project, require_user, resolve_user_id
 from app.core.db import get_session
 from app.core.dependencies import get_project_service
 from app.services.project import ProjectService
@@ -46,18 +46,11 @@ class IcebergPublishRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-async def _owned_project(session: AsyncSession, project_id: str, user_id: str) -> None:
-    """Refuse a project the caller does not own, as the file endpoints do."""
-    result = await session.execute(
-        text(
-            "SELECT 1 FROM dbt_projects "
-            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
-            "AND deleted_at IS NULL"
-        ),
-        {"pid": project_id, "uid": user_id},
-    )
-    if result.first() is None:
-        raise HTTPException(status_code=403, detail="Project not found or not yours")
+async def _owned_project(
+    session: AsyncSession, project_id: str, user_id: str, action: str = "edit"
+) -> None:
+    """Deprecated thin wrapper - see app/core/auth.py:authorize_project."""
+    await authorize_project(session, project_id, user_id, action=action)
 
 
 @router.get("/lake/iceberg/meta")
@@ -297,7 +290,7 @@ async def get_project_lakehouse(
 ) -> Dict[str, Any]:
     """Which lakehouse this project uses, and whether dbt builds into it."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _owned_project(session, project_id, user_id)
+    await _owned_project(session, project_id, user_id, action="view")
 
     row = await session.execute(
         text(

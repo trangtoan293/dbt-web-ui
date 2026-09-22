@@ -19,7 +19,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter
-from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.auth import (
+    authorize_project,
+    get_user_role,
+    require_user,
+    resolve_user_id,
+    verify_project_ownership,
+)
 from app.core.crypto import decrypt_secret_or_plaintext
 from app.core.db import get_session
 from app.core.dependencies import get_dbt_service
@@ -248,24 +254,22 @@ def _serialize_dbt_run(row: Any, *, include_logs: bool = True) -> dict[str, Any]
 
 
 async def _load_owned_dbt_run(
-    session: AsyncSession, run_id: str, user_id: str
+    session: AsyncSession, run_id: str, user_id: str, action: str = "view"
 ) -> dict[str, Any]:
+    """Load a run the caller may `action` on, via its project's permission.
+
+    Looks the run up by id first so a bad run_id 404s as "Run not found"
+    rather than the generic "Project not found" authorize_project raises -
+    then defers to the same admin/grant/level logic every other endpoint uses.
+    """
     result = await session.execute(
-        text(
-            """
-            SELECT r.*
-            FROM dbt_runs r
-            JOIN dbt_projects p ON p.id = r.project_id
-            WHERE r.id = CAST(:rid AS uuid)
-              AND p.created_by = CAST(:uid AS uuid)
-              AND p.deleted_at IS NULL
-            """
-        ),
-        {"rid": run_id, "uid": user_id},
+        text("SELECT r.* FROM dbt_runs r WHERE r.id = CAST(:rid AS uuid)"),
+        {"rid": run_id},
     )
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    await authorize_project(session, str(row["project_id"]), user_id, action=action)
     return dict(row)
 
 
@@ -307,13 +311,21 @@ async def list_dbt_runs(
 ):
     """List dbt run history visible to the authenticated user."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    role = await get_user_role(session, user_id)
     pid = project_id or projectId
-    params: dict[str, Any] = {"uid": user_id, "limit": limit, "offset": offset}
-    filters = [
-        "p.created_by = CAST(:uid AS uuid)",
-        "p.deleted_at IS NULL",
-    ]
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    filters = ["p.deleted_at IS NULL"]
+    if role != "admin":
+        # Same rule as authorize_project, inlined for a list query: any
+        # project with a permission row for this user, regardless of level -
+        # a viewer sees run history too, they just cannot start or cancel one.
+        filters.append(
+            "EXISTS (SELECT 1 FROM project_permissions pp "
+            "WHERE pp.project_id = p.id AND pp.user_id = CAST(:uid AS uuid))"
+        )
+        params["uid"] = user_id
     if pid:
+        await authorize_project(session, pid, user_id, action="view")
         filters.append("r.project_id = CAST(:pid AS uuid)")
         params["pid"] = pid
     if run_status:
@@ -348,7 +360,7 @@ async def get_dbt_run(
 ):
     """Get status, summary, logs, and dbt results for one run."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    row = await _load_owned_dbt_run(session, run_id, user_id)
+    row = await _load_owned_dbt_run(session, run_id, user_id, action="view")
     return _serialize_dbt_run(row, include_logs=include_logs)
 
 
@@ -362,7 +374,7 @@ async def get_dbt_run_logs(
 ):
     """Read persisted logs for a run without opening an SSE stream."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    row = await _load_owned_dbt_run(session, run_id, user_id)
+    row = await _load_owned_dbt_run(session, run_id, user_id, action="view")
     logs = row.get("logs") or ""
     chunk = logs[offset : offset + limit]
     next_offset = offset + len(chunk)
@@ -383,7 +395,7 @@ async def get_dbt_run_artifacts(
 ):
     """List per-model artifacts captured from dbt run_results.json."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _load_owned_dbt_run(session, run_id, user_id)
+    await _load_owned_dbt_run(session, run_id, user_id, action="view")
     result = await session.execute(
         text(
             """
@@ -422,7 +434,7 @@ async def cancel_dbt_run(
 ):
     """Cancel one running dbt run by run id."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    row = await _load_owned_dbt_run(session, run_id, user_id)
+    row = await _load_owned_dbt_run(session, run_id, user_id, action="edit")
     if row["status"] not in {"pending", "running"}:
         response.status_code = status.HTTP_409_CONFLICT
         return {
@@ -549,7 +561,7 @@ async def compile_model(
 ):
     """Compile a specific dbt model and return SQL."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, request.project_id, user_id)
+    await authorize_project(session, request.project_id, user_id, action="view")
     return await service.compile_model(request, session=session, user_id=user_id)
 
 
@@ -562,7 +574,7 @@ async def preview_model(
 ):
     """Preview model data using dbt show command."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, request.project_id, user_id)
+    await authorize_project(session, request.project_id, user_id, action="view")
     return await service.preview_model(request, session=session, user_id=user_id)
 
 
@@ -575,7 +587,7 @@ async def explain_model(
 ):
     """Compile a model and return an estimated query plan."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, request.project_id, user_id)
+    await authorize_project(session, request.project_id, user_id, action="view")
     return await service.explain_model(request, session=session, user_id=user_id)
 
 
@@ -588,7 +600,7 @@ async def get_lineage(
 ):
     """Get table and column lineage for a dbt model."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, request.project_id, user_id)
+    await authorize_project(session, request.project_id, user_id, action="view")
     return await service.get_lineage(request)
 
 
@@ -601,7 +613,7 @@ async def query_warehouse(
 ):
     """Run a read-only inline SELECT against the project's warehouse."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, request.project_id, user_id)
+    await authorize_project(session, request.project_id, user_id, action="view")
     return await service.query_warehouse(request, session=session, user_id=user_id)
 
 
@@ -627,7 +639,7 @@ async def get_intellisense_metadata(
 ):
     """Return normalized manifest/catalog metadata for editor intellisense."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
 
     project_path = service.project.get_path_or_raise(project_id)
     target_path = project_path / "target"
@@ -799,7 +811,7 @@ async def check_target(
     answers one row.
     """
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     results = await _check_targets(session, project_id, only=target)
     if not results:
         raise HTTPException(status_code=404, detail=f"No target named '{target}'")
@@ -814,7 +826,7 @@ async def check_connection(
 ):
     """Diagnostic endpoint: verify the 3 conditions for profiles.yml regeneration."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
 
     result: Dict[str, Any] = {
         "project_id": project_id,

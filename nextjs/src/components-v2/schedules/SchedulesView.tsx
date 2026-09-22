@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils"
 interface Project {
   id: string
   name: string
+  canEdit: boolean
 }
 
 const COMMAND_LABELS: Record<string, string> = {
@@ -85,6 +86,12 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
   const [toDelete, setToDelete] = useState<ScheduleRow | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
+  // Only projects the current user may edit - a schedule always runs a
+  // mutating action (start a run, edit, delete), so a view-only project is
+  // never a valid target here. See docs/rbac-design.md.
+  const editableProjects = projects.filter((project) => project.canEdit)
+  const editableProjectIds = new Set(editableProjects.map((project) => project.id))
+
   const load = useCallback(async () => {
     setError(null)
     try {
@@ -94,6 +101,9 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
         (Array.isArray(projectRows) ? projectRows : []).map((project) => ({
           id: project.id,
           name: project.name,
+          // Absent on a row fetched before this existed - default to allowed
+          // rather than silently locking out an admin deployment mid-upgrade.
+          canEdit: project.access?.canEdit ?? true,
         })),
       )
     } catch (err) {
@@ -177,7 +187,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
             setEditing(null)
             setDialogOpen(true)
           }}
-          disabled={projects.length === 0}
+          disabled={editableProjects.length === 0}
+          title={editableProjects.length === 0 ? "No project you can edit yet" : undefined}
         >
           <Plus className="mr-2 h-4 w-4" /> New schedule
         </Button>
@@ -206,7 +217,12 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
         />
       ) : (
         <div className="space-y-2">
-          {schedules.map((schedule) => (
+          {schedules.map((schedule) => {
+            // A schedule not among editableProjectIds means either a
+            // view-only grant, or (rarely) a project this list hasn't loaded
+            // - default to blocked, not allowed, since this gates mutations.
+            const canEditSchedule = editableProjectIds.has(schedule.projectId)
+            return (
             <Card key={schedule.id} className={schedule.isActive ? undefined : "opacity-70"}>
               <CardContent className="space-y-2 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -232,8 +248,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
                     <Button
                       size="sm"
                       variant="outline"
-                      title="Run now"
-                      disabled={busyId === schedule.id}
+                      title={canEditSchedule ? "Run now" : "View-only access to this project"}
+                      disabled={busyId === schedule.id || !canEditSchedule}
                       onClick={() => runNow(schedule)}
                     >
                       <Play className="h-4 w-4" />
@@ -241,8 +257,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
                     <Button
                       size="sm"
                       variant="outline"
-                      title={schedule.isActive ? "Pause" : "Resume"}
-                      disabled={busyId === schedule.id}
+                      title={canEditSchedule ? (schedule.isActive ? "Pause" : "Resume") : "View-only access to this project"}
+                      disabled={busyId === schedule.id || !canEditSchedule}
                       onClick={() => toggleActive(schedule)}
                     >
                       {schedule.isActive ? (
@@ -254,7 +270,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
                     <Button
                       size="sm"
                       variant="outline"
-                      title="Edit"
+                      title={canEditSchedule ? "Edit" : "View-only access to this project"}
+                      disabled={!canEditSchedule}
                       onClick={() => {
                         setEditing(schedule)
                         setDialogOpen(true)
@@ -265,7 +282,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
                     <Button
                       size="sm"
                       variant="outline"
-                      title="Delete"
+                      title={canEditSchedule ? "Delete" : "View-only access to this project"}
+                      disabled={!canEditSchedule}
                       onClick={() => setToDelete(schedule)}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -297,7 +315,8 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
                 )}
               </CardContent>
             </Card>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -332,7 +351,7 @@ export default function SchedulesView({ navigation }: { navigation?: React.React
       <ScheduleDialog
         open={dialogOpen}
         existing={editing}
-        projects={projects}
+        projects={editableProjects}
         onClose={() => setDialogOpen(false)}
         onSaved={load}
       />

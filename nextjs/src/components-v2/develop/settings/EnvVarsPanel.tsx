@@ -20,6 +20,7 @@ interface EnvVarsPanelProps {
   onSave: () => void
   saving: boolean
   error: string | null
+  disabled?: boolean
 }
 
 /** Editor for the project's dbt environment variables. */
@@ -29,6 +30,7 @@ export default function EnvVarsPanel({
   onSave,
   saving,
   error,
+  disabled = false,
 }: EnvVarsPanelProps): React.ReactElement {
   const update = (id: string, patch: Partial<DbtEnvironmentVariable>) =>
     onChange(value.map((item) => (item.id === id ? { ...item, ...patch } : item)))
@@ -61,6 +63,7 @@ export default function EnvVarsPanel({
                   placeholder="DBT_ENV_SECRET_TOKEN"
                   aria-label="Variable name"
                   className="font-mono text-xs"
+                  disabled={disabled}
                 />
                 <Input
                   value={item.value}
@@ -71,6 +74,7 @@ export default function EnvVarsPanel({
                   }
                   aria-label="Variable value"
                   className="font-mono text-xs"
+                  disabled={disabled}
                 />
                 <select
                   value={item.type}
@@ -78,7 +82,8 @@ export default function EnvVarsPanel({
                     update(item.id, { type: event.target.value as DbtEnvironmentVariableType })
                   }
                   aria-label="Variable type"
-                  className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4]"
+                  className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] disabled:opacity-60"
+                  disabled={disabled}
                 >
                   <option value="text">Text</option>
                   <option value="password">Password</option>
@@ -86,7 +91,8 @@ export default function EnvVarsPanel({
                 <button
                   type="button"
                   onClick={() => onChange(value.filter((env) => env.id !== item.id))}
-                  className="flex h-9 w-9 items-center justify-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"
+                  disabled={disabled}
+                  className="flex h-9 w-9 items-center justify-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                   title="Remove variable"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -100,11 +106,11 @@ export default function EnvVarsPanel({
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <div className="flex items-center justify-between gap-2">
-        <Button type="button" variant="outline" onClick={() => onChange([...value, createEnvironmentVariable()])}>
+        <Button type="button" variant="outline" disabled={disabled} onClick={() => onChange([...value, createEnvironmentVariable()])}>
           <Plus className="h-4 w-4" />
           Add variable
         </Button>
-        <Button type="button" onClick={onSave} disabled={saving}>
+        <Button type="button" onClick={onSave} disabled={saving || disabled}>
           {saving ? "Saving…" : "Save variables"}
         </Button>
       </div>

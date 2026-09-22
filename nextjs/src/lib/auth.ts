@@ -50,6 +50,7 @@ export const authCallbacks = {
       // reset can remove the row while the browser still has a valid cookie.
       const user = await ensureLocalUser()
       token.userId = user.id
+      token.role = user.role
       token.accessToken = 'local-no-auth'
       token.error = undefined
       return token
@@ -65,10 +66,13 @@ export const authCallbacks = {
     }
 
     // Do this for existing JWTs as well as the initial OAuth callback. This
-    // repairs a stale token after a database restore without requiring logout.
+    // repairs a stale token after a database restore without requiring logout,
+    // and re-reads role on every refresh so a promotion an admin makes shows
+    // up without the promoted user having to sign out.
     if (token.sub && token.email) {
       const user = await ensureOidcUser(token.sub, token.email, token.name)
       token.userId = user.id
+      token.role = user.role
     }
 
     if (
@@ -103,6 +107,7 @@ export const authCallbacks = {
       user: {
         ...session.user,
         id: token.userId as string,
+        role: (token.role as string) ?? 'viewer',
       },
       accessToken: token.error ? undefined : token.accessToken as string,
       idToken: token.error ? undefined : token.idToken as string,

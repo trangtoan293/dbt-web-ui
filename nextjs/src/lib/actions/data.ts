@@ -3,6 +3,13 @@
 import { db } from '@/lib/db'
 import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
+import {
+  getCurrentUserRole,
+  getProjectAccessSummary,
+  requireAdmin,
+  requireProjectAccess,
+  visibleProjectsWhere,
+} from '@/lib/authz'
 import { isPlausibleCron } from '@/lib/cron'
 import { revalidatePath } from 'next/cache'
 import {
@@ -15,9 +22,12 @@ import type { RunCommand } from '@prisma/client'
 // --- Projects ---
 
 export async function getProjects(includeDeleted = false) {
-  const userId = await getCurrentUserId()
-  return db.dbtProject.findMany({
-    where: { createdBy: userId, deletedAt: includeDeleted ? undefined : null },
+  const { userId, role } = await getCurrentUserRole()
+  const projects = await db.dbtProject.findMany({
+    where: {
+      ...visibleProjectsWhere(role, userId),
+      deletedAt: includeDeleted ? undefined : null,
+    },
     orderBy: { createdAt: 'desc' },
     include: {
       dremioSource: true,
@@ -38,16 +48,38 @@ export async function getProjects(includeDeleted = false) {
           completedAt: true,
         },
       },
+      // Only this user's own row, if any - one query for the whole list
+      // rather than one requireProjectAccess-style lookup per card. Admin
+      // typically has none; canEdit is always true for admin below anyway.
+      permissions: { where: { userId }, select: { level: true } },
     },
   })
+  // Same rule as authz.ts's permits(), applied per project instead of one at
+  // a time - kept in sync by hand since a Prisma `include` result can't run
+  // through that function directly. See src/lib/authz.ts.
+  return projects.map(({ permissions, ...project }) => ({
+    ...project,
+    access: {
+      role,
+      canEdit: role === 'admin' || (permissions?.[0]?.level === 'edit' && role !== 'viewer') || false,
+    },
+  }))
 }
 
 export async function getProjectById(id: string) {
-  const userId = await getCurrentUserId()
-  return db.dbtProject.findFirst({
-    where: { id, createdBy: userId },
+  // Throws "Not found or not authorized" (same as requireProjectAccess) if
+  // the caller cannot even view the project - callers already treat that as
+  // the project's usual not-found path.
+  const access = await getProjectAccessSummary(id)
+  const project = await db.dbtProject.findFirst({
+    where: { id },
     include: { dremioSource: true, connection: true },
   })
+  if (!project) return null
+  // Every consumer of "the current project" gets this for free - no second
+  // round trip to know whether to show an edit-only control. See
+  // docs/rbac-design.md and src/lib/authz.ts.
+  return { ...project, access }
 }
 
 export async function createProject(data: {
@@ -58,9 +90,18 @@ export async function createProject(data: {
   gitUrl?: string
   gitBranch?: string
 }) {
-  const userId = await getCurrentUserId()
-  const project = await db.dbtProject.create({
-    data: { ...data, createdBy: userId },
+  // Admin and contributor may create; viewer, true to its name, may not. A new
+  // project grants its creator 'edit' immediately - the same experience a
+  // contributor had before ProjectPermission existed - so there is nothing
+  // else to set up before they can use what they just made.
+  const { userId, role } = await getCurrentUserRole()
+  if (role === 'viewer') throw new Error('Not authorized')
+  const project = await db.$transaction(async (tx) => {
+    const created = await tx.dbtProject.create({ data: { ...data, createdBy: userId } })
+    await tx.projectPermission.create({
+      data: { projectId: created.id, userId, level: 'edit', grantedBy: userId },
+    })
+    return created
   })
   revalidatePath('/develop')
   return project
@@ -78,30 +119,30 @@ export async function updateProject(id: string, data: {
   dremioSourceId?: string | null
   connectionId?: string | null
 }) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('dbtProject', id, userId)
+  await requireProjectAccess(id, 'edit')
   const project = await db.dbtProject.update({ where: { id }, data })
   revalidatePath('/develop')
   return project
 }
 
 export async function softDeleteProject(id: string) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('dbtProject', id, userId)
+  await requireProjectAccess(id, 'edit')
   await db.dbtProject.update({ where: { id }, data: { deletedAt: new Date() } })
   revalidatePath('/develop')
 }
 
+// Restoring and hard-deleting stay admin-only even for a contributor with
+// edit on the project: both reach past "change what's in the project" into
+// territory a mis-click cannot easily undo. See docs/rbac-design.md section 3.
+
 export async function restoreProject(id: string) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('dbtProject', id, userId)
+  await requireAdmin()
   await db.dbtProject.update({ where: { id }, data: { deletedAt: null } })
   revalidatePath('/develop')
 }
 
 export async function hardDeleteProject(id: string) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('dbtProject', id, userId)
+  await requireAdmin()
   await db.dbtProject.delete({ where: { id } })
   revalidatePath('/develop')
 }
@@ -281,12 +322,7 @@ function serializeRun(run: any) {
 }
 
 export async function getRuns(projectId: string) {
-  const userId = await getCurrentUserId()
-  const project = await db.dbtProject.findFirst({
-    where: { id: projectId, createdBy: userId, deletedAt: null },
-    select: { id: true },
-  })
-  if (!project) throw new Error('Not found or not authorized')
+  await requireProjectAccess(projectId, 'view')
 
   const runs = await db.dbtRun.findMany({
     where: { projectId },
@@ -300,9 +336,9 @@ export async function getRuns(projectId: string) {
 }
 
 export async function getAllRunsAcrossProjects() {
-  const userId = await getCurrentUserId()
+  const { userId, role } = await getCurrentUserRole()
   const projects = await db.dbtProject.findMany({
-    where: { createdBy: userId, deletedAt: null },
+    where: { ...visibleProjectsWhere(role, userId), deletedAt: null },
     select: { id: true },
   })
   const projectIds = projects.map((p) => p.id)
@@ -332,9 +368,9 @@ export type RunLogDashboardQuery = {
 }
 
 export async function getRunLogDashboard(input: RunLogDashboardQuery) {
-  const userId = await getCurrentUserId()
+  const { userId, role } = await getCurrentUserRole()
   const projects = await db.dbtProject.findMany({
-    where: { createdBy: userId, deletedAt: null },
+    where: { ...visibleProjectsWhere(role, userId), deletedAt: null },
     select: { id: true, name: true },
     orderBy: { name: 'asc' },
   })
@@ -451,17 +487,15 @@ export async function getRunLogDashboard(input: RunLogDashboardQuery) {
 }
 
 export async function getRunById(runId: string) {
-  const userId = await getCurrentUserId()
   const run = await db.dbtRun.findUnique({
     where: { id: runId },
     include: {
-      project: { select: { id: true, name: true, createdBy: true } },
+      project: { select: { id: true, name: true } },
       artifacts: { orderBy: { createdAt: 'asc' } },
     },
   })
-  if (!run || run.project.createdBy !== userId) {
-    throw new Error('Not found or not authorized')
-  }
+  if (!run) throw new Error('Not found or not authorized')
+  await requireProjectAccess(run.project.id, 'view')
   return serializeRun(run)
 }
 
@@ -483,9 +517,17 @@ async function ensureOwnership(model: string, id: string, userId: string) {
 // ---------------------------------------------------------------------------
 
 export async function getIngestSources(projectId?: string) {
-  const userId = await getCurrentUserId()
+  // A source belongs to whoever can edit the project it is under, not to
+  // whoever happened to create it - the same relaxation as runs and
+  // schedules. See docs/rbac-design.md section 3.
+  if (projectId) {
+    await requireProjectAccess(projectId, 'view')
+  }
+  const { userId, role } = await getCurrentUserRole()
   return db.ingestSource.findMany({
-    where: { createdBy: userId, ...(projectId ? { projectId } : {}) },
+    where: projectId
+      ? { projectId }
+      : { project: visibleProjectsWhere(role, userId) },
     include: { sourceConnection: { select: { id: true, name: true, connectionType: true } } },
     orderBy: { createdAt: 'desc' },
   })
@@ -494,9 +536,10 @@ export async function getIngestSources(projectId?: string) {
 export async function createIngestSource(input: IngestSourceInput) {
   const userId = await getCurrentUserId()
   validateIngestSource(input)
-  // Both the project and the connection must belong to the caller; without this
-  // a user could ingest another user's warehouse into their own project.
-  await ensureOwnership('dbtProject', input.projectId, userId)
+  await requireProjectAccess(input.projectId, 'edit')
+  // The source connection is still a personal resource (see docs/rbac-design.md
+  // section 3): picking someone else's warehouse credential for a load is not
+  // covered by project access, only by owning the connection itself.
   if (input.sourceConnectionId) {
     await ensureOwnership('connection', input.sourceConnectionId, userId)
   }
@@ -526,7 +569,9 @@ export async function createIngestSource(input: IngestSourceInput) {
 export async function updateIngestSource(id: string, input: IngestSourceInput) {
   const userId = await getCurrentUserId()
   validateIngestSource(input)
-  await ensureOwnership('ingestSource', id, userId)
+  const existing = await db.ingestSource.findUnique({ where: { id }, select: { projectId: true } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await requireProjectAccess(existing.projectId, 'edit')
   if (input.sourceConnectionId) {
     await ensureOwnership('connection', input.sourceConnectionId, userId)
   }
@@ -556,8 +601,9 @@ export async function updateIngestSource(id: string, input: IngestSourceInput) {
 }
 
 export async function deleteIngestSource(id: string) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('ingestSource', id, userId)
+  const existing = await db.ingestSource.findUnique({ where: { id }, select: { projectId: true } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await requireProjectAccess(existing.projectId, 'edit')
   await db.ingestSource.delete({ where: { id } })
   revalidatePath('/data')
 }
@@ -574,14 +620,6 @@ export async function deleteIngestSource(id: string) {
 const TARGET_NAME_PATTERN = /^[a-z][a-z0-9_]{0,29}$/
 const RESERVED_TARGET_NAMES = new Set(['dev'])
 
-async function ensureProjectOwnership(projectId: string, userId: string) {
-  const project = await db.dbtProject.findFirst({
-    where: { id: projectId, createdBy: userId, deletedAt: null },
-    select: { id: true },
-  })
-  if (!project) throw new Error('Not found or not authorized')
-}
-
 export type ProjectTargetInput = {
   projectId: string
   name: string
@@ -589,8 +627,7 @@ export type ProjectTargetInput = {
 }
 
 export async function getProjectTargets(projectId: string) {
-  const userId = await getCurrentUserId()
-  await ensureProjectOwnership(projectId, userId)
+  await requireProjectAccess(projectId, 'view')
   return db.projectTarget.findMany({
     where: { projectId },
     include: { connection: { select: { id: true, name: true, connectionType: true } } },
@@ -615,7 +652,7 @@ function validateProjectTarget(input: ProjectTargetInput) {
 export async function createProjectTarget(input: ProjectTargetInput) {
   const userId = await getCurrentUserId()
   const name = validateProjectTarget(input)
-  await ensureProjectOwnership(input.projectId, userId)
+  await requireProjectAccess(input.projectId, 'edit')
   // Without this a user could point their prod target at someone else's warehouse.
   await ensureOwnership('connection', input.connectionId, userId)
 
@@ -631,7 +668,7 @@ export async function updateProjectTarget(id: string, input: ProjectTargetInput)
   const name = validateProjectTarget(input)
   const existing = await db.projectTarget.findUnique({ where: { id } })
   if (!existing) throw new Error('Not found or not authorized')
-  await ensureProjectOwnership(existing.projectId, userId)
+  await requireProjectAccess(existing.projectId, 'edit')
   await ensureOwnership('connection', input.connectionId, userId)
 
   const updated = await db.projectTarget.update({
@@ -643,10 +680,9 @@ export async function updateProjectTarget(id: string, input: ProjectTargetInput)
 }
 
 export async function deleteProjectTarget(id: string) {
-  const userId = await getCurrentUserId()
   const existing = await db.projectTarget.findUnique({ where: { id } })
   if (!existing) throw new Error('Not found or not authorized')
-  await ensureProjectOwnership(existing.projectId, userId)
+  await requireProjectAccess(existing.projectId, 'edit')
   await db.projectTarget.delete({ where: { id } })
   revalidatePath('/develop')
 }
@@ -735,9 +771,14 @@ function validateSchedule(input: ScheduleInput) {
 }
 
 export async function getSchedules(projectId?: string) {
-  const userId = await getCurrentUserId()
+  if (projectId) {
+    await requireProjectAccess(projectId, 'view')
+  }
+  const { userId, role } = await getCurrentUserRole()
   return db.dbtSchedule.findMany({
-    where: { createdBy: userId, ...(projectId ? { projectId } : {}) },
+    where: projectId
+      ? { projectId }
+      : { project: visibleProjectsWhere(role, userId) },
     include: { project: { select: { id: true, name: true } } },
     orderBy: { createdAt: 'desc' },
   })
@@ -746,7 +787,7 @@ export async function getSchedules(projectId?: string) {
 export async function createSchedule(input: ScheduleInput) {
   const userId = await getCurrentUserId()
   const clean = validateSchedule(input)
-  await ensureProjectOwnership(input.projectId, userId)
+  await requireProjectAccess(input.projectId, 'edit')
 
   const created = await db.dbtSchedule.create({
     data: {
@@ -764,12 +805,15 @@ export async function createSchedule(input: ScheduleInput) {
 }
 
 export async function updateSchedule(id: string, input: ScheduleInput) {
-  const userId = await getCurrentUserId()
   const clean = validateSchedule(input)
-  await ensureOwnership('dbtSchedule', id, userId)
-  await ensureProjectOwnership(input.projectId, userId)
-
   const existing = await db.dbtSchedule.findUnique({ where: { id } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await requireProjectAccess(existing.projectId, 'edit')
+  // The form can move a schedule to a different project; that project needs
+  // edit access too, not just the one it is leaving.
+  if (input.projectId !== existing.projectId) {
+    await requireProjectAccess(input.projectId, 'edit')
+  }
   const updated = await db.dbtSchedule.update({
     where: { id },
     data: {
@@ -786,8 +830,9 @@ export async function updateSchedule(id: string, input: ScheduleInput) {
 }
 
 export async function deleteSchedule(id: string) {
-  const userId = await getCurrentUserId()
-  await ensureOwnership('dbtSchedule', id, userId)
+  const existing = await db.dbtSchedule.findUnique({ where: { id }, select: { projectId: true } })
+  if (!existing) throw new Error('Not found or not authorized')
+  await requireProjectAccess(existing.projectId, 'edit')
   await db.dbtSchedule.delete({ where: { id } })
   revalidatePath('/orchestrate')
 }

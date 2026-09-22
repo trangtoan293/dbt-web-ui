@@ -16,6 +16,11 @@ interface RightPanelProps {
     projectConnectionId: string | null;
     connections: Connection[];
     isDirty: boolean;  // Whether current file has unsaved changes
+    /** False for a viewer, or a grant capped to view - see project.access in
+     * DevelopLayout.tsx. Every control here that runs dbt, writes a file, or
+     * deletes the project is edit-only; viewing docs and toggling panels
+     * stay enabled regardless. */
+    canEdit: boolean;
     getModelName: () => string;
     onRunDbt: (command: string) => void;
     onGenerateDocs: () => void;
@@ -37,6 +42,7 @@ export default function RightPanel({
     projectConnectionId,
     connections,
     isDirty,
+    canEdit,
     getModelName,
     onRunDbt,
     onGenerateDocs,
@@ -56,15 +62,16 @@ export default function RightPanel({
             {/* Model Dropdown Button */}
             <div className="relative">
                 <button
-                    onClick={() => setDbtMenuOpen(!dbtMenuOpen)}
-                    className="p-2 rounded hover:bg-[#F3F2F1] transition-colors border border-[#E6E6E6] hover:border-[#0078D4]"
-                    title="dbt Commands"
+                    onClick={() => canEdit && setDbtMenuOpen(!dbtMenuOpen)}
+                    disabled={!canEdit}
+                    className="p-2 rounded hover:bg-[#F3F2F1] transition-colors border border-[#E6E6E6] hover:border-[#0078D4] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    title={canEdit ? "dbt Commands" : "View-only access to this project"}
                 >
                     <DbtIcon className="h-5 w-5" />
                 </button>
 
                 {/* Dropdown Menu - Opens to the left */}
-                {dbtMenuOpen && (
+                {canEdit && dbtMenuOpen && (
                     <>
                         {/* Backdrop to close dropdown */}
                         <div
@@ -221,12 +228,12 @@ export default function RightPanel({
 
             <button
                 onClick={onSaveFile}
-                disabled={!isDirty}
-                className={`p-2 rounded transition-colors ${isDirty
+                disabled={!isDirty || !canEdit}
+                className={`p-2 rounded transition-colors ${isDirty && canEdit
                         ? 'hover:bg-[#F3F2F1] bg-[#038387]/10 border border-[#038387]'
                         : 'opacity-40 cursor-not-allowed'
                     }`}
-                title={isDirty ? 'Save File (Ctrl+S)' : 'No unsaved changes'}
+                title={!canEdit ? 'View-only access to this project' : isDirty ? 'Save File (Ctrl+S)' : 'No unsaved changes'}
             >
                 <Save className={`h-5 w-5 ${isDirty ? 'text-[#038387]' : 'text-[#616161]'}`} />
             </button>
