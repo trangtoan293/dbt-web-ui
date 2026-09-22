@@ -80,6 +80,10 @@ interface DbtProject {
   dremio_source_id: string | null;
   connection_id: string | null;
   deleted_at?: string | null;
+  // Absent on rows loaded before this existed (unlikely - getProjectById
+  // always attaches it now), so every read defaults canEdit conservatively.
+  // See docs/rbac-design.md and src/lib/authz.ts.
+  access?: { role: string; canEdit: boolean };
 }
 
 interface FileNode {
@@ -1948,6 +1952,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
                 projectId={projectId}
                 onRefresh={() => { loadFileTree(); loadGitStatus(); }}
                 onOpenDiff={handleOpenDiff}
+                canEdit={project.access?.canEdit ?? true}
               />
             )}
             {sidebarTab === "history" && <CommitHistory projectId={projectId} />}
@@ -2055,6 +2060,7 @@ export default function DevelopLayout({ projectId }: DevelopLayoutProps) {
           projectConnectionId={project?.connection_id || project?.dremio_source_id || null}
           connections={connections}
           isDirty={openTabs.find((tab) => tab.path === activeTabPath)?.isDirty || false}
+          canEdit={project.access?.canEdit ?? true}
           getModelName={getModelName}
           onRunDbt={handleRunDbt}
           onGenerateDocs={handleGenerateDocs}

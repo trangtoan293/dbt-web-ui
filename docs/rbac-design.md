@@ -20,6 +20,28 @@
 - API: `GET /api/admin/users`, `PATCH /api/admin/users/[id]` (admin only, chặn hạ quyền admin cuối cùng); `GET/POST /api/projects/[projectId]/access`, `DELETE .../access/[userId]` — dùng `requireProjectAccess(id,'edit')` chứ không phải `requireAdmin()`, đúng theo mục Backlog bên dưới (contributor có edit trên project nào thì tự cấp/thu quyền được trên đúng project đó, không tự phong admin được vì route đổi role tách riêng và admin-only).
 - Type-check + lint sạch, `npm run test:unit` vẫn 120/120.
 
+**Đã xong thêm — Phase E (frontend disable theo quyền, 2026-09-22):**
+- `authz.ts`: thêm `getProjectAccessSummary(projectId)` — 1 query, trả `{ role, canEdit }` cho project đang mở. Gộp chung rule `permits()` với `requireProjectAccess` để 2 nơi không lệch nhau.
+- `getProjectById`/`getProjects` (data.ts) giờ trả kèm `access: { role, canEdit }` — mọi nơi đã load project có sẵn field này, không cần round-trip riêng.
+- `DevelopLayout.tsx` → `project.access.canEdit` truyền xuống:
+  - `RightPanel`: disable toàn bộ dropdown lệnh dbt (Run/Test/Build/Debug/Deps/Seed/Generate Docs/Delete Project) bằng 1 nút, disable Save File.
+  - `SourceControlPanel`: disable Commit/Push/Pull/Sync/Fetch/Create branch/Switch branch/ô nhập message; ẩn hẳn nút "Edit remote" (ẩn luôn form bên trong).
+  - `ProjectSettingsDialog`: disable Rename; `TargetsPanel`/`LakehousePanel`/`EnvVarsPanel` nhận `disabled`; Danger zone tách 2 mức — Delete (soft) theo `canEdit`, Restore/Delete permanently theo `role==='admin'` (khớp đúng luật admin-only ở backend).
+- Type-check, lint, `npm run test:unit` (120/120) đều sạch sau toàn bộ thay đổi.
+
+**Đã xong thêm — Phase F (Orchestrate, Data, Home, 2026-09-22):**
+- `SchedulesView.tsx`: mỗi schedule tra `canEdit` theo đúng `projectId` của nó (không phải role chung) — disable Run now/Pause-Resume/Edit/Delete; "New schedule" chỉ bật khi có ít nhất 1 project edit được; `ScheduleDialog` chỉ nhận danh sách project đã lọc edit-được.
+- `SourcesView.tsx` + `IngestRunPanel.tsx` + `SourceDialog.tsx`: cùng pattern — Edit/Delete load theo `canEdit` của đúng project chứa nó; Run load/Stop/Full refresh trong panel chạy load disable theo `canEdit`; form tạo/sửa load chỉ cho chọn project edit-được.
+- `ProjectCard.tsx` (Home): nút Delete trên card ẩn hẳn nếu `access.canEdit` false.
+- Type-check, lint, `npm run test:unit` (120/120) sạch sau toàn bộ Phase F.
+
+**Biết rõ chưa che — không tự nhận là đã "disable tất cả":**
+- File explorer: tạo/xoá/đổi tên/di chuyển/copy file chưa gắn `canEdit` (backend vẫn chặn 404, chỉ là nút không tự disable).
+- Ô gõ lệnh tự do trong Terminal (`git ...`, `dbt ...`) không bị chặn ở input — vẫn phụ thuộc hoàn toàn vào backend trả lỗi.
+- `AgentPanel` (trợ lý AI) chưa kiểm tra quyền — assistant sửa file qua MCP tool, backend (dbt-runner) đã chặn đúng, nhưng UI chưa disable việc mở chat với ai chỉ có view.
+- `SourcesView`/`SchedulesView`: nút Refresh, tìm kiếm, filter theo project — không cần disable (đều là view), chỉ nêu để rõ phạm vi đã rà.
+- Explore (dashboard/chart builder), Data page ngoài ingest sources (connections, lakehouse) — chưa rà.
+
 **Chưa làm — cần phiên sau:**
 1. Test thủ công qua UI (3 API route mới, 2 component mới) — mới verify bằng type-check/lint/test tự động, **chưa click thử trên trình duyệt thật**.
 2. **Set admin đầu tiên:** đã làm cho `zeus@test.local` bằng SQL tay (xem bảng dữ liệu test bên dưới). Giờ có UI rồi, việc gán role tiếp theo nên thử qua chính `AdminUsersCard`.

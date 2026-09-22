@@ -22,6 +22,7 @@ interface ProjectSummary {
   connection_id: string | null
   dremio_source_id: string | null
   deleted_at?: string | null
+  access?: { role: string; canEdit: boolean }
 }
 
 interface ProjectSettingsDialogProps {
@@ -112,6 +113,12 @@ export default function ProjectSettingsDialog({
 
   const activeConnectionId = project.connection_id || project.dremio_source_id || ""
   const nameChanged = name.trim().length > 0 && name.trim() !== project.name
+  // Defaults to allowed when access is absent (a project loaded before this
+  // existed) rather than silently locking out an admin deployment mid-upgrade.
+  const canEdit = project.access?.canEdit ?? true
+  // Restoring and hard-deleting stay admin-only even for edit access on the
+  // project - see docs/rbac-design.md section 3.
+  const isAdmin = project.access?.role === "admin"
 
   // A confirmation on top of this dialog would stack two overlays, so hand off.
   const handOff = (action: () => void) => {
@@ -164,9 +171,9 @@ export default function ProjectSettingsDialog({
                       id="project-name"
                       value={name}
                       onChange={(event) => setName(event.target.value)}
-                      disabled={busy || Boolean(project.deleted_at)}
+                      disabled={busy || !canEdit || Boolean(project.deleted_at)}
                     />
-                    <Button onClick={() => onRename(name.trim())} disabled={!nameChanged || busy}>
+                    <Button onClick={() => onRename(name.trim())} disabled={!nameChanged || busy || !canEdit}>
                       {busy ? "Saving…" : "Rename"}
                     </Button>
                   </div>
@@ -210,7 +217,7 @@ export default function ProjectSettingsDialog({
                 connections={connections}
                 activeConnectionId={activeConnectionId}
                 onSelectConnection={onSelectConnection}
-                disabled={busy || Boolean(project.deleted_at)}
+                disabled={busy || !canEdit || Boolean(project.deleted_at)}
                 activeTarget={dbtTarget}
                 onSelectActiveTarget={onSelectTarget}
               />
@@ -220,7 +227,7 @@ export default function ProjectSettingsDialog({
               <LakehousePanel
                 projectId={project.id}
                 connections={connections}
-                disabled={busy || Boolean(project.deleted_at)}
+                disabled={busy || !canEdit || Boolean(project.deleted_at)}
               />
             )}
 
@@ -231,6 +238,7 @@ export default function ProjectSettingsDialog({
                 onSave={onSaveEnvironmentVariables}
                 saving={envVarsSaving}
                 error={envVarsError}
+                disabled={!canEdit || Boolean(project.deleted_at)}
               />
             )}
 
@@ -247,7 +255,7 @@ export default function ProjectSettingsDialog({
                           Brings the project back with its files and history intact.
                         </p>
                       </div>
-                      <Button variant="outline" onClick={() => handOff(onRestoreProject)} disabled={busy}>
+                      <Button variant="outline" onClick={() => handOff(onRestoreProject)} disabled={busy || !isAdmin} title={isAdmin ? undefined : "Restoring a deleted project is admin-only"}>
                         <RotateCcw className="h-4 w-4" />
                         Restore
                       </Button>
@@ -262,7 +270,8 @@ export default function ProjectSettingsDialog({
                       <Button
                         variant="outline"
                         onClick={() => handOff(onHardDeleteProject)}
-                        disabled={busy}
+                        disabled={busy || !isAdmin}
+                        title={isAdmin ? undefined : "Deleting permanently is admin-only"}
                         className="border-red-300 text-red-700 hover:bg-red-100"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -281,7 +290,8 @@ export default function ProjectSettingsDialog({
                     <Button
                       variant="outline"
                       onClick={() => handOff(onDeleteProject)}
-                      disabled={busy}
+                      disabled={busy || !canEdit}
+                      title={canEdit ? undefined : "View-only access to this project"}
                       className="border-red-300 text-red-700 hover:bg-red-100"
                     >
                       <Trash2 className="h-4 w-4" />

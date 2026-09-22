@@ -113,7 +113,10 @@ export default function SourceDialog({
   fileRoots = [],
 }: Props): React.ReactElement {
   const [step, setStep] = useState(0)
-  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null }>>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; lakehouseConnectionId?: string | null; canEdit?: boolean }>>([])
+  // Creating or editing a load is always a mutating action - a view-only
+  // project is never a valid choice here. See docs/rbac-design.md.
+  const editableProjects = projects.filter((p) => p.canEdit ?? true)
   const [connections, setConnections] = useState<Array<{ id: string; name: string; connectionType: string }>>([])
   const [projectId, setProjectId] = useState("")
   const [connectionId, setConnectionId] = useState("")
@@ -142,7 +145,14 @@ export default function SourceDialog({
 
   const loadFormData = useCallback(async () => {
     const [p, c] = await Promise.all([getProjects(), getConnections()])
-    setProjects(Array.isArray(p) ? p : [])
+    setProjects(
+      (Array.isArray(p) ? p : []).map((project) => ({
+        id: project.id,
+        name: project.name,
+        lakehouseConnectionId: project.lakehouseConnectionId ?? project.lakehouse_connection_id ?? null,
+        canEdit: project.access?.canEdit ?? true,
+      })),
+    )
     setConnections(
       (Array.isArray(c) ? c : []).filter(
         (row: { connectionType: string; _sourceTable?: string }) =>
@@ -573,14 +583,14 @@ export default function SourceDialog({
                 disabled={Boolean(existing)}
               >
                 <option value="">Select…</option>
-                {projects.map((p) => (
+                {editableProjects.map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
             </label>
 
 
-            {projects.length === 0 && <p className="text-sm text-slate-600">A load belongs to a dbt project. <Link href="/develop/new" className="text-[#0078D4] underline">Create a project</Link> before continuing.</p>}
+            {editableProjects.length === 0 && <p className="text-sm text-slate-600">A load belongs to a dbt project you can edit. <Link href="/develop/new" className="text-[#0078D4] underline">Create a project</Link> before continuing.</p>}
             <label className="block text-sm">
               <span className="mb-1 block font-medium text-gray-700">Destination</span>
               <select

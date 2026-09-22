@@ -10,6 +10,7 @@ interface DbtProject {
   git_branch: string
   sync_status: string
   created_at: string
+  access?: { role: string; canEdit: boolean }
 }
 
 interface ProjectListProps {

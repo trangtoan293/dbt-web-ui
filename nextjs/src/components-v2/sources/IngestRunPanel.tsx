@@ -21,9 +21,12 @@ interface Props {
   sourceId: string
   sourceName: string
   writeDisposition: string
+  /** False for a viewer, or a grant capped to view. Running or stopping a
+   * load writes data; the sources.yml snippet and history stay view-only. */
+  canEdit?: boolean
 }
 
-export default function IngestRunPanel({ sourceId, sourceName, writeDisposition }: Props): React.ReactElement {
+export default function IngestRunPanel({ sourceId, sourceName, writeDisposition, canEdit = true }: Props): React.ReactElement {
   const { logs, running, result, run, stop } = useIngestStream()
   const [fullRefresh, setFullRefresh] = useState(false)
   const [snippet, setSnippet] = useState<string | null>(null)
@@ -74,17 +77,17 @@ export default function IngestRunPanel({ sourceId, sourceName, writeDisposition 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => run(sourceId, { fullRefresh })} disabled={running}>
+        <Button size="sm" onClick={() => run(sourceId, { fullRefresh })} disabled={running || !canEdit} title={canEdit ? undefined : "View-only access to this project"}>
           {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
           Run load
         </Button>
         {running && (
-          <Button size="sm" variant="outline" onClick={handleStop}>
+          <Button size="sm" variant="outline" onClick={handleStop} disabled={!canEdit}>
             <Square className="mr-2 h-4 w-4" /> Stop
           </Button>
         )}
         <label className="flex items-center gap-2 text-xs text-gray-600">
-          <input type="checkbox" checked={fullRefresh} onChange={(e) => setFullRefresh(e.target.checked)} />
+          <input type="checkbox" checked={fullRefresh} disabled={!canEdit} onChange={(e) => setFullRefresh(e.target.checked)} />
           Full refresh (reset incremental state)
         </label>
         <Button size="sm" variant="outline" onClick={showSnippet}>Show dbt sources.yml</Button>

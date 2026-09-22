@@ -5,6 +5,7 @@ import { encryptSecret } from '@/lib/crypto'
 import { getCurrentUserId } from '@/lib/session'
 import {
   getCurrentUserRole,
+  getProjectAccessSummary,
   requireAdmin,
   requireProjectAccess,
   visibleProjectsWhere,
@@ -22,7 +23,7 @@ import type { RunCommand } from '@prisma/client'
 
 export async function getProjects(includeDeleted = false) {
   const { userId, role } = await getCurrentUserRole()
-  return db.dbtProject.findMany({
+  const projects = await db.dbtProject.findMany({
     where: {
       ...visibleProjectsWhere(role, userId),
       deletedAt: includeDeleted ? undefined : null,
@@ -47,16 +48,38 @@ export async function getProjects(includeDeleted = false) {
           completedAt: true,
         },
       },
+      // Only this user's own row, if any - one query for the whole list
+      // rather than one requireProjectAccess-style lookup per card. Admin
+      // typically has none; canEdit is always true for admin below anyway.
+      permissions: { where: { userId }, select: { level: true } },
     },
   })
+  // Same rule as authz.ts's permits(), applied per project instead of one at
+  // a time - kept in sync by hand since a Prisma `include` result can't run
+  // through that function directly. See src/lib/authz.ts.
+  return projects.map(({ permissions, ...project }) => ({
+    ...project,
+    access: {
+      role,
+      canEdit: role === 'admin' || (permissions?.[0]?.level === 'edit' && role !== 'viewer') || false,
+    },
+  }))
 }
 
 export async function getProjectById(id: string) {
-  await requireProjectAccess(id, 'view')
-  return db.dbtProject.findFirst({
+  // Throws "Not found or not authorized" (same as requireProjectAccess) if
+  // the caller cannot even view the project - callers already treat that as
+  // the project's usual not-found path.
+  const access = await getProjectAccessSummary(id)
+  const project = await db.dbtProject.findFirst({
     where: { id },
     include: { dremioSource: true, connection: true },
   })
+  if (!project) return null
+  // Every consumer of "the current project" gets this for free - no second
+  // round trip to know whether to show an edit-only control. See
+  // docs/rbac-design.md and src/lib/authz.ts.
+  return { ...project, access }
 }
 
 export async function createProject(data: {

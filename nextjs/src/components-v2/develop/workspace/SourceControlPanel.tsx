@@ -43,6 +43,10 @@ interface SourceControlPanelProps {
     projectId: string;
     onRefresh?: () => void;
     onOpenDiff?: (path: string) => void;
+    /** False for a viewer, or a grant capped to view. Commit, push, pull,
+     * fetch, checkout, and remote edits all write to the repo or push to
+     * someone else's git host - viewing status/log/diff stays enabled. */
+    canEdit?: boolean;
 }
 
 interface SyncStatus {
@@ -112,7 +116,7 @@ function parseGitStatus(statusCode: string): { staged: boolean; stagedStatus: st
     };
 }
 
-export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }: SourceControlPanelProps) {
+export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff, canEdit = true }: SourceControlPanelProps) {
     const [stagedChanges, setStagedChanges] = useState<FileChange[]>([]);
     const [unstagedChanges, setUnstagedChanges] = useState<FileChange[]>([]);
     const [commitMessage, setCommitMessage] = useState('');
@@ -781,7 +785,7 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                                 {syncStatus.behind > 0 && `${syncStatus.behind} to pull`}
                             </span>
                         </div>
-                        <button onClick={handleSync} disabled={loading} className="font-medium hover:underline">
+                        <button onClick={handleSync} disabled={loading || !canEdit} className="font-medium hover:underline">
                             Sync
                         </button>
                     </div>
@@ -789,8 +793,9 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                 <textarea
                     value={commitMessage}
                     onChange={(e) => setCommitMessage(e.target.value)}
-                    placeholder="Describe what changed"
-                    className="w-full h-14 px-2 py-1.5 bg-[#FAF9F8] border border-[#E6E6E6] rounded text-sm resize-none focus:outline-none focus:border-[#0078D4] placeholder:text-[#A0A0A0]"
+                    placeholder={canEdit ? "Describe what changed" : "View-only access to this project"}
+                    disabled={!canEdit}
+                    className="w-full h-14 px-2 py-1.5 bg-[#FAF9F8] border border-[#E6E6E6] rounded text-sm resize-none focus:outline-none focus:border-[#0078D4] placeholder:text-[#A0A0A0] disabled:opacity-60"
                     onKeyDown={(e) => {
                         if (e.ctrlKey && e.key === 'Enter') {
                             handleCommit();
@@ -800,7 +805,7 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                 <div className="flex gap-1.5 mt-1.5">
                     <button
                         onClick={handleCommit}
-                        disabled={loading || !commitMessage.trim() || totalChanges === 0}
+                        disabled={loading || !canEdit || !commitMessage.trim() || totalChanges === 0}
                         className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-[#0078D4] hover:bg-[#106EBE] disabled:opacity-50 disabled:cursor-not-allowed rounded text-xs font-medium text-white"
                         title="Commit all changed files"
                     >
@@ -809,16 +814,16 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                     </button>
                     <button
                         onClick={handlePush}
-                        disabled={loading}
-                        className="p-1.5 bg-[#F3F2F1] hover:bg-[#E6E6E6] rounded text-[#616161]"
-                        title="Push"
+                        disabled={loading || !canEdit}
+                        className="p-1.5 bg-[#F3F2F1] hover:bg-[#E6E6E6] rounded text-[#616161] disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={canEdit ? "Push" : "View-only access to this project"}
                     >
                         <Upload className="w-3.5 h-3.5" />
                     </button>
                     <button
                         onClick={handlePull}
-                        disabled={loading}
-                        className="p-1.5 bg-[#F3F2F1] hover:bg-[#E6E6E6] rounded text-[#616161]"
+                        disabled={loading || !canEdit}
+                        className="p-1.5 bg-[#F3F2F1] hover:bg-[#E6E6E6] rounded text-[#616161] disabled:opacity-50 disabled:cursor-not-allowed"
                         title="Pull"
                     >
                         <Download className="w-3.5 h-3.5" />
@@ -900,17 +905,17 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                                     <div className="flex items-center gap-1">
                                         <button
                                             onClick={() => setShowNewBranch(true)}
-                                            disabled={branchLoading}
+                                            disabled={branchLoading || !canEdit}
                                             className="p-1 text-[#0078D4] hover:bg-[#E6E6E6] disabled:opacity-50 rounded"
-                                            title="Create new branch"
+                                            title={canEdit ? "Create new branch" : "View-only access to this project"}
                                         >
                                             <Plus className="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             onClick={handleFetch}
-                                            disabled={loading}
+                                            disabled={loading || !canEdit}
                                             className="p-1 text-[#616161] hover:bg-[#E6E6E6] disabled:opacity-50 rounded"
-                                            title="Fetch remotes"
+                                            title={canEdit ? "Fetch remotes" : "View-only access to this project"}
                                         >
                                             <RefreshCw className="w-3.5 h-3.5" />
                                         </button>
@@ -918,7 +923,7 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                                 </div>
                                 <select
                                     value={currentBranch}
-                                    disabled={branchLoading || branches.length === 0}
+                                    disabled={branchLoading || branches.length === 0 || !canEdit}
                                     onChange={(e) => {
                                         const branch = branches.find((item) => item.name === e.target.value);
                                         if (branch) handleSwitchBranch(branch);
@@ -961,7 +966,7 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                                         />
                                         <button
                                             onClick={handleCreateBranch}
-                                            disabled={branchLoading || !newBranchName.trim()}
+                                            disabled={branchLoading || !newBranchName.trim() || !canEdit}
                                             className="px-2 py-1 bg-[#0078D4] hover:bg-[#106EBE] disabled:opacity-50 rounded text-xs text-white"
                                         >
                                             {branchLoading ? '...' : 'Create'}
@@ -980,12 +985,14 @@ export default function SourceControlPanel({ projectId, onRefresh, onOpenDiff }:
                                         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#242424]" title={remoteUrl || 'No remote configured'}>
                                             {remoteUrl || 'No remote configured'}
                                         </span>
-                                        <button
-                                            onClick={() => setShowRemoteSettings(!showRemoteSettings)}
-                                            className="shrink-0 px-1.5 py-0.5 rounded text-[#0078D4] hover:bg-[#E6E6E6]"
-                                        >
-                                            {showRemoteSettings ? 'Close' : 'Edit'}
-                                        </button>
+                                        {canEdit && (
+                                            <button
+                                                onClick={() => setShowRemoteSettings(!showRemoteSettings)}
+                                                className="shrink-0 px-1.5 py-0.5 rounded text-[#0078D4] hover:bg-[#E6E6E6]"
+                                            >
+                                                {showRemoteSettings ? 'Close' : 'Edit'}
+                                            </button>
+                                        )}
                                     </div>
                                     {remotes.length > 1 && (
                                         <div className="mt-1 space-y-0.5">
