@@ -1,0 +1,77 @@
+name: dbt-craft
+
+# Development overlay: edit code on the host, see it in the running stack without
+# rebuilding an image. Source is bind-mounted over the copy baked into each
+# image, and the Python services run under `uvicorn --reload`.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# The frontend is deliberately NOT a container here. `next dev` on a bind mount
+# from Windows is slow (file events do not cross the WSL2 boundary, so it has to
+# poll), while `npm run dev` on the host has instant HMR. Run it there:
+#
+#   cd nextjs && npm ci && npx prisma generate && npm run dev
+#
+# It reads nextjs/.env.local and talks to the published ports of the containers.
+#
+# An image still has to be rebuilt when a *dependency* changes (pyproject.toml,
+# uv.lock, package.json) or a Dockerfile does. Code and migrations do not.
+
+x-dev-python: &dev-python
+  # Bind mounts from Windows send no inotify events, so watchfiles must poll.
+  WATCHFILES_FORCE_POLLING: "true"
+  # Do not litter the host tree with __pycache__ written by the container.
+  PYTHONDONTWRITEBYTECODE: "1"
+
+services:
+  # Applies the migrations on disk, not the ones baked in when the image was
+  # built - a stale image otherwise skips every migration added since.
+  db-migrate:
+    volumes:
+      - ./nextjs/prisma:/app/prisma:ro
+
+  dbt-runner:
+    environment:
+      <<: *dev-python
+    # Mount only the source packages, never /app: the virtualenv lives there.
+    volumes:
+      - ./dbt-runner/app:/app/app
+      - ./dbt-runner/adapters:/app/adapters
+      - ./dbt-runner/ingest:/app/ingest
+    # A reload restarts the process, which drops its warm dbt workers and
+    # releases the scheduler's leadership key only when its TTL runs out.
+    command:
+      - uvicorn
+      - app.main:app
+      - --host=0.0.0.0
+      - --port=8080
+      - --reload
+      - --reload-dir=app
+      - --reload-dir=adapters
+      - --reload-dir=ingest
+
+  dsh-agent:
+    environment:
+      <<: *dev-python
+    volumes:
+      - ./dsh-agent/app:/app/app
+      # Started by the harness as `python -m dbt_mcp` with cwd /app, so this
+      # mount is what it imports. It is only re-read when a session starts.
+      - ./dsh-agent/dbt_mcp:/app/dbt_mcp
+      # Persona and skills are read when a session is spawned. A save that
+      # replaces the file (some editors do) can leave the mount pointing at the
+      # old one; restart the container if an edit does not show up.
+      - ./dsh-agent/profile/cordis.patch.yml:/dsh-home/profiles/dbtcraft/cordis.patch.yml:ro
+      - ./dsh-agent/profile/skills:/dsh-home/skills:ro
+    command:
+      - uvicorn
+      - app.main:app
+      - --host=0.0.0.0
+      - --port=8090
+      - --reload
+      - --reload-dir=app
+      - --reload-dir=dbt_mcp
+
+  # Off by default; `--profile container-frontend` brings back the built image.
+  frontend:
+    profiles: [container-frontend]
