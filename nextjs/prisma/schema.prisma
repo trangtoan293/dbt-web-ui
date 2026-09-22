@@ -7,11 +7,29 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// The ceiling of what a user may ever do, independent of any project.
+/// `admin` bypasses ProjectPermission entirely. `contributor`/`viewer` can
+/// only act on a project that has a ProjectPermission row for them - the role
+/// says what class of action is possible, the row says on which project.
+/// See docs/rbac-design.md.
+enum UserRole {
+  admin
+  contributor
+  viewer
+
+  @@map("user_role")
+}
+
 model User {
   id        String   @id @default(uuid()) @db.Uuid
   oidcSub   String   @unique @map("oidc_sub")
   email     String   @unique
   name      String?
+  /// Defaults to contributor, not admin: a freshly provisioned user can act
+  /// like one everywhere the RBAC migration granted them (their own prior
+  /// projects), but a brand new user has no grants yet and so can do nothing
+  /// until an admin adds one - default-deny, not default-allow.
+  role      UserRole @default(contributor)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   dremioSources           DremioSource[]
@@ -23,6 +41,8 @@ model User {
   schedules               DbtSchedule[]
   aiCredentials           AiCredential[]
   aiProviders             AiProvider[]
+  projectPermissions      ProjectPermission[] @relation("ProjectPermissionUser")
+  projectPermissionsGiven ProjectPermission[] @relation("ProjectPermissionGrantedBy")
 
   @@map("users")
 }
@@ -124,8 +144,42 @@ model DbtProject {
   targets                ProjectTarget[]
   gitCredentials         GitCredential[]
   environmentVariables   DbtEnvironmentVariable[]
+  permissions            ProjectPermission[]
 
   @@map("dbt_projects")
+}
+
+/// One user's access to one project: `level` names the ceiling of what they
+/// may do there, `role` on User still applies on top (a viewer stays
+/// read-only even on a row written level=edit). No row for (project, user)
+/// means the project does not exist as far as that user is concerned - the
+/// 404-not-403 convention in dbt-runner's authorize_project and this app's
+/// requireProjectAccess is what keeps that true end to end.
+/// See docs/rbac-design.md.
+enum ProjectPermissionLevel {
+  view
+  edit
+
+  @@map("project_permission_level")
+}
+
+model ProjectPermission {
+  id        String                 @id @default(uuid()) @db.Uuid
+  projectId String                 @map("project_id") @db.Uuid
+  userId    String                 @map("user_id") @db.Uuid
+  level     ProjectPermissionLevel
+  grantedBy String                 @map("granted_by") @db.Uuid
+  createdAt DateTime               @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime               @updatedAt @map("updated_at") @db.Timestamptz()
+
+  project DbtProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User       @relation("ProjectPermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  granter User       @relation("ProjectPermissionGrantedBy", fields: [grantedBy], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+  @@map("project_permissions")
 }
 
 model GitCredential {

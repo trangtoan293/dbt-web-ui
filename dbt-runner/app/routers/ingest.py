@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapters import get_adapter
 from app.config import settings
-from app.core.auth import require_user, resolve_user_id
+from app.core.auth import authorize_project, require_user, resolve_user_id
 from app.core.crypto import decrypt_secret_or_plaintext
 from app.core.db import async_session, get_session
 from app.core.file_lock import AsyncFileLock
@@ -122,9 +122,11 @@ def _scrub(line: str) -> str:
 
 
 async def _load_source(
-    session: AsyncSession, source_id: str, user_id: str
+    session: AsyncSession, source_id: str, user_id: str, action: str = "view"
 ) -> Dict[str, Any]:
-    """Fetch one ingest source the user owns, with its project and connection."""
+    """Fetch one ingest source the caller may `action` on, with its project and
+    connection. Looks the source up first so a bad source_id 404s as "Ingest
+    source not found" rather than authorize_project's generic project message."""
     result = await session.execute(
         text(
             "SELECT s.id, s.name, s.source_type, s.destination, s.dataset, s.tables, "
@@ -138,14 +140,14 @@ async def _load_source(
             # LEFT: a filesystem source has no connection, and a public API needs
             # no credential. An inner join silently 404'd both.
             "LEFT JOIN connections c ON c.id = s.source_connection_id "
-            "WHERE s.id = CAST(:sid AS uuid) "
-            "AND p.created_by = CAST(:uid AS uuid) AND p.deleted_at IS NULL"
+            "WHERE s.id = CAST(:sid AS uuid) AND p.deleted_at IS NULL"
         ),
-        {"sid": source_id, "uid": user_id},
+        {"sid": source_id},
     )
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Ingest source not found")
+    await authorize_project(session, str(row["project_id"]), user_id, action=action)
     return dict(row)
 
 
@@ -554,7 +556,7 @@ async def dbt_sources_snippet(
     Without this, data lands in the lake and no model can reach it.
     """
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    source = await _load_source(session, source_id, user_id)
+    source = await _load_source(session, source_id, user_id, action="view")
     dataset = _validated_dataset(source)
     tables = _validated_tables(source, None)
 
@@ -606,7 +608,7 @@ async def cancel_ingest(
 ) -> Dict[str, Any]:
     """Terminate a running load for this source on this runner process."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _load_source(session, source_id, user_id)
+    await _load_source(session, source_id, user_id, action="edit")
 
     process = _processes.get(source_id)
     if not process or process.returncode is not None:
@@ -822,7 +824,7 @@ async def list_ingest_runs(
 ) -> Dict[str, Any]:
     """History for one source. Ownership is checked by loading the source."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _load_source(session, source_id, user_id)
+    await _load_source(session, source_id, user_id, action="view")
     if not await _ingest_runs_available(session):
         return {"items": []}
 
@@ -873,19 +875,18 @@ async def get_ingest_run_logs(
     result = await session.execute(
         text(
             """
-            SELECT r.id, r.logs, r.status
+            SELECT r.id, r.logs, r.status, r.project_id
             FROM ingest_runs r
             JOIN dbt_projects p ON p.id = r.project_id
-            WHERE r.id = CAST(:rid AS uuid)
-              AND p.created_by = CAST(:uid AS uuid)
-              AND p.deleted_at IS NULL
+            WHERE r.id = CAST(:rid AS uuid) AND p.deleted_at IS NULL
             """
         ),
-        {"rid": run_id, "uid": user_id},
+        {"rid": run_id},
     )
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Ingest run not found")
+    await authorize_project(session, str(row["project_id"]), user_id, action="view")
     return {"id": str(row["id"]), "status": row["status"], "logs": row["logs"] or ""}
 
 
@@ -898,7 +899,7 @@ async def ingest_sse(
 ) -> StreamingResponse:
     """Run one ingest job, streaming its output as Server-Sent Events."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    source = await _load_source(session, source_id, user_id)
+    source = await _load_source(session, source_id, user_id, action="edit")
 
     tables = _validated_tables(source, body.tables)
     dataset = _validated_dataset(source)

@@ -215,21 +215,64 @@ async def resolve_user_id(
     raise HTTPException(status_code=404, detail="User not found")
 
 
-async def verify_project_ownership(
-    session: AsyncSession, project_id: str, user_id: str
-) -> None:
-    """Raise 404 if the project does not exist or is not owned by user_id.
+async def get_user_role(session: AsyncSession, user_id: str) -> str:
+    """Return the caller's role. 404s a user_id the users table has never
+    seen, the same way a bad project_id 404s below - both are "not found",
+    not "forbidden"."""
+    result = await session.execute(
+        text("SELECT role FROM users WHERE id = CAST(:uid AS uuid)"),
+        {"uid": user_id},
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return row[0]
 
-    404 rather than 403 on purpose: a 403 confirms the project exists, which
-    tells one user about another user's projects.
+
+async def authorize_project(
+    session: AsyncSession, project_id: str, user_id: str, action: str = "edit"
+) -> None:
+    """Raise 404 unless user_id may perform `action` ('view' or 'edit') on
+    project_id. See docs/rbac-design.md.
+
+    An admin bypasses project_permissions entirely. Everyone else needs a
+    ProjectPermission row for this exact project: 'view' is satisfied by
+    either level, 'edit' needs level='edit' *and* a role other than viewer -
+    a viewer never edits, no matter what a grant row says, because role is
+    the ceiling and a permission row can only narrow it, never raise it.
+
+    404, not 403, on every rejection - same reasoning as the ownership check
+    this replaces: a 403 would confirm the project exists to someone who has
+    no business knowing that.
     """
+    role = await get_user_role(session, user_id)
+    if role == "admin":
+        return
+
     result = await session.execute(
         text(
-            "SELECT id FROM dbt_projects "
-            "WHERE id = CAST(:pid AS uuid) AND created_by = CAST(:uid AS uuid) "
-            "AND deleted_at IS NULL"
+            "SELECT pp.level FROM project_permissions pp "
+            "JOIN dbt_projects p ON p.id = pp.project_id "
+            "WHERE pp.project_id = CAST(:pid AS uuid) "
+            "AND pp.user_id = CAST(:uid AS uuid) "
+            "AND p.deleted_at IS NULL"
         ),
         {"pid": project_id, "uid": user_id},
     )
-    if not result.first():
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if action == "edit" and (row[0] != "edit" or role == "viewer"):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+async def verify_project_ownership(
+    session: AsyncSession, project_id: str, user_id: str
+) -> None:
+    """Deprecated alias for authorize_project(..., action="edit") - kept so
+    every call site written before RBAC keeps its former all-or-nothing
+    semantics without being touched. New code, and anything that is really a
+    read, should call authorize_project directly with the right action.
+    """
+    await authorize_project(session, project_id, user_id, action="edit")

@@ -110,11 +110,11 @@ def test_board_routes_check_project_owner_before_parsing_or_execution(monkeypatc
     app.dependency_overrides[charts.get_dbt_service] = lambda: None
     async def user(*args): return 'owner'
     checked = []
-    async def ownership(session, project, uid):
+    async def ownership(session, project, uid, action='view'):
         checked.append((project, uid))
         if project != 'mine': raise HTTPException(403, 'Forbidden')
     monkeypatch.setattr(charts, 'resolve_user_id', user)
-    monkeypatch.setattr(charts, 'verify_project_ownership', ownership)
+    monkeypatch.setattr(charts, 'authorize_project', ownership)
     with TestClient(app) as client:
         assert client.post('/charts/mine/board/validate', json={'yaml': BOARD}).status_code == 401
         app.dependency_overrides[charts.require_user] = lambda: {'sub': 'owner'}

@@ -20,7 +20,12 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.auth import (
+    authorize_project,
+    require_user,
+    resolve_user_id,
+    verify_project_ownership,
+)
 from app.core.db import async_session, get_session
 from app.core.file_lock import AsyncFileLock
 from app.core.global_semaphore import global_run_semaphore
@@ -86,11 +91,18 @@ def _elapsed_ms(start: float) -> int:
 
 
 @router.get("/sse/files/{project_id}")
-async def file_watcher_sse(project_id: str) -> StreamingResponse:
+async def file_watcher_sse(
+    project_id: str,
+    claims: dict = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
     """
     SSE endpoint for real-time file system events.
     Connect with EventSource. Sends JSON-encoded events as SSE data lines.
     """
+    user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
+    await authorize_project(session, project_id, user_id, action="view")
+
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
     file_watcher_manager.set_event_loop(asyncio.get_running_loop())
@@ -259,18 +271,16 @@ _verify_project_ownership = verify_project_ownership
 async def _verify_run_ownership(
     session: AsyncSession, run_id: str, user_id: str
 ) -> None:
+    """Like dbt.py's _load_owned_dbt_run, minus the row - this endpoint only
+    needs to know the caller may watch the run, not its columns."""
     result = await session.execute(
-        text(
-            "SELECT r.id FROM dbt_runs r "
-            "JOIN dbt_projects p ON p.id = r.project_id "
-            "WHERE r.id = CAST(:rid AS uuid) "
-            "AND p.created_by = CAST(:uid AS uuid) "
-            "AND p.deleted_at IS NULL"
-        ),
-        {"rid": run_id, "uid": user_id},
+        text("SELECT project_id FROM dbt_runs WHERE id = CAST(:rid AS uuid)"),
+        {"rid": run_id},
     )
-    if not result.first():
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    await authorize_project(session, str(row[0]), user_id, action="view")
 
 
 @router.get("/sse/dbt-runs/{run_id}/events")

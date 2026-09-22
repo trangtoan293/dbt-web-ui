@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { encryptSecret } from '@/lib/crypto'
 import { getSessionOrNull } from '@/lib/session'
+import { requireProjectAccess, type ProjectAction } from '@/lib/authz'
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const TYPES = new Set(['text', 'password'])
@@ -29,12 +30,14 @@ function serializeEnvVar(row: {
   }
 }
 
-async function requireOwnedProject(projectId: string, userId: string) {
-  const project = await db.dbtProject.findFirst({
-    where: { id: projectId, createdBy: userId, deletedAt: null },
-    select: { id: true },
-  })
-  if (!project) {
+/** Project access now, not project ownership - see docs/rbac-design.md section 3.
+ * Env var *values* still stay scoped by `owner` below regardless of this
+ * check: a shared project still gives each person their own overrides, this
+ * just decides who may reach the endpoint for this project at all. */
+async function requireProjectOrResponse(projectId: string, action: ProjectAction) {
+  try {
+    await requireProjectAccess(projectId, action)
+  } catch {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }
   return null
@@ -48,8 +51,8 @@ export async function GET(
   if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
   const { projectId } = await context.params
-  const ownershipError = await requireOwnedProject(projectId, session.user.id)
-  if (ownershipError) return ownershipError
+  const accessError = await requireProjectOrResponse(projectId, 'view')
+  if (accessError) return accessError
 
   const rows = await db.dbtEnvironmentVariable.findMany({
     where: { projectId, owner: session.user.id },
@@ -66,8 +69,8 @@ export async function PUT(
   if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
   const { projectId } = await context.params
-  const ownershipError = await requireOwnedProject(projectId, session.user.id)
-  if (ownershipError) return ownershipError
+  const accessError = await requireProjectOrResponse(projectId, 'edit')
+  if (accessError) return accessError
 
   const body = await req.json().catch(() => null)
   if (!Array.isArray(body)) {

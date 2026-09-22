@@ -8,7 +8,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_user, resolve_user_id, verify_project_ownership
+from app.core.auth import (
+    authorize_project,
+    require_user,
+    resolve_user_id,
+    verify_project_ownership,
+)
 from app.core.db import get_session
 from app.core.dependencies import get_git_service
 from app.exceptions import GitOperationError
@@ -133,7 +138,7 @@ async def git_status(
 ):
     """Get git status of the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_status(project_id)
 
 
@@ -147,7 +152,7 @@ async def git_log(
 ):
     """Get commit history for the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_log(project_id, limit)
 
 
@@ -160,7 +165,7 @@ async def git_branches(
 ):
     """Get list of branches for the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_branches(project_id)
 
 
@@ -205,7 +210,7 @@ async def git_remotes(
 ):
     """Get list of remotes for the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_remotes(project_id)
 
 
@@ -218,7 +223,7 @@ async def get_git_config(
 ):
     """Get git user config for the project."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_config(project_id)
 
 
@@ -287,7 +292,7 @@ async def git_diff(
 ):
     """Get diff of changes."""
     user_id = await resolve_user_id(session, claims.get("sub"), claims.get("email"))
-    await _verify_project_ownership(session, project_id, user_id)
+    await authorize_project(session, project_id, user_id, action="view")
     return await service.get_diff(project_id, file_path)
 
 
